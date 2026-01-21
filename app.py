@@ -40,7 +40,6 @@ latest_data = {
     "history": []
 }
 last_basis_time = None
-background_thread_started = False
 
 # Login decorator
 def login_required(f):
@@ -240,28 +239,8 @@ def login():
 @app.route('/api/basis', methods=['GET'])
 @login_required
 def get_basis():
-    global last_basis_time
-    
-    # If data hasn't been loaded yet, load it synchronously
     with data_lock:
-        if latest_data["node1_price"] is None and latest_data["history"] == []:
-            logger.info("No data available, fetching synchronously...")
-            initial_history = get_historical_prices()
-            if initial_history:
-                latest_data["history"] = initial_history
-                last_point = initial_history[-1]
-                latest_data["node1_price"] = last_point['node1_price']
-                latest_data["node2_price"] = last_point['node2_price']
-                latest_data["hub_price"] = last_point['hub_price']
-                latest_data["basis1"] = last_point['basis1']
-                latest_data["basis2"] = last_point['basis2']
-                latest_data["status1"] = last_point['status1']
-                latest_data["status2"] = last_point['status2']
-                latest_data["data_time"] = str(last_point['time'])
-                latest_data["last_update"] = datetime.now().isoformat()
-                last_basis_time = last_point['time']
-                logger.info(f"Synchronously loaded {len(initial_history)} data points")
-        
+        # Return current state (may be empty if still loading)
         logger.info(f"API called - data: node1={latest_data['node1_price']}, node2={latest_data['node2_price']}, hub={latest_data['hub_price']}, basis1={latest_data['basis1']}, basis2={latest_data['basis2']}, history_count={len(latest_data['history'])}")
         return jsonify(latest_data)
 
@@ -716,15 +695,11 @@ def dashboard():
 </body>
 </html>'''
 
-# Start background thread using before_request to ensure it starts in each worker
-@app.before_request
-def ensure_background_thread():
-    global background_thread_started
-    if not background_thread_started:
-        background_thread_started = True
-        fetch_thread = threading.Thread(target=background_data_fetch, daemon=True)
-        fetch_thread.start()
-        logger.info("Background data fetch thread started from before_request")
+# Start background thread at module load time
+# With gunicorn preload_app=True, this runs once before workers fork
+fetch_thread = threading.Thread(target=background_data_fetch, daemon=True)
+fetch_thread.start()
+logger.info("Background data fetch thread started at module load")
 
 if __name__ == '__main__':
     app.run(debug=False, host='0.0.0.0', port=int(os.getenv('PORT', 5000)))
