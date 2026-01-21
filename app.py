@@ -194,7 +194,7 @@ def login():
 @login_required
 def get_basis():
     with data_lock:
-        logger.info(f"API request - returning data: {latest_data}")
+        logger.info(f"API called - data: node1={latest_data['node1_price']}, node2={latest_data['node2_price']}, basis={latest_data['basis']}, history_count={len(latest_data['history'])}")
         return jsonify(latest_data)
 
 @app.route('/api/health', methods=['GET'])
@@ -204,8 +204,143 @@ def health():
 @app.route('/', methods=['GET'])
 @login_required
 def dashboard():
-    html = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>ERCOT Basis Tracker</title><script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script><script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script><script src="https://cdn.tailwindcss.com"></script></head><body><div id="root"></div><script type="module">import React, { useState, useEffect } from 'https://esm.sh/react@18';import ReactDOM from 'https://esm.sh/react-dom@18/client';const BasisDashboard = () => {const [basis, setBasis] = useState(null);const [node1Price, setNode1Price] = useState(null);const [node2Price, setNode2Price] = useState(null);const [lastUpdate, setLastUpdate] = useState(null);const [dataTime, setDataTime] = useState(null);const [history, setHistory] = useState([]);const [status, setStatus] = useState('loading');const [connectionStatus, setConnectionStatus] = useState('connecting');const GREEN_THRESHOLD = -100;const API_URL = window.location.protocol + '//' + window.location.host + '/api/basis';useEffect(() => {const fetchData = async () => {try {const response = await fetch(API_URL);if (!response.ok) throw new Error('HTTP error');const data = await response.json();if (data.node1_price !== null && data.node2_price !== null && data.basis !== null) {setNode1Price(data.node1_price);setNode2Price(data.node2_price);setBasis(data.basis);setStatus(data.status);setLastUpdate(new Date(data.last_update));setDataTime(data.data_time);setConnectionStatus('connected');if (data.history && data.history.length > 0) {setHistory(data.history.map(point => ({basis: point.basis, time: new Date(point.time), status: point.status})));}} else {setConnectionStatus('no_data');}} catch (error) {console.error('Fetch error:', error);setConnectionStatus('error');}};fetchData();const interval = setInterval(fetchData, 30000);return () => clearInterval(interval);}, []);const getStatusInfo = (basisValue) => {if (basisValue === null) return { status: 'Unknown', bgColor: 'bg-gray-100', textColor: 'text-gray-700', message: 'Waiting for data' };if (basisValue > 0) {return { status: 'Safe', bgColor: 'bg-green-50', textColor: 'text-green-700', message: 'Basis is healthy - No concerns' };} else if (basisValue >= -100) {return { status: 'Caution', bgColor: 'bg-yellow-50', textColor: 'text-yellow-700', message: 'Basis dipped below zero - Potential basis concerns' };} else {return { status: 'Alert', bgColor: 'bg-red-50', textColor: 'text-red-700', message: 'Basis exceeds alert threshold - Monitor closely' };}};const statusInfo = getStatusInfo(basis);return React.createElement('div', { className: 'min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 p-8' }, React.createElement('div', { className: 'max-w-6xl mx-auto' }, React.createElement('h1', { className: 'text-4xl font-bold text-white mb-2' }, 'ERCOT Basis Tracker'), React.createElement('div', { className: 'grid grid-cols-1 md:grid-cols-3 gap-6 mb-8' }, React.createElement('div', { className: 'bg-slate-700 rounded-lg p-6 border border-slate-600' }, React.createElement('p', { className: 'text-slate-400 text-sm font-medium mb-2' }, 'NBOHR_RN'), React.createElement('span', { className: 'text-3xl font-bold text-white' }, node1Price ? '$' + node1Price.toFixed(2) : 'N/A')), React.createElement('div', { className: 'bg-slate-700 rounded-lg p-6 border border-slate-600' }, React.createElement('p', { className: 'text-slate-400 text-sm font-medium mb-2' }, 'HB_WEST'), React.createElement('span', { className: 'text-3xl font-bold text-white' }, node2Price ? '$' + node2Price.toFixed(2) : 'N/A')), React.createElement('div', { className: 'rounded-lg p-6 border-2 ' + statusInfo.bgColor }, React.createElement('p', { className: 'text-sm font-medium mb-2 ' + statusInfo.textColor }, 'Basis'), React.createElement('span', { className: 'text-3xl font-bold ' + statusInfo.textColor }, basis ? '$' + basis.toFixed(2) : 'N/A'))), React.createElement('div', { className: 'rounded-lg p-8 mb-8 border-2 ' + statusInfo.bgColor }, React.createElement('h2', { className: 'text-2xl font-bold ' + statusInfo.textColor + ' mb-1' }, statusInfo.status), React.createElement('p', { className: 'text-slate-600' }, statusInfo.message)), history.length > 0 && React.createElement('div', { className: 'bg-slate-700 rounded-lg p-6 border border-slate-600 mb-8' }, React.createElement('h3', { className: 'text-white font-semibold mb-4' }, 'Basis Trend'), React.createElement('div', { style: { display: 'grid', gridTemplateColumns: '60px 1fr', gap: '8px' } }, React.createElement('div', { style: { display: 'flex', flexDirection: 'column', justifyContent: 'space-between', textAlign: 'right', paddingRight: '8px', fontSize: '12px', color: '#9ca3af', borderRight: '2px solid #6b7280' } }, (() => {const values = history.map(p => p.basis);const minVal = Math.min(...values);const maxVal = Math.max(...values);const yMin = Math.floor(minVal / 5) * 5;const yMax = Math.ceil(maxVal / 5) * 5;const yLabels = [];for (let i = yMax; i >= yMin; i -= 5) {yLabels.push(React.createElement('div', { key: 'y-' + i }, '$' + i));}return yLabels;})()}), React.createElement('div', { style: { display: 'flex', alignItems: 'flex-end', gap: '4px', borderBottom: '2px solid #6b7280', paddingBottom: '8px', minHeight: '200px' } }, history.map((point, idx) => {const values = history.map(p => p.basis);const minVal = Math.min(...values);const maxVal = Math.max(...values);const yMin = Math.floor(minVal / 5) * 5;const yMax = Math.ceil(maxVal / 5) * 5;const yRange = yMax - yMin || 1;const heightPercent = ((point.basis - yMin) / yRange) * 100;let barColor = '#22c55e';if (point.basis < 0 && point.basis >= -100) {barColor = '#eab308';} else if (point.basis < -100) {barColor = '#ef4444';}return React.createElement('div', {key: 'bar-' + idx, style: {flex: 1, height: Math.max(heightPercent, 5) + '%', backgroundColor: barColor, opacity: 0.7, borderRadius: '4px 4px 0 0', minHeight: '5px', cursor: 'pointer'}, title: point.basis.toFixed(2) + ' at ' + new Date(point.time).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZone: 'America/New_York', hour12: true })});})), React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', gap: '4px', marginTop: '12px', marginLeft: '60px', fontSize: '11px', color: '#9ca3af' } }, React.createElement('span', null, history.length > 0 ? new Date(history[0].time).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZone: 'America/New_York', hour12: true }) : 'N/A'), React.createElement('span', null, history.length > 0 ? new Date(history[history.length - 1].time).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZone: 'America/New_York', hour12: true }) : 'N/A')), React.createElement('div', { style: { marginTop: '8px', marginLeft: '60px', fontSize: '11px', color: '#6b7280' } }, 'EST Timestamps'))));};const root = ReactDOM.createRoot(document.getElementById('root'));root.render(React.createElement(BasisDashboard));</script></body></html>"""
-    return html
+    return '''<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ERCOT Basis Tracker</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body>
+    <div class="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 p-8">
+        <div class="max-w-6xl mx-auto">
+            <div class="flex justify-between items-center mb-8">
+                <h1 class="text-4xl font-bold text-white">ERCOT Basis Tracker</h1>
+                <div id="connection" class="text-blue-400 font-semibold">Connecting...</div>
+            </div>
+            
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+                <div class="bg-slate-700 rounded-lg p-6 border border-slate-600">
+                    <p class="text-slate-400 text-sm font-medium mb-2">NBOHR_RN</p>
+                    <span id="node1" class="text-3xl font-bold text-white">N/A</span>
+                </div>
+                <div class="bg-slate-700 rounded-lg p-6 border border-slate-600">
+                    <p class="text-slate-400 text-sm font-medium mb-2">HB_WEST</p>
+                    <span id="node2" class="text-3xl font-bold text-white">N/A</span>
+                </div>
+                <div class="bg-slate-700 rounded-lg p-6 border border-slate-600">
+                    <p class="text-slate-400 text-sm font-medium mb-2">Basis</p>
+                    <span id="basis" class="text-3xl font-bold text-white">N/A</span>
+                </div>
+            </div>
+            
+            <div class="bg-slate-700 rounded-lg p-6 border border-slate-600 mb-8">
+                <h3 class="text-white font-semibold mb-4">Status</h3>
+                <p id="status" class="text-2xl font-bold text-yellow-400">N/A</p>
+            </div>
+            
+            <div class="bg-slate-700 rounded-lg p-6 border border-slate-600">
+                <h3 class="text-white font-semibold mb-4">Basis Trend</h3>
+                <div id="chart-container"></div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        const API_URL = window.location.protocol + '//' + window.location.host + '/api/basis';
+        
+        async function fetchData() {
+            try {
+                const response = await fetch(API_URL);
+                const data = await response.json();
+                
+                document.getElementById('node1').textContent = data.node1_price ? '$' + data.node1_price.toFixed(2) : 'N/A';
+                document.getElementById('node2').textContent = data.node2_price ? '$' + data.node2_price.toFixed(2) : 'N/A';
+                document.getElementById('basis').textContent = data.basis ? '$' + data.basis.toFixed(2) : 'N/A';
+                document.getElementById('status').textContent = data.status ? data.status.toUpperCase() : 'N/A';
+                document.getElementById('connection').textContent = 'Connected';
+                document.getElementById('connection').className = 'text-green-400';
+                
+                if (data.history && data.history.length > 0) {
+                    renderChart(data.history);
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                document.getElementById('connection').textContent = 'Connection Error';
+                document.getElementById('connection').className = 'text-red-400';
+            }
+        }
+        
+        function renderChart(history) {
+            const container = document.getElementById('chart-container');
+            if (!container) return;
+            
+            container.innerHTML = '';
+            
+            const values = history.map(p => p.basis);
+            const minVal = Math.min(...values);
+            const maxVal = Math.max(...values);
+            const yMin = Math.floor(minVal / 5) * 5;
+            const yMax = Math.ceil(maxVal / 5) * 5;
+            const yRange = yMax - yMin || 1;
+            
+            const chart = document.createElement('div');
+            chart.style.display = 'grid';
+            chart.style.gridTemplateColumns = '60px 1fr';
+            chart.style.gap = '8px';
+            
+            const yAxis = document.createElement('div');
+            yAxis.style.display = 'flex';
+            yAxis.style.flexDirection = 'column';
+            yAxis.style.justifyContent = 'space-between';
+            yAxis.style.textAlign = 'right';
+            yAxis.style.paddingRight = '8px';
+            yAxis.style.fontSize = '12px';
+            yAxis.style.color = '#9ca3af';
+            yAxis.style.borderRight = '2px solid #6b7280';
+            
+            for (let i = yMax; i >= yMin; i -= 5) {
+                const label = document.createElement('div');
+                label.textContent = '$' + i;
+                yAxis.appendChild(label);
+            }
+            
+            const bars = document.createElement('div');
+            bars.style.display = 'flex';
+            bars.style.alignItems = 'flex-end';
+            bars.style.gap = '4px';
+            bars.style.borderBottom = '2px solid #6b7280';
+            bars.style.paddingBottom = '8px';
+            bars.style.minHeight = '200px';
+            
+            history.forEach((point, idx) => {
+                const heightPercent = ((point.basis - yMin) / yRange) * 100;
+                let color = '#22c55e';
+                if (point.basis < 0 && point.basis >= -100) color = '#eab308';
+                else if (point.basis < -100) color = '#ef4444';
+                
+                const bar = document.createElement('div');
+                bar.style.flex = '1';
+                bar.style.height = Math.max(heightPercent, 5) + '%';
+                bar.style.backgroundColor = color;
+                bar.style.opacity = '0.7';
+                bar.style.borderRadius = '4px 4px 0 0';
+                bar.style.minHeight = '5px';
+                bar.title = '$' + point.basis.toFixed(2);
+                bars.appendChild(bar);
+            });
+            
+            chart.appendChild(yAxis);
+            chart.appendChild(bars);
+            container.appendChild(chart);
+        }
+        
+        fetchData();
+        setInterval(fetchData, 30000);
+    </script>
+</body>
+</html>'''
 
 # Start background thread
 fetch_thread = threading.Thread(target=background_data_fetch, daemon=True)
