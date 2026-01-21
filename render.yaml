@@ -1,12 +1,13 @@
 services:
   - type: web
     name: ercot-basis-tracker
-    runtime: docker
+    runtime: python-3.12
     plan: free
     region: oregon
     
     # Build configuration
-    dockerfilePath: ./Dockerfile
+    buildCommand: pip install -r requirements.txt && pip install gunicorn
+    startCommand: gunicorn -w 4 -b 0.0.0.0:5000 --timeout 120 app:app
     
     # Environment variables
     envVars:
