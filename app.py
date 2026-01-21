@@ -222,7 +222,7 @@ def dashboard():
             
               const GREEN_THRESHOLD = -100;
               const RED_THRESHOLD = -100;
-              const API_URL = 'http://' + window.location.hostname + ':5000/api/basis';
+              const API_URL = window.location.protocol + '//' + window.location.host + '/api/basis';
             
               useEffect(() => {
                 const fetchData = async () => {
