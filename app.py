@@ -174,11 +174,14 @@ def background_data_fetch():
 # Start background data fetcher thread
 fetch_thread = threading.Thread(target=background_data_fetch, daemon=True)
 fetch_thread.start()
+logger.info("Background data fetch thread started")
 
 @app.route('/api/basis', methods=['GET'])
+@login_required
 def get_basis():
     """API endpoint to get latest basis data"""
     with data_lock:
+        logger.info(f"API request - returning data: {latest_data}")
         return jsonify(latest_data)
 
 @app.route('/api/health', methods=['GET'])
@@ -189,8 +192,53 @@ def health():
         "data_status": latest_data["status"]
     })
 
-@app.route('/', methods=['GET'])
-def dashboard():
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    """Login page"""
+    if request.method == 'POST':
+        password = request.form.get('password', '')
+        if password == DASHBOARD_PASSWORD:
+            session['authenticated'] = True
+            return redirect('/')
+        else:
+            return '''
+            <html>
+            <body style="font-family: Arial; background: #1f2937; color: white; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0;">
+                <div style="background: #374151; padding: 40px; border-radius: 8px; border: 1px solid #4b5563; max-width: 400px; width: 100%;">
+                    <h1 style="margin-top: 0;">ERCOT Basis Tracker</h1>
+                    <p style="color: #ef4444; margin-bottom: 20px;">❌ Invalid password. Try again.</p>
+                    <form method="post" style="display: flex; flex-direction: column; gap: 12px;">
+                        <input type="password" name="password" placeholder="Enter password" autofocus style="padding: 10px; border: 1px solid #6b7280; border-radius: 4px; background: #1f2937; color: white; font-size: 16px;">
+                        <button type="submit" style="padding: 10px; background: #3b82f6; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 16px; font-weight: bold;">Login</button>
+                    </form>
+                </div>
+            </body>
+            </html>
+            '''
+    
+    return '''
+    <html>
+    <body style="font-family: Arial; background: #1f2937; color: white; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0;">
+        <div style="background: #374151; padding: 40px; border-radius: 8px; border: 1px solid #4b5563; max-width: 400px; width: 100%;">
+            <h1 style="margin-top: 0;">ERCOT Basis Tracker</h1>
+            <p style="color: #9ca3af; margin-bottom: 20px;">Enter the password to access the dashboard</p>
+            <form method="post" style="display: flex; flex-direction: column; gap: 12px;">
+                <input type="password" name="password" placeholder="Enter password" autofocus style="padding: 10px; border: 1px solid #6b7280; border-radius: 4px; background: #1f2937; color: white; font-size: 16px;">
+                <button type="submit" style="padding: 10px; background: #3b82f6; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 16px; font-weight: bold;">Login</button>
+            </form>
+        </div>
+    </body>
+    </html>
+    '''
+
+def login_required(f):
+    """Decorator to require login for routes"""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not session.get('authenticated'):
+            return redirect('/login')
+        return f(*args, **kwargs)
+    return decorated_function
     """Serve the dashboard HTML"""
     html = """
     <!DOCTYPE html>
@@ -222,7 +270,7 @@ def dashboard():
             
               const GREEN_THRESHOLD = -100;
               const RED_THRESHOLD = -100;
-              const API_URL = window.location.protocol + '//' + window.location.host + '/api/basis';
+              const API_URL = 'http://' + window.location.hostname + ':5000/api/basis';
             
               useEffect(() => {
                 const fetchData = async () => {
