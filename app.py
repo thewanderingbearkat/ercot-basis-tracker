@@ -41,6 +41,9 @@ latest_data = {
 }
 last_basis_time = None
 
+# Event to signal when initial data is ready
+initial_data_ready = threading.Event()
+
 # Login decorator
 def login_required(f):
     @wraps(f)
@@ -122,9 +125,24 @@ def background_data_fetch():
     with data_lock:
         latest_data["history"] = initial_history
         if initial_history:
-            last_basis_time = initial_history[-1]['time']
+            # FIX: Populate the latest price fields from the most recent historical data point
+            # This ensures the API returns valid data immediately after startup
+            last_point = initial_history[-1]
+            latest_data["node1_price"] = last_point['node1_price']
+            latest_data["node2_price"] = last_point['node2_price']
+            latest_data["hub_price"] = last_point['hub_price']
+            latest_data["basis1"] = last_point['basis1']
+            latest_data["basis2"] = last_point['basis2']
+            latest_data["status1"] = last_point['status1']
+            latest_data["status2"] = last_point['status2']
+            latest_data["data_time"] = str(last_point['time'])
+            latest_data["last_update"] = datetime.now().isoformat()
+            last_basis_time = last_point['time']
     
     logger.info(f"Loaded {len(initial_history)} historical data points")
+    
+    # Signal that initial data is ready
+    initial_data_ready.set()
     
     while True:
         try:
