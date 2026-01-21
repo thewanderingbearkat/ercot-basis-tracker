@@ -211,6 +211,18 @@ def background_data_fetch():
                 latest_data["status2"] = "error"
             time.sleep(60)
 
+# Flag to track if background thread has started in this process
+_background_thread_started = False
+
+def start_background_thread_if_needed():
+    """Start the background thread if not already running in this process."""
+    global _background_thread_started
+    if not _background_thread_started:
+        _background_thread_started = True
+        fetch_thread = threading.Thread(target=background_data_fetch, daemon=True)
+        fetch_thread.start()
+        logger.info(f"Background data fetch thread started in process {os.getpid()}")
+
 # Routes
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -239,6 +251,9 @@ def login():
 @app.route('/api/basis', methods=['GET'])
 @login_required
 def get_basis():
+    # Ensure background thread is running in this worker process
+    start_background_thread_if_needed()
+    
     with data_lock:
         # Return current state (may be empty if still loading)
         logger.info(f"API called - data: node1={latest_data['node1_price']}, node2={latest_data['node2_price']}, hub={latest_data['hub_price']}, basis1={latest_data['basis1']}, basis2={latest_data['basis2']}, history_count={len(latest_data['history'])}")
@@ -695,11 +710,7 @@ def dashboard():
 </body>
 </html>'''
 
-# Start background thread at module load time
-# With gunicorn preload_app=True, this runs once before workers fork
-fetch_thread = threading.Thread(target=background_data_fetch, daemon=True)
-fetch_thread.start()
-logger.info("Background data fetch thread started at module load")
-
 if __name__ == '__main__':
+    # Only start background thread here for local development
+    start_background_thread_if_needed()
     app.run(debug=False, host='0.0.0.0', port=int(os.getenv('PORT', 5000)))
