@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: ercot-basis-tracker
+    runtime: docker
+    plan: free
+    region: oregon
+    
+    # Build configuration
+    dockerfilePath: ./Dockerfile
+    
+    # Environment variables
+    envVars:
+      - key: FLASK_ENV
+        value: production
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: SECRET_KEY
+        sync: false
+      - key: DASHBOARD_PASSWORD
+        sync: false
+    
+    # Service details
+    healthCheckPath: /api/health
+    healthCheckInterval: 300  # 5 minutes
+    
+    # Auto-scaling (if available)
+    autoDeploy: true
