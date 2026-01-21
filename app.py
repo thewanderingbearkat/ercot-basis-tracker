@@ -40,9 +40,7 @@ latest_data = {
     "history": []
 }
 last_basis_time = None
-
-# Event to signal when initial data is ready
-initial_data_ready = threading.Event()
+background_thread_started = False
 
 # Login decorator
 def login_required(f):
@@ -117,10 +115,15 @@ def get_historical_prices(hours_back=4):
         return []
 
 def background_data_fetch():
-    global last_basis_time
+    global last_basis_time, latest_data
     
     logger.info("Fetching initial historical data...")
     initial_history = get_historical_prices()
+    
+    logger.info(f"Got {len(initial_history)} points from get_historical_prices")
+    if initial_history:
+        logger.info(f"First point: {initial_history[0]}")
+        logger.info(f"Last point: {initial_history[-1]}")
     
     with data_lock:
         latest_data["history"] = initial_history
@@ -138,11 +141,12 @@ def background_data_fetch():
             latest_data["data_time"] = str(last_point['time'])
             latest_data["last_update"] = datetime.now().isoformat()
             last_basis_time = last_point['time']
+            logger.info(f"Updated latest_data: node1={latest_data['node1_price']}, basis1={latest_data['basis1']}, history_count={len(latest_data['history'])}")
     
     logger.info(f"Loaded {len(initial_history)} historical data points")
     
     # Signal that initial data is ready
-    initial_data_ready.set()
+    logger.info("Initial data ready, entering update loop")
     
     while True:
         try:
@@ -236,7 +240,28 @@ def login():
 @app.route('/api/basis', methods=['GET'])
 @login_required
 def get_basis():
+    global last_basis_time
+    
+    # If data hasn't been loaded yet, load it synchronously
     with data_lock:
+        if latest_data["node1_price"] is None and latest_data["history"] == []:
+            logger.info("No data available, fetching synchronously...")
+            initial_history = get_historical_prices()
+            if initial_history:
+                latest_data["history"] = initial_history
+                last_point = initial_history[-1]
+                latest_data["node1_price"] = last_point['node1_price']
+                latest_data["node2_price"] = last_point['node2_price']
+                latest_data["hub_price"] = last_point['hub_price']
+                latest_data["basis1"] = last_point['basis1']
+                latest_data["basis2"] = last_point['basis2']
+                latest_data["status1"] = last_point['status1']
+                latest_data["status2"] = last_point['status2']
+                latest_data["data_time"] = str(last_point['time'])
+                latest_data["last_update"] = datetime.now().isoformat()
+                last_basis_time = last_point['time']
+                logger.info(f"Synchronously loaded {len(initial_history)} data points")
+        
         logger.info(f"API called - data: node1={latest_data['node1_price']}, node2={latest_data['node2_price']}, hub={latest_data['hub_price']}, basis1={latest_data['basis1']}, basis2={latest_data['basis2']}, history_count={len(latest_data['history'])}")
         return jsonify(latest_data)
 
@@ -691,10 +716,15 @@ def dashboard():
 </body>
 </html>'''
 
-# Start background thread
-fetch_thread = threading.Thread(target=background_data_fetch, daemon=True)
-fetch_thread.start()
-logger.info("Background data fetch thread started")
+# Start background thread using before_request to ensure it starts in each worker
+@app.before_request
+def ensure_background_thread():
+    global background_thread_started
+    if not background_thread_started:
+        background_thread_started = True
+        fetch_thread = threading.Thread(target=background_data_fetch, daemon=True)
+        fetch_thread.start()
+        logger.info("Background data fetch thread started from before_request")
 
 if __name__ == '__main__':
     app.run(debug=False, host='0.0.0.0', port=int(os.getenv('PORT', 5000)))
