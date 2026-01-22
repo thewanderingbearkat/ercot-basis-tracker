@@ -284,13 +284,13 @@ def dashboard():
             --skyvest-navy-light: #1a4370;
         }
 
-        /* NYT-inspired typography */
+        /* Operational Dashboard Typography */
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
             letter-spacing: -0.01em;
         }
 
-        .nyt-title {
+        .dashboard-title {
             font-family: Georgia, "Times New Roman", serif;
             font-weight: 700;
             letter-spacing: -0.02em;
@@ -305,12 +305,31 @@ def dashboard():
 
         .card {
             background: white;
-            border: 1px solid #e5e5e5;
-            transition: box-shadow 0.2s ease;
+            border: 2px solid #e5e5e5;
+            transition: all 0.3s ease;
         }
 
         .card:hover {
             box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+        }
+
+        /* Basis card status styling */
+        .basis-card {
+            transition: background-color 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
+        }
+
+        /* Alert pulse animation */
+        @keyframes alertPulse {
+            0%, 100% {
+                box-shadow: 0 0 20px rgba(239, 68, 68, 0.5), 0 4px 12px rgba(0, 0, 0, 0.1);
+            }
+            50% {
+                box-shadow: 0 0 30px rgba(239, 68, 68, 0.8), 0 4px 16px rgba(0, 0, 0, 0.15);
+            }
+        }
+
+        .alert-pulse {
+            animation: alertPulse 2s ease-in-out infinite;
         }
     </style>
 </head>
@@ -321,7 +340,7 @@ def dashboard():
             <div class="mb-12 pb-6" style="border-bottom: 3px solid var(--skyvest-navy);">
                 <div class="flex justify-between items-start">
                     <div>
-                        <h1 class="nyt-title text-5xl mb-2" style="color: var(--skyvest-navy);">ERCOT Basis Tracker</h1>
+                        <h1 class="dashboard-title text-5xl mb-2" style="color: var(--skyvest-navy);">ERCOT Basis Tracker</h1>
                         <p class="metric-label" style="color: var(--skyvest-blue);">Real-time Settlement Point Analysis</p>
                     </div>
                     <div class="text-right">
@@ -348,32 +367,32 @@ def dashboard():
 
             <!-- Basis Cards -->
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-10">
-                <div class="card rounded-sm p-6">
+                <div id="basis-card-1" class="card basis-card rounded-sm p-6">
                     <div class="flex justify-between items-start mb-6">
                         <div>
-                            <p class="metric-label mb-3" style="color: #666;">NBOHR_RN Basis</p>
-                            <span id="basis1" class="text-4xl font-light" style="color: var(--skyvest-navy);">N/A</span>
+                            <p id="basis1-label" class="metric-label mb-3" style="color: #666;">NBOHR_RN Basis</p>
+                            <span id="basis1" class="text-4xl font-bold" style="color: var(--skyvest-navy);">N/A</span>
                         </div>
                         <div class="text-right">
-                            <p class="metric-label mb-2" style="color: #999;">Status</p>
-                            <p id="status1" class="text-sm font-bold px-3 py-1 rounded-full" style="background-color: #f0f0f0; color: #666;">N/A</p>
+                            <p id="status1-label" class="metric-label mb-2" style="color: #999;">Status</p>
+                            <p id="status1" class="text-2xl font-bold" style="color: #666;">N/A</p>
                         </div>
                     </div>
-                    <p class="text-xs" style="color: #999;">vs HB_WEST</p>
+                    <p id="basis1-subtitle" class="text-xs" style="color: #999;">vs HB_WEST</p>
                 </div>
 
-                <div class="card rounded-sm p-6">
+                <div id="basis-card-2" class="card basis-card rounded-sm p-6">
                     <div class="flex justify-between items-start mb-6">
                         <div>
-                            <p class="metric-label mb-3" style="color: #666;">HOLSTEIN_ALL Basis</p>
-                            <span id="basis2" class="text-4xl font-light" style="color: var(--skyvest-navy);">N/A</span>
+                            <p id="basis2-label" class="metric-label mb-3" style="color: #666;">HOLSTEIN_ALL Basis</p>
+                            <span id="basis2" class="text-4xl font-bold" style="color: var(--skyvest-navy);">N/A</span>
                         </div>
                         <div class="text-right">
-                            <p class="metric-label mb-2" style="color: #999;">Status</p>
-                            <p id="status2" class="text-sm font-bold px-3 py-1 rounded-full" style="background-color: #f0f0f0; color: #666;">N/A</p>
+                            <p id="status2-label" class="metric-label mb-2" style="color: #999;">Status</p>
+                            <p id="status2" class="text-2xl font-bold" style="color: #666;">N/A</p>
                         </div>
                     </div>
-                    <p class="text-xs" style="color: #999;">vs HB_WEST</p>
+                    <p id="basis2-subtitle" class="text-xs" style="color: #999;">vs HB_WEST</p>
                 </div>
             </div>
 
@@ -406,20 +425,18 @@ def dashboard():
                 document.getElementById('basis1').textContent = data.basis1 ? '$' + data.basis1.toFixed(2) : 'N/A';
                 document.getElementById('basis2').textContent = data.basis2 ? '$' + data.basis2.toFixed(2) : 'N/A';
                 
-                const status1El = document.getElementById('status1');
+                // Apply status styling to basis card 1
                 if (data.status1) {
-                    status1El.textContent = data.status1.toUpperCase();
-                    const style1 = getStatusStyle(data.status1);
-                    status1El.style.backgroundColor = style1.bgColor;
-                    status1El.style.color = style1.textColor;
+                    const card1 = document.getElementById('basis-card-1');
+                    const style1 = getCardStyle(data.status1);
+                    applyCardStyling(card1, style1, 'basis1', 'status1', data.status1);
                 }
 
-                const status2El = document.getElementById('status2');
+                // Apply status styling to basis card 2
                 if (data.status2) {
-                    status2El.textContent = data.status2.toUpperCase();
-                    const style2 = getStatusStyle(data.status2);
-                    status2El.style.backgroundColor = style2.bgColor;
-                    status2El.style.color = style2.textColor;
+                    const card2 = document.getElementById('basis-card-2');
+                    const style2 = getCardStyle(data.status2);
+                    applyCardStyling(card2, style2, 'basis2', 'status2', data.status2);
                 }
                 
                 const connEl = document.getElementById('connection');
@@ -440,32 +457,88 @@ def dashboard():
             }
         }
 
+        // Get full card styling based on status
+        function getCardStyle(status) {
+            if (status === 'safe') {
+                return {
+                    bgColor: '#2291EB',      // SkyVest blue
+                    textColor: 'white',
+                    labelColor: 'rgba(255, 255, 255, 0.9)',
+                    subtitleColor: 'rgba(255, 255, 255, 0.8)',
+                    statusColor: 'white',
+                    borderColor: '#1a7bc4',
+                    glow: false
+                };
+            } else if (status === 'caution') {
+                return {
+                    bgColor: '#FFD966',      // SkyVest gold
+                    textColor: '#0E2C51',    // Navy for contrast
+                    labelColor: '#5a4a1f',
+                    subtitleColor: '#6b5a2f',
+                    statusColor: '#8B6914',  // Darker gold
+                    borderColor: '#e6c44d',
+                    glow: false
+                };
+            } else if (status === 'alert') {
+                return {
+                    bgColor: '#ef4444',      // Red alert
+                    textColor: 'white',
+                    labelColor: 'rgba(255, 255, 255, 0.95)',
+                    subtitleColor: 'rgba(255, 255, 255, 0.85)',
+                    statusColor: 'white',
+                    borderColor: '#dc2626',   // Darker red
+                    glow: true                // Enable pulse animation
+                };
+            } else {
+                return {
+                    bgColor: 'white',
+                    textColor: 'var(--skyvest-navy)',
+                    labelColor: '#666',
+                    subtitleColor: '#999',
+                    statusColor: '#666',
+                    borderColor: '#e5e5e5',
+                    glow: false
+                };
+            }
+        }
+
+        // Apply styling to a basis card
+        function applyCardStyling(card, style, basisId, statusId, statusText) {
+            // Card background and border
+            card.style.backgroundColor = style.bgColor;
+            card.style.borderColor = style.borderColor;
+
+            // Apply or remove glow effect
+            if (style.glow) {
+                card.classList.add('alert-pulse');
+                card.style.boxShadow = '0 0 20px rgba(239, 68, 68, 0.5)';
+            } else {
+                card.classList.remove('alert-pulse');
+                card.style.boxShadow = '';
+            }
+
+            // Update all text elements
+            const basisEl = document.getElementById(basisId);
+            const statusEl = document.getElementById(statusId);
+            const labelEl = document.getElementById(basisId + '-label');
+            const subtitleEl = document.getElementById(basisId + '-subtitle');
+            const statusLabelEl = document.getElementById(statusId + '-label');
+
+            if (basisEl) basisEl.style.color = style.textColor;
+            if (statusEl) {
+                statusEl.textContent = statusText.toUpperCase();
+                statusEl.style.color = style.statusColor;
+            }
+            if (labelEl) labelEl.style.color = style.labelColor;
+            if (subtitleEl) subtitleEl.style.color = style.subtitleColor;
+            if (statusLabelEl) statusLabelEl.style.color = style.labelColor;
+        }
+
         function getStatusColor(status) {
             if (status === 'safe') return '#2291EB';
             if (status === 'caution') return '#FFD966';
             if (status === 'alert') return '#ef4444';
             return '#999';
-        }
-
-        function getStatusStyle(status) {
-            const color = getStatusColor(status);
-            let bgColor, textColor;
-
-            if (status === 'safe') {
-                bgColor = '#e3f2fd';
-                textColor = '#0E2C51';
-            } else if (status === 'caution') {
-                bgColor = '#fff8e1';
-                textColor = '#8B6914';
-            } else if (status === 'alert') {
-                bgColor = '#ffebee';
-                textColor = '#c62828';
-            } else {
-                bgColor = '#f0f0f0';
-                textColor = '#666';
-            }
-
-            return { bgColor, textColor };
         }
 
         function getStatusColorHex(status) {
