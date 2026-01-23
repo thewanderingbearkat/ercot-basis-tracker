@@ -146,7 +146,7 @@ def get_pjm_lmp_data(hours_back=4):
                 node_lmp = node_item.get('total_lmp_rt', 0)
                 hub_lmp = hub_item.get('total_lmp_rt', 0)
                 basis = node_lmp - hub_lmp
-                status = "safe" if basis > 0 else ("caution" if basis >= -100 else "alert")
+                status = "safe" if basis > 0 else ("caution" if basis >= -30 else "alert")
 
                 history.append({
                     'time': time_utc,
@@ -211,7 +211,7 @@ def get_historical_prices(hours_back=4):
             basis1 = row['BASIS_1']
             basis2 = row['BASIS_2']
             status1 = "safe" if basis1 > 0 else ("caution" if basis1 >= -100 else "alert")
-            status2 = "safe" if basis2 > 0 else ("caution" if basis2 >= -100 else "alert")
+            status2 = "safe" if basis2 > 0 else ("caution" if basis2 >= -30 else "alert")
             history.append({
                 'time': row['Interval Start'],
                 'node1_price': round(float(row['NODE_1_LMP']), 2),
@@ -307,7 +307,7 @@ def background_data_fetch():
                         basis1 = node1_price - hub_price
                         basis2 = node2_price - hub_price
                         status1 = "safe" if basis1 > 0 else ("caution" if basis1 >= -100 else "alert")
-                        status2 = "safe" if basis2 > 0 else ("caution" if basis2 >= -100 else "alert")
+                        status2 = "safe" if basis2 > 0 else ("caution" if basis2 >= -30 else "alert")
 
                         new_point = {
                             'time': latest_time,
