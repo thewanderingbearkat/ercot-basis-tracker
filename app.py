@@ -274,9 +274,9 @@ def background_data_fetch():
     logger.info("Loading existing PJM historical data from file...")
     stored_pjm_history = load_pjm_history()
 
-    # Fetch fresh PJM data from API
+    # Fetch fresh PJM data from API (get 24 hours to build better initial chart)
     logger.info("Fetching fresh PJM historical data from API...")
-    fresh_pjm_history = get_pjm_lmp_data()
+    fresh_pjm_history = get_pjm_lmp_data(hours_back=24)
 
     # Merge stored and fresh data, avoiding duplicates
     if stored_pjm_history:
@@ -551,67 +551,67 @@ def dashboard():
     </style>
 </head>
 <body style="background-color: #f8f9fa;">
-    <div class="min-h-screen p-6 md:p-12" style="background: linear-gradient(135deg, #f8f9fa 0%, #ffffff 100%);">
+    <div class="p-3 md:p-4" style="background: linear-gradient(135deg, #f8f9fa 0%, #ffffff 100%);">
         <div class="max-w-7xl mx-auto">
             <!-- Header -->
-            <div class="mb-12 pb-6" style="border-bottom: 3px solid var(--skyvest-navy);">
+            <div class="mb-3 pb-2" style="border-bottom: 2px solid var(--skyvest-navy);">
                 <div class="flex justify-between items-start">
                     <div>
-                        <h1 class="dashboard-title text-5xl mb-2" style="color: var(--skyvest-navy);">ERCOT + PJM Basis Tracker</h1>
-                        <p class="metric-label" style="color: var(--skyvest-blue);">Real-time Multi-Market Basis Analysis</p>
+                        <h1 class="dashboard-title text-2xl mb-1" style="color: var(--skyvest-navy);">ERCOT + PJM Basis Tracker</h1>
+                        <p class="metric-label text-xs" style="color: var(--skyvest-blue);">Real-time Multi-Market Basis Analysis</p>
                     </div>
                     <div class="text-right">
-                        <div id="connection" class="text-xs font-semibold px-3 py-1 rounded-full" style="background-color: var(--skyvest-light-blue); color: var(--skyvest-navy);">Connecting...</div>
+                        <div id="connection" class="text-xs font-semibold px-2 py-1 rounded-full" style="background-color: var(--skyvest-light-blue); color: var(--skyvest-navy);">Connecting...</div>
                     </div>
                 </div>
             </div>
 
             <!-- ERCOT Section -->
-            <div class="mb-8">
-                <h2 class="text-2xl font-bold mb-6" style="color: var(--skyvest-navy); border-left: 4px solid var(--skyvest-blue); padding-left: 12px;">ERCOT</h2>
+            <div class="mb-2">
+                <h2 class="text-lg font-bold mb-2" style="color: var(--skyvest-navy); border-left: 3px solid var(--skyvest-blue); padding-left: 8px;">ERCOT</h2>
             </div>
 
             <!-- ERCOT Price Cards -->
-            <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-10">
-                <div class="card rounded-sm p-6">
-                    <p class="metric-label mb-3" style="color: #666;">NBOHR_RN</p>
-                    <span id="node1" class="text-4xl font-light" style="color: var(--skyvest-navy);">N/A</span>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-2 mb-3">
+                <div class="card rounded-sm p-3">
+                    <p class="metric-label mb-1" style="color: #666;">NBOHR_RN</p>
+                    <span id="node1" class="text-2xl font-light" style="color: var(--skyvest-navy);">N/A</span>
                 </div>
-                <div class="card rounded-sm p-6">
-                    <p class="metric-label mb-3" style="color: #666;">HOLSTEIN_ALL</p>
-                    <span id="node2" class="text-4xl font-light" style="color: var(--skyvest-navy);">N/A</span>
+                <div class="card rounded-sm p-3">
+                    <p class="metric-label mb-1" style="color: #666;">HOLSTEIN_ALL</p>
+                    <span id="node2" class="text-2xl font-light" style="color: var(--skyvest-navy);">N/A</span>
                 </div>
-                <div class="card rounded-sm p-6" style="background-color: var(--skyvest-navy);">
-                    <p class="metric-label mb-3" style="color: var(--skyvest-light-blue);">HB_WEST (Hub)</p>
-                    <span id="hub" class="text-4xl font-light text-white">N/A</span>
+                <div class="card rounded-sm p-3" style="background-color: var(--skyvest-navy);">
+                    <p class="metric-label mb-1" style="color: var(--skyvest-light-blue);">HB_WEST (Hub)</p>
+                    <span id="hub" class="text-2xl font-light text-white">N/A</span>
                 </div>
             </div>
 
             <!-- ERCOT Basis Cards -->
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-10">
-                <div id="basis-card-1" class="card basis-card rounded-sm p-6">
-                    <div class="flex justify-between items-start mb-6">
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-2 mb-3">
+                <div id="basis-card-1" class="card basis-card rounded-sm p-3">
+                    <div class="flex justify-between items-start mb-2">
                         <div>
-                            <p id="basis1-label" class="metric-label mb-3" style="color: #666;">NBOHR_RN Basis</p>
-                            <span id="basis1" class="text-4xl font-bold" style="color: var(--skyvest-navy);">N/A</span>
+                            <p id="basis1-label" class="metric-label mb-1" style="color: #666;">NBOHR_RN Basis</p>
+                            <span id="basis1" class="text-3xl font-bold" style="color: var(--skyvest-navy);">N/A</span>
                         </div>
                         <div class="text-right">
-                            <p id="status1-label" class="metric-label mb-2" style="color: #999;">Status</p>
-                            <p id="status1" class="text-2xl font-bold" style="color: #666;">N/A</p>
+                            <p id="status1-label" class="metric-label mb-1" style="color: #999;">Status</p>
+                            <p id="status1" class="text-xl font-bold" style="color: #666;">N/A</p>
                         </div>
                     </div>
                     <p id="basis1-subtitle" class="text-xs" style="color: #999;">vs HB_WEST</p>
                 </div>
 
-                <div id="basis-card-2" class="card basis-card rounded-sm p-6">
-                    <div class="flex justify-between items-start mb-6">
+                <div id="basis-card-2" class="card basis-card rounded-sm p-3">
+                    <div class="flex justify-between items-start mb-2">
                         <div>
-                            <p id="basis2-label" class="metric-label mb-3" style="color: #666;">HOLSTEIN_ALL Basis</p>
-                            <span id="basis2" class="text-4xl font-bold" style="color: var(--skyvest-navy);">N/A</span>
+                            <p id="basis2-label" class="metric-label mb-1" style="color: #666;">HOLSTEIN_ALL Basis</p>
+                            <span id="basis2" class="text-3xl font-bold" style="color: var(--skyvest-navy);">N/A</span>
                         </div>
                         <div class="text-right">
-                            <p id="status2-label" class="metric-label mb-2" style="color: #999;">Status</p>
-                            <p id="status2" class="text-2xl font-bold" style="color: #666;">N/A</p>
+                            <p id="status2-label" class="metric-label mb-1" style="color: #999;">Status</p>
+                            <p id="status2" class="text-xl font-bold" style="color: #666;">N/A</p>
                         </div>
                     </div>
                     <p id="basis2-subtitle" class="text-xs" style="color: #999;">vs HB_WEST</p>
@@ -619,46 +619,46 @@ def dashboard():
             </div>
 
             <!-- ERCOT Charts -->
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-16">
-                <div class="card rounded-sm p-6">
-                    <h3 class="text-lg font-semibold mb-6" style="color: var(--skyvest-navy); border-bottom: 1px solid #e5e5e5; padding-bottom: 8px;">NBOHR_RN Basis Trend</h3>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-2 mb-3">
+                <div class="card rounded-sm p-3">
+                    <h3 class="text-sm font-semibold mb-2" style="color: var(--skyvest-navy); border-bottom: 1px solid #e5e5e5; padding-bottom: 4px;">NBOHR_RN Basis Trend</h3>
                     <div id="chart-container-1"></div>
                 </div>
 
-                <div class="card rounded-sm p-6">
-                    <h3 class="text-lg font-semibold mb-6" style="color: var(--skyvest-navy); border-bottom: 1px solid #e5e5e5; padding-bottom: 8px;">HOLSTEIN_ALL Basis Trend</h3>
+                <div class="card rounded-sm p-3">
+                    <h3 class="text-sm font-semibold mb-2" style="color: var(--skyvest-navy); border-bottom: 1px solid #e5e5e5; padding-bottom: 4px;">HOLSTEIN_ALL Basis Trend</h3>
                     <div id="chart-container-2"></div>
                 </div>
             </div>
 
             <!-- PJM Section -->
-            <div class="mb-8">
-                <h2 class="text-2xl font-bold mb-6" style="color: var(--skyvest-navy); border-left: 4px solid var(--skyvest-blue); padding-left: 12px;">PJM</h2>
+            <div class="mb-2">
+                <h2 class="text-lg font-bold mb-2" style="color: var(--skyvest-navy); border-left: 3px solid var(--skyvest-blue); padding-left: 8px;">PJM</h2>
             </div>
 
             <!-- PJM Price Cards -->
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-10">
-                <div class="card rounded-sm p-6">
-                    <p class="metric-label mb-3" style="color: #666;">HAVILAND34.5 KV NTHWSTWF</p>
-                    <span id="pjm-node" class="text-4xl font-light" style="color: var(--skyvest-navy);">N/A</span>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-2 mb-3">
+                <div class="card rounded-sm p-3">
+                    <p class="metric-label mb-1" style="color: #666;">HAVILAND34.5 KV NTHWSTWF</p>
+                    <span id="pjm-node" class="text-2xl font-light" style="color: var(--skyvest-navy);">N/A</span>
                 </div>
-                <div class="card rounded-sm p-6" style="background-color: var(--skyvest-navy);">
-                    <p class="metric-label mb-3" style="color: var(--skyvest-light-blue);">AEP-DAYTON HUB</p>
-                    <span id="pjm-hub" class="text-4xl font-light text-white">N/A</span>
+                <div class="card rounded-sm p-3" style="background-color: var(--skyvest-navy);">
+                    <p class="metric-label mb-1" style="color: var(--skyvest-light-blue);">AEP-DAYTON HUB</p>
+                    <span id="pjm-hub" class="text-2xl font-light text-white">N/A</span>
                 </div>
             </div>
 
             <!-- PJM Basis Card -->
-            <div class="grid grid-cols-1 gap-4 mb-10">
-                <div id="pjm-basis-card" class="card basis-card rounded-sm p-6">
-                    <div class="flex justify-between items-start mb-6">
+            <div class="grid grid-cols-1 gap-2 mb-3">
+                <div id="pjm-basis-card" class="card basis-card rounded-sm p-3">
+                    <div class="flex justify-between items-start mb-2">
                         <div>
-                            <p id="pjm-basis-label" class="metric-label mb-3" style="color: #666;">HAVILAND Basis</p>
-                            <span id="pjm-basis" class="text-4xl font-bold" style="color: var(--skyvest-navy);">N/A</span>
+                            <p id="pjm-basis-label" class="metric-label mb-1" style="color: #666;">HAVILAND Basis</p>
+                            <span id="pjm-basis" class="text-3xl font-bold" style="color: var(--skyvest-navy);">N/A</span>
                         </div>
                         <div class="text-right">
-                            <p id="pjm-status-label" class="metric-label mb-2" style="color: #999;">Status</p>
-                            <p id="pjm-status" class="text-2xl font-bold" style="color: #666;">N/A</p>
+                            <p id="pjm-status-label" class="metric-label mb-1" style="color: #999;">Status</p>
+                            <p id="pjm-status" class="text-xl font-bold" style="color: #666;">N/A</p>
                         </div>
                     </div>
                     <p id="pjm-basis-subtitle" class="text-xs" style="color: #999;">vs AEP-DAYTON HUB</p>
@@ -666,9 +666,9 @@ def dashboard():
             </div>
 
             <!-- PJM Chart -->
-            <div class="grid grid-cols-1 gap-4 mb-10">
-                <div class="card rounded-sm p-6">
-                    <h3 class="text-lg font-semibold mb-6" style="color: var(--skyvest-navy); border-bottom: 1px solid #e5e5e5; padding-bottom: 8px;">HAVILAND Basis Trend</h3>
+            <div class="grid grid-cols-1 gap-2 mb-3">
+                <div class="card rounded-sm p-3">
+                    <h3 class="text-sm font-semibold mb-2" style="color: var(--skyvest-navy); border-bottom: 1px solid #e5e5e5; padding-bottom: 4px;">HAVILAND Basis Trend</h3>
                     <div id="pjm-chart-container"></div>
                 </div>
             </div>
@@ -886,7 +886,7 @@ def dashboard():
             bars.style.gap = '2px';
             bars.style.borderBottom = '1px solid #e5e5e5';
             bars.style.paddingBottom = '8px';
-            bars.style.minHeight = '200px';
+            bars.style.minHeight = '120px';
             bars.style.position = 'relative';
 
             // Add horizontal gridlines
@@ -1033,7 +1033,7 @@ def dashboard():
             bars.style.gap = '2px';
             bars.style.borderBottom = '1px solid #e5e5e5';
             bars.style.paddingBottom = '8px';
-            bars.style.minHeight = '200px';
+            bars.style.minHeight = '120px';
             bars.style.position = 'relative';
 
             // Add horizontal gridlines
