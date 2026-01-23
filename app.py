@@ -915,7 +915,12 @@ def dashboard():
                 const color = getStatusColorHex(point[statusField]);
 
                 const time = new Date(point.time);
-                const timeStr = time.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+                const timeStr = time.toLocaleTimeString('en-US', {
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    hour12: false,
+                    timeZone: 'America/Chicago'
+                });
 
                 const bar = document.createElement('div');
                 bar.style.flex = '1';
@@ -960,10 +965,20 @@ def dashboard():
                 const lastTime = new Date(history[history.length - 1].time);
 
                 const startLabel = document.createElement('span');
-                startLabel.textContent = firstTime.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+                startLabel.textContent = firstTime.toLocaleTimeString('en-US', {
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    hour12: false,
+                    timeZone: 'America/Chicago'
+                });
 
                 const endLabel = document.createElement('span');
-                endLabel.textContent = lastTime.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+                endLabel.textContent = lastTime.toLocaleTimeString('en-US', {
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    hour12: false,
+                    timeZone: 'America/Chicago'
+                });
 
                 timeContainer.appendChild(startLabel);
                 timeContainer.appendChild(endLabel);
@@ -1061,7 +1076,12 @@ def dashboard():
                 const color = getStatusColorHex(point.status);
 
                 const time = new Date(point.time);
-                const timeStr = time.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+                const timeStr = time.toLocaleTimeString('en-US', {
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    hour12: false,
+                    timeZone: 'America/Chicago'
+                });
 
                 const bar = document.createElement('div');
                 bar.style.flex = '1';
@@ -1106,10 +1126,20 @@ def dashboard():
                 const lastTime = new Date(recentHistory[recentHistory.length - 1].time);
 
                 const startLabel = document.createElement('span');
-                startLabel.textContent = firstTime.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+                startLabel.textContent = firstTime.toLocaleTimeString('en-US', {
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    hour12: false,
+                    timeZone: 'America/Chicago'
+                });
 
                 const endLabel = document.createElement('span');
-                endLabel.textContent = lastTime.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+                endLabel.textContent = lastTime.toLocaleTimeString('en-US', {
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    hour12: false,
+                    timeZone: 'America/Chicago'
+                });
 
                 timeContainer.appendChild(startLabel);
                 timeContainer.appendChild(endLabel);
