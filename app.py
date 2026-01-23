@@ -420,10 +420,7 @@ def background_data_fetch():
 
         except Exception as e:
             logger.error(f"Error in background fetch: {e}")
-            with data_lock:
-                latest_data["status1"] = "error"
-                latest_data["status2"] = "error"
-                latest_data["pjm_status"] = "error"
+            # Keep last known good data instead of setting status to error
             time.sleep(60)
 
 # Flag to track if background thread has started in this process
