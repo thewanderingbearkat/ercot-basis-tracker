@@ -919,7 +919,7 @@ def dashboard():
                     hour: '2-digit',
                     minute: '2-digit',
                     hour12: false,
-                    timeZone: 'America/Chicago'
+                    timeZone: 'America/New_York'
                 });
 
                 const bar = document.createElement('div');
@@ -969,7 +969,7 @@ def dashboard():
                     hour: '2-digit',
                     minute: '2-digit',
                     hour12: false,
-                    timeZone: 'America/Chicago'
+                    timeZone: 'America/New_York'
                 });
 
                 const endLabel = document.createElement('span');
@@ -977,7 +977,7 @@ def dashboard():
                     hour: '2-digit',
                     minute: '2-digit',
                     hour12: false,
-                    timeZone: 'America/Chicago'
+                    timeZone: 'America/New_York'
                 });
 
                 timeContainer.appendChild(startLabel);
@@ -1080,7 +1080,7 @@ def dashboard():
                     hour: '2-digit',
                     minute: '2-digit',
                     hour12: false,
-                    timeZone: 'America/Chicago'
+                    timeZone: 'America/New_York'
                 });
 
                 const bar = document.createElement('div');
@@ -1130,7 +1130,7 @@ def dashboard():
                     hour: '2-digit',
                     minute: '2-digit',
                     hour12: false,
-                    timeZone: 'America/Chicago'
+                    timeZone: 'America/New_York'
                 });
 
                 const endLabel = document.createElement('span');
@@ -1138,7 +1138,7 @@ def dashboard():
                     hour: '2-digit',
                     minute: '2-digit',
                     hour12: false,
-                    timeZone: 'America/Chicago'
+                    timeZone: 'America/New_York'
                 });
 
                 timeContainer.appendChild(startLabel);
