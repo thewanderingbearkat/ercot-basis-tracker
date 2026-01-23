@@ -1,9 +1,10 @@
 from flask import Flask, jsonify, request, redirect, session
 from flask_cors import CORS
 from gridstatus import Ercot
+import requests
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from functools import wraps
 import logging
@@ -17,29 +18,48 @@ app = Flask(__name__)
 CORS(app)
 app.secret_key = os.getenv('SECRET_KEY', 'your-secret-key-change-this')
 
-# Configuration
+# Configuration - ERCOT
 NODE_1 = "NBOHR_RN"
 NODE_2 = "HOLSTEIN_ALL"
 HUB = "HB_WEST"
+
+# Configuration - PJM
+PJM_NODE = "HAVILAND34.5 KV NTHWSTWF"
+PJM_HUB = "AEP-DAYTON HUB"
+PJM_NODE_ID = 1318144721
+PJM_HUB_ID = 34497127
+
+# Thresholds
 ALERT_THRESHOLD = 100
 GREEN_THRESHOLD = -100
-DASHBOARD_PASSWORD = os.getenv('DASHBOARD_PASSWORD', 'arclight2024')
+DASHBOARD_PASSWORD = os.getenv('DASHBOARD_PASSWORD', 'SV2026!!!')
 
 # Global state
 data_lock = threading.Lock()
 latest_data = {
+    # ERCOT data
     "node1_price": None,
     "node2_price": None,
     "hub_price": None,
     "basis1": None,  # NODE_1 vs HUB
     "basis2": None,  # NODE_2 vs HUB
-    "last_update": None,
-    "data_time": None,
     "status1": "initializing",
     "status2": "initializing",
-    "history": []
+    "history": [],
+
+    # PJM data
+    "pjm_node_price": None,
+    "pjm_hub_price": None,
+    "pjm_basis": None,  # PJM_NODE vs PJM_HUB
+    "pjm_status": "initializing",
+    "pjm_history": [],
+
+    # Metadata
+    "last_update": None,
+    "data_time": None,
 }
 last_basis_time = None
+last_pjm_time = None
 
 # Login decorator
 def login_required(f):
@@ -50,7 +70,103 @@ def login_required(f):
         return f(*args, **kwargs)
     return decorated_function
 
-# Helper functions
+# PJM API Helper Functions
+def get_pjm_subscription_key():
+    """Get the public PJM API subscription key."""
+    try:
+        response = requests.get("http://dataminer2.pjm.com/config/settings.json", timeout=10)
+        settings = response.json()
+        return settings.get("subscriptionKey")
+    except Exception as e:
+        logger.error(f"Error getting PJM subscription key: {e}")
+        return None
+
+def get_pjm_lmp_data(hours_back=4):
+    """Fetch PJM LMP data from the unverified 5-minute feed."""
+    try:
+        # Get subscription key
+        key = get_pjm_subscription_key()
+        if not key:
+            logger.error("Could not get PJM subscription key")
+            return []
+
+        headers = {"Ocp-Apim-Subscription-Key": key}
+
+        # Find the unverified 5-minute feed
+        response = requests.get("https://api.pjm.com/api/v1/", headers=headers, timeout=10)
+        feeds = response.json()
+
+        feed_url = None
+        for item in feeds.get('items', []):
+            if item.get('name') == 'rt_unverified_fivemin_lmps':
+                feed_url = item['links'][0]['href']
+                break
+
+        if not feed_url:
+            logger.error("Could not find PJM unverified 5-minute LMP feed")
+            return []
+
+        # Fetch data from the last N hours
+        from datetime import timezone as tz
+        now = datetime.now(tz.utc)
+        start_time = (now - timedelta(hours=hours_back)).strftime('%Y-%m-%dT%H:%M:%S')
+        end_time = now.strftime('%Y-%m-%dT%H:%M:%S')
+
+        params = {
+            'datetime_beginning_utc': f'{start_time} to {end_time}',
+            'startRow': 1,
+            'rowCount': 10000
+        }
+
+        response = requests.get(feed_url, headers=headers, params=params, timeout=30)
+
+        if response.status_code != 200:
+            logger.error(f"PJM API returned status {response.status_code}")
+            return []
+
+        data = response.json()
+        all_items = data.get('items', [])
+
+        if not all_items:
+            logger.warning("No PJM data available")
+            return []
+
+        # Filter for our specific nodes
+        node_items = [item for item in all_items if item.get('pnode_id') == PJM_NODE_ID]
+        hub_items = [item for item in all_items if item.get('pnode_id') == PJM_HUB_ID]
+
+        # Create merged data
+        history = []
+        for node_item in node_items:
+            time_utc = node_item.get('datetime_beginning_utc')
+            # Find matching hub item
+            hub_item = next((h for h in hub_items if h.get('datetime_beginning_utc') == time_utc), None)
+
+            if hub_item:
+                node_lmp = node_item.get('total_lmp_rt', 0)
+                hub_lmp = hub_item.get('total_lmp_rt', 0)
+                basis = node_lmp - hub_lmp
+                status = "safe" if basis > 0 else ("caution" if basis >= -100 else "alert")
+
+                history.append({
+                    'time': time_utc,
+                    'node_price': round(float(node_lmp), 2),
+                    'hub_price': round(float(hub_lmp), 2),
+                    'basis': round(float(basis), 2),
+                    'status': status
+                })
+
+        # Sort by time
+        history.sort(key=lambda x: x['time'])
+
+        logger.info(f"Fetched {len(history)} PJM historical data points")
+        return history
+
+    except Exception as e:
+        logger.error(f"Error fetching PJM data: {e}")
+        return []
+
+# ERCOT Helper Functions
 def get_historical_prices(hours_back=4):
     try:
         cst_tz = ZoneInfo("US/Central")
@@ -114,21 +230,30 @@ def get_historical_prices(hours_back=4):
         return []
 
 def background_data_fetch():
-    global last_basis_time, latest_data
-    
-    logger.info("Fetching initial historical data...")
+    global last_basis_time, last_pjm_time, latest_data
+
+    # Fetch initial ERCOT data
+    logger.info("Fetching initial ERCOT historical data...")
     initial_history = get_historical_prices()
-    
-    logger.info(f"Got {len(initial_history)} points from get_historical_prices")
+
+    logger.info(f"Got {len(initial_history)} ERCOT points")
     if initial_history:
-        logger.info(f"First point: {initial_history[0]}")
-        logger.info(f"Last point: {initial_history[-1]}")
-    
+        logger.info(f"First ERCOT point: {initial_history[0]}")
+        logger.info(f"Last ERCOT point: {initial_history[-1]}")
+
+    # Fetch initial PJM data
+    logger.info("Fetching initial PJM historical data...")
+    initial_pjm_history = get_pjm_lmp_data()
+
+    logger.info(f"Got {len(initial_pjm_history)} PJM points")
+    if initial_pjm_history:
+        logger.info(f"First PJM point: {initial_pjm_history[0]}")
+        logger.info(f"Last PJM point: {initial_pjm_history[-1]}")
+
     with data_lock:
+        # Update ERCOT data
         latest_data["history"] = initial_history
         if initial_history:
-            # FIX: Populate the latest price fields from the most recent historical data point
-            # This ensures the API returns valid data immediately after startup
             last_point = initial_history[-1]
             latest_data["node1_price"] = last_point['node1_price']
             latest_data["node2_price"] = last_point['node2_price']
@@ -138,77 +263,111 @@ def background_data_fetch():
             latest_data["status1"] = last_point['status1']
             latest_data["status2"] = last_point['status2']
             latest_data["data_time"] = str(last_point['time'])
-            latest_data["last_update"] = datetime.now().isoformat()
             last_basis_time = last_point['time']
-            logger.info(f"Updated latest_data: node1={latest_data['node1_price']}, basis1={latest_data['basis1']}, history_count={len(latest_data['history'])}")
-    
-    logger.info(f"Loaded {len(initial_history)} historical data points")
-    
+            logger.info(f"Updated ERCOT latest_data: node1=${latest_data['node1_price']}, basis1=${latest_data['basis1']}")
+
+        # Update PJM data
+        latest_data["pjm_history"] = initial_pjm_history
+        if initial_pjm_history:
+            last_pjm_point = initial_pjm_history[-1]
+            latest_data["pjm_node_price"] = last_pjm_point['node_price']
+            latest_data["pjm_hub_price"] = last_pjm_point['hub_price']
+            latest_data["pjm_basis"] = last_pjm_point['basis']
+            latest_data["pjm_status"] = last_pjm_point['status']
+            last_pjm_time = last_pjm_point['time']
+            logger.info(f"Updated PJM latest_data: node=${latest_data['pjm_node_price']}, basis=${latest_data['pjm_basis']}")
+
+        latest_data["last_update"] = datetime.now().isoformat()
+
+    logger.info(f"Loaded {len(initial_history)} ERCOT + {len(initial_pjm_history)} PJM historical data points")
+
     # Signal that initial data is ready
     logger.info("Initial data ready, entering update loop")
     
     while True:
         try:
+            # Fetch ERCOT data
             ercot = Ercot()
             lmp_data = ercot.get_lmp(date="latest", location_type="settlement point")
-            
-            if lmp_data is None or len(lmp_data) == 0:
-                logger.warning("No real-time data available")
-                time.sleep(120)
-                continue
-            
-            latest_time = lmp_data['Interval Start'].max()
-            
-            if latest_time != last_basis_time:
-                latest_data_df = lmp_data[lmp_data['Interval Start'] == latest_time]
-                
-                node1_data = latest_data_df[latest_data_df['Location'] == NODE_1]
-                node2_data = latest_data_df[latest_data_df['Location'] == NODE_2]
-                hub_data = latest_data_df[latest_data_df['Location'] == HUB]
-                
-                if len(node1_data) > 0 and len(node2_data) > 0 and len(hub_data) > 0:
-                    node1_price = float(node1_data['LMP'].values[0])
-                    node2_price = float(node2_data['LMP'].values[0])
-                    hub_price = float(hub_data['LMP'].values[0])
-                    basis1 = node1_price - hub_price
-                    basis2 = node2_price - hub_price
-                    status1 = "safe" if basis1 > 0 else ("caution" if basis1 >= -100 else "alert")
-                    status2 = "safe" if basis2 > 0 else ("caution" if basis2 >= -100 else "alert")
-                    
-                    new_point = {
-                        'time': latest_time,
-                        'node1_price': round(node1_price, 2),
-                        'node2_price': round(node2_price, 2),
-                        'hub_price': round(hub_price, 2),
-                        'basis1': round(basis1, 2),
-                        'basis2': round(basis2, 2),
-                        'status1': status1,
-                        'status2': status2
-                    }
-                    
+
+            if lmp_data is not None and len(lmp_data) > 0:
+                latest_time = lmp_data['Interval Start'].max()
+
+                if latest_time != last_basis_time:
+                    latest_data_df = lmp_data[lmp_data['Interval Start'] == latest_time]
+
+                    node1_data = latest_data_df[latest_data_df['Location'] == NODE_1]
+                    node2_data = latest_data_df[latest_data_df['Location'] == NODE_2]
+                    hub_data = latest_data_df[latest_data_df['Location'] == HUB]
+
+                    if len(node1_data) > 0 and len(node2_data) > 0 and len(hub_data) > 0:
+                        node1_price = float(node1_data['LMP'].values[0])
+                        node2_price = float(node2_data['LMP'].values[0])
+                        hub_price = float(hub_data['LMP'].values[0])
+                        basis1 = node1_price - hub_price
+                        basis2 = node2_price - hub_price
+                        status1 = "safe" if basis1 > 0 else ("caution" if basis1 >= -100 else "alert")
+                        status2 = "safe" if basis2 > 0 else ("caution" if basis2 >= -100 else "alert")
+
+                        new_point = {
+                            'time': latest_time,
+                            'node1_price': round(node1_price, 2),
+                            'node2_price': round(node2_price, 2),
+                            'hub_price': round(hub_price, 2),
+                            'basis1': round(basis1, 2),
+                            'basis2': round(basis2, 2),
+                            'status1': status1,
+                            'status2': status2
+                        }
+
+                        with data_lock:
+                            latest_data["node1_price"] = new_point['node1_price']
+                            latest_data["node2_price"] = new_point['node2_price']
+                            latest_data["hub_price"] = new_point['hub_price']
+                            latest_data["basis1"] = new_point['basis1']
+                            latest_data["basis2"] = new_point['basis2']
+                            latest_data["last_update"] = datetime.now().isoformat()
+                            latest_data["data_time"] = str(latest_time)
+                            latest_data["status1"] = status1
+                            latest_data["status2"] = status2
+                            latest_data["history"].append(new_point)
+                            latest_data["history"] = latest_data["history"][-100:]
+
+                        last_basis_time = latest_time
+                        logger.info(f"ERCOT update: {NODE_1}=${new_point['node1_price']}, {NODE_2}=${new_point['node2_price']}, Basis1=${new_point['basis1']}, Basis2=${new_point['basis2']}")
+            else:
+                logger.warning("No ERCOT real-time data available")
+
+            # Fetch PJM data (fetches last 1 hour to get latest)
+            pjm_data = get_pjm_lmp_data(hours_back=1)
+            if pjm_data and len(pjm_data) > 0:
+                # Get the most recent PJM point
+                latest_pjm_point = pjm_data[-1]
+                latest_pjm_time = latest_pjm_point['time']
+
+                if latest_pjm_time != last_pjm_time:
                     with data_lock:
-                        latest_data["node1_price"] = new_point['node1_price']
-                        latest_data["node2_price"] = new_point['node2_price']
-                        latest_data["hub_price"] = new_point['hub_price']
-                        latest_data["basis1"] = new_point['basis1']
-                        latest_data["basis2"] = new_point['basis2']
+                        latest_data["pjm_node_price"] = latest_pjm_point['node_price']
+                        latest_data["pjm_hub_price"] = latest_pjm_point['hub_price']
+                        latest_data["pjm_basis"] = latest_pjm_point['basis']
+                        latest_data["pjm_status"] = latest_pjm_point['status']
+                        latest_data["pjm_history"].append(latest_pjm_point)
+                        latest_data["pjm_history"] = latest_data["pjm_history"][-100:]
                         latest_data["last_update"] = datetime.now().isoformat()
-                        latest_data["data_time"] = str(latest_time)
-                        latest_data["status1"] = status1
-                        latest_data["status2"] = status2
-                        latest_data["history"].append(new_point)
-                        latest_data["history"] = latest_data["history"][-100:]
-                    
-                    last_basis_time = latest_time
-                    logger.info(f"New point: {NODE_1}=${new_point['node1_price']}, {NODE_2}=${new_point['node2_price']}, {HUB}=${new_point['hub_price']}, Basis1=${new_point['basis1']}, Basis2=${new_point['basis2']}, Total history: {len(latest_data['history'])}")
-            
+
+                    last_pjm_time = latest_pjm_time
+                    logger.info(f"PJM update: {PJM_NODE}=${latest_pjm_point['node_price']}, {PJM_HUB}=${latest_pjm_point['hub_price']}, Basis=${latest_pjm_point['basis']}")
+            else:
+                logger.warning("No PJM data available")
+
             time.sleep(120)
-            
+
         except Exception as e:
             logger.error(f"Error in background fetch: {e}")
             with data_lock:
                 latest_data["status1"] = "error"
                 latest_data["status2"] = "error"
+                latest_data["pjm_status"] = "error"
             time.sleep(60)
 
 # Flag to track if background thread has started in this process
@@ -253,15 +412,20 @@ def login():
 def get_basis():
     # Ensure background thread is running in this worker process
     start_background_thread_if_needed()
-    
+
     with data_lock:
-        # Return current state (may be empty if still loading)
-        logger.info(f"API called - data: node1={latest_data['node1_price']}, node2={latest_data['node2_price']}, hub={latest_data['hub_price']}, basis1={latest_data['basis1']}, basis2={latest_data['basis2']}, history_count={len(latest_data['history'])}")
+        # Return current state (includes both ERCOT and PJM data)
+        logger.info(f"API called - ERCOT: node1=${latest_data['node1_price']}, basis1=${latest_data['basis1']}, history={len(latest_data['history'])} | PJM: node=${latest_data['pjm_node_price']}, basis=${latest_data['pjm_basis']}, history={len(latest_data['pjm_history'])}")
         return jsonify(latest_data)
 
 @app.route('/api/health', methods=['GET'])
 def health():
-    return jsonify({"status": "ok", "data_status1": latest_data["status1"], "data_status2": latest_data["status2"]})
+    return jsonify({
+        "status": "ok",
+        "ercot_status1": latest_data["status1"],
+        "ercot_status2": latest_data["status2"],
+        "pjm_status": latest_data["pjm_status"]
+    })
 
 @app.route('/', methods=['GET'])
 @login_required
@@ -271,7 +435,7 @@ def dashboard():
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ERCOT Basis Tracker</title>
+    <title>ERCOT + PJM Basis Tracker</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
         /* SkyVest Color Palette */
@@ -340,8 +504,8 @@ def dashboard():
             <div class="mb-12 pb-6" style="border-bottom: 3px solid var(--skyvest-navy);">
                 <div class="flex justify-between items-start">
                     <div>
-                        <h1 class="dashboard-title text-5xl mb-2" style="color: var(--skyvest-navy);">ERCOT Basis Tracker</h1>
-                        <p class="metric-label" style="color: var(--skyvest-blue);">Real-time Settlement Point Analysis</p>
+                        <h1 class="dashboard-title text-5xl mb-2" style="color: var(--skyvest-navy);">ERCOT + PJM Basis Tracker</h1>
+                        <p class="metric-label" style="color: var(--skyvest-blue);">Real-time Multi-Market Basis Analysis</p>
                     </div>
                     <div class="text-right">
                         <div id="connection" class="text-xs font-semibold px-3 py-1 rounded-full" style="background-color: var(--skyvest-light-blue); color: var(--skyvest-navy);">Connecting...</div>
@@ -349,7 +513,12 @@ def dashboard():
                 </div>
             </div>
 
-            <!-- Price Cards -->
+            <!-- ERCOT Section -->
+            <div class="mb-8">
+                <h2 class="text-2xl font-bold mb-6" style="color: var(--skyvest-navy); border-left: 4px solid var(--skyvest-blue); padding-left: 12px;">ERCOT</h2>
+            </div>
+
+            <!-- ERCOT Price Cards -->
             <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-10">
                 <div class="card rounded-sm p-6">
                     <p class="metric-label mb-3" style="color: #666;">NBOHR_RN</p>
@@ -365,7 +534,7 @@ def dashboard():
                 </div>
             </div>
 
-            <!-- Basis Cards -->
+            <!-- ERCOT Basis Cards -->
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-10">
                 <div id="basis-card-1" class="card basis-card rounded-sm p-6">
                     <div class="flex justify-between items-start mb-6">
@@ -396,8 +565,8 @@ def dashboard():
                 </div>
             </div>
 
-            <!-- Charts -->
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-10">
+            <!-- ERCOT Charts -->
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-16">
                 <div class="card rounded-sm p-6">
                     <h3 class="text-lg font-semibold mb-6" style="color: var(--skyvest-navy); border-bottom: 1px solid #e5e5e5; padding-bottom: 8px;">NBOHR_RN Basis Trend</h3>
                     <div id="chart-container-1"></div>
@@ -408,9 +577,51 @@ def dashboard():
                     <div id="chart-container-2"></div>
                 </div>
             </div>
+
+            <!-- PJM Section -->
+            <div class="mb-8">
+                <h2 class="text-2xl font-bold mb-6" style="color: var(--skyvest-navy); border-left: 4px solid var(--skyvest-blue); padding-left: 12px;">PJM</h2>
+            </div>
+
+            <!-- PJM Price Cards -->
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-10">
+                <div class="card rounded-sm p-6">
+                    <p class="metric-label mb-3" style="color: #666;">HAVILAND34.5 KV NTHWSTWF</p>
+                    <span id="pjm-node" class="text-4xl font-light" style="color: var(--skyvest-navy);">N/A</span>
+                </div>
+                <div class="card rounded-sm p-6" style="background-color: var(--skyvest-navy);">
+                    <p class="metric-label mb-3" style="color: var(--skyvest-light-blue);">AEP-DAYTON HUB</p>
+                    <span id="pjm-hub" class="text-4xl font-light text-white">N/A</span>
+                </div>
+            </div>
+
+            <!-- PJM Basis Card -->
+            <div class="grid grid-cols-1 gap-4 mb-10">
+                <div id="pjm-basis-card" class="card basis-card rounded-sm p-6">
+                    <div class="flex justify-between items-start mb-6">
+                        <div>
+                            <p id="pjm-basis-label" class="metric-label mb-3" style="color: #666;">HAVILAND Basis</p>
+                            <span id="pjm-basis" class="text-4xl font-bold" style="color: var(--skyvest-navy);">N/A</span>
+                        </div>
+                        <div class="text-right">
+                            <p id="pjm-status-label" class="metric-label mb-2" style="color: #999;">Status</p>
+                            <p id="pjm-status" class="text-2xl font-bold" style="color: #666;">N/A</p>
+                        </div>
+                    </div>
+                    <p id="pjm-basis-subtitle" class="text-xs" style="color: #999;">vs AEP-DAYTON HUB</p>
+                </div>
+            </div>
+
+            <!-- PJM Chart -->
+            <div class="grid grid-cols-1 gap-4 mb-10">
+                <div class="card rounded-sm p-6">
+                    <h3 class="text-lg font-semibold mb-6" style="color: var(--skyvest-navy); border-bottom: 1px solid #e5e5e5; padding-bottom: 8px;">HAVILAND Basis Trend</h3>
+                    <div id="pjm-chart-container"></div>
+                </div>
+            </div>
         </div>
     </div>
-    
+
     <script>
         const API_URL = window.location.protocol + '//' + window.location.host + '/api/basis';
         
@@ -419,24 +630,37 @@ def dashboard():
                 const response = await fetch(API_URL);
                 const data = await response.json();
                 
+                // Update ERCOT data
                 document.getElementById('node1').textContent = data.node1_price ? '$' + data.node1_price.toFixed(2) : 'N/A';
                 document.getElementById('node2').textContent = data.node2_price ? '$' + data.node2_price.toFixed(2) : 'N/A';
                 document.getElementById('hub').textContent = data.hub_price ? '$' + data.hub_price.toFixed(2) : 'N/A';
                 document.getElementById('basis1').textContent = data.basis1 ? '$' + data.basis1.toFixed(2) : 'N/A';
                 document.getElementById('basis2').textContent = data.basis2 ? '$' + data.basis2.toFixed(2) : 'N/A';
-                
-                // Apply status styling to basis card 1
+
+                // Update PJM data
+                document.getElementById('pjm-node').textContent = data.pjm_node_price ? '$' + data.pjm_node_price.toFixed(2) : 'N/A';
+                document.getElementById('pjm-hub').textContent = data.pjm_hub_price ? '$' + data.pjm_hub_price.toFixed(2) : 'N/A';
+                document.getElementById('pjm-basis').textContent = data.pjm_basis ? '$' + data.pjm_basis.toFixed(2) : 'N/A';
+
+                // Apply status styling to ERCOT basis card 1
                 if (data.status1) {
                     const card1 = document.getElementById('basis-card-1');
                     const style1 = getCardStyle(data.status1);
                     applyCardStyling(card1, style1, 'basis1', 'status1', data.status1);
                 }
 
-                // Apply status styling to basis card 2
+                // Apply status styling to ERCOT basis card 2
                 if (data.status2) {
                     const card2 = document.getElementById('basis-card-2');
                     const style2 = getCardStyle(data.status2);
                     applyCardStyling(card2, style2, 'basis2', 'status2', data.status2);
+                }
+
+                // Apply status styling to PJM basis card
+                if (data.pjm_status) {
+                    const pjmCard = document.getElementById('pjm-basis-card');
+                    const pjmStyle = getCardStyle(data.pjm_status);
+                    applyCardStyling(pjmCard, pjmStyle, 'pjm-basis', 'pjm-status', data.pjm_status);
                 }
                 
                 const connEl = document.getElementById('connection');
@@ -444,9 +668,15 @@ def dashboard():
                 connEl.style.backgroundColor = '#2291EB';
                 connEl.style.color = 'white';
 
+                // Render ERCOT charts
                 if (data.history && data.history.length > 0) {
                     renderChart(data.history, 'chart-container-1', 'basis1');
                     renderChart(data.history, 'chart-container-2', 'basis2');
+                }
+
+                // Render PJM chart
+                if (data.pjm_history && data.pjm_history.length > 0) {
+                    renderPJMChart(data.pjm_history, 'pjm-chart-container');
                 }
             } catch (error) {
                 console.error('Error:', error);
@@ -689,6 +919,148 @@ def dashboard():
             timeLabels.appendChild(spacer);
             timeLabels.appendChild(timeContainer);
             
+            chartWrapper.appendChild(chart);
+            chartWrapper.appendChild(timeLabels);
+            container.appendChild(chartWrapper);
+        }
+
+        function renderPJMChart(history, containerId) {
+            const container = document.getElementById(containerId);
+            if (!container) return;
+
+            container.innerHTML = '';
+
+            if (!history || history.length === 0) {
+                container.innerHTML = '<p style="color: #999; text-align: center; padding: 40px;">No data available</p>';
+                return;
+            }
+
+            const chartWrapper = document.createElement('div');
+
+            // Calculate Y-axis range
+            const basisValues = history.map(p => p.basis);
+            const minBasis = Math.min(...basisValues);
+            const maxBasis = Math.max(...basisValues);
+            const padding = Math.max(10, (maxBasis - minBasis) * 0.1);
+            const yMin = Math.floor((minBasis - padding) / 10) * 10;
+            const yMax = Math.ceil((maxBasis + padding) / 10) * 10;
+            const yRange = yMax - yMin;
+            const step = Math.max(10, Math.ceil(yRange / 5 / 10) * 10);
+
+            const chart = document.createElement('div');
+            chart.style.display = 'grid';
+            chart.style.gridTemplateColumns = '60px 1fr';
+            chart.style.gap = '8px';
+
+            const yAxis = document.createElement('div');
+            yAxis.style.display = 'flex';
+            yAxis.style.flexDirection = 'column';
+            yAxis.style.justifyContent = 'space-between';
+            yAxis.style.textAlign = 'right';
+            yAxis.style.paddingRight = '12px';
+            yAxis.style.fontSize = '11px';
+            yAxis.style.color = '#999';
+            yAxis.style.fontWeight = '400';
+            yAxis.style.borderRight = '1px solid #e5e5e5';
+
+            for (let i = yMax; i >= yMin; i -= step) {
+                const label = document.createElement('div');
+                label.textContent = '$' + i;
+                label.style.padding = '4px 0';
+                yAxis.appendChild(label);
+            }
+
+            const bars = document.createElement('div');
+            bars.style.display = 'flex';
+            bars.style.alignItems = 'flex-end';
+            bars.style.gap = '2px';
+            bars.style.borderBottom = '1px solid #e5e5e5';
+            bars.style.paddingBottom = '8px';
+            bars.style.minHeight = '200px';
+            bars.style.position = 'relative';
+
+            // Add horizontal gridlines
+            const gridContainer = document.createElement('div');
+            gridContainer.style.position = 'absolute';
+            gridContainer.style.width = '100%';
+            gridContainer.style.height = '100%';
+            gridContainer.style.pointerEvents = 'none';
+
+            for (let i = yMax; i >= yMin; i -= step) {
+                const gridLine = document.createElement('div');
+                const position = ((i - yMin) / yRange) * 100;
+                gridLine.style.position = 'absolute';
+                gridLine.style.bottom = position + '%';
+                gridLine.style.width = '100%';
+                gridLine.style.height = '1px';
+                gridLine.style.backgroundColor = '#f5f5f5';
+                gridContainer.appendChild(gridLine);
+            }
+            bars.appendChild(gridContainer);
+
+            history.forEach((point, idx) => {
+                const basisValue = point.basis;
+                const heightPercent = ((basisValue - yMin) / yRange) * 100;
+                const color = getStatusColorHex(point.status);
+
+                const time = new Date(point.time);
+                const timeStr = time.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+
+                const bar = document.createElement('div');
+                bar.style.flex = '1';
+                bar.style.height = Math.max(heightPercent, 5) + '%';
+                bar.style.backgroundColor = color;
+                bar.style.opacity = '0.85';
+                bar.style.borderRadius = '2px 2px 0 0';
+                bar.style.minHeight = '5px';
+                bar.style.position = 'relative';
+                bar.style.transition = 'opacity 0.2s';
+                bar.title = timeStr + ': $' + basisValue.toFixed(2);
+                bar.addEventListener('mouseenter', () => bar.style.opacity = '1');
+                bar.addEventListener('mouseleave', () => bar.style.opacity = '0.85');
+                bars.appendChild(bar);
+            });
+
+            chart.appendChild(yAxis);
+            chart.appendChild(bars);
+
+            // Add time labels
+            const timeLabels = document.createElement('div');
+            timeLabels.style.display = 'grid';
+            timeLabels.style.gridTemplateColumns = '60px 1fr';
+            timeLabels.style.gap = '8px';
+            timeLabels.style.marginTop = '4px';
+
+            const spacer = document.createElement('div');
+
+            const timeContainer = document.createElement('div');
+            timeContainer.style.display = 'flex';
+            timeContainer.style.justifyContent = 'space-between';
+            timeContainer.style.fontSize = '10px';
+            timeContainer.style.color = '#999';
+            timeContainer.style.paddingLeft = '4px';
+            timeContainer.style.paddingRight = '4px';
+            timeContainer.style.fontWeight = '400';
+            timeContainer.style.textTransform = 'uppercase';
+            timeContainer.style.letterSpacing = '0.05em';
+
+            if (history.length > 0) {
+                const firstTime = new Date(history[0].time);
+                const lastTime = new Date(history[history.length - 1].time);
+
+                const startLabel = document.createElement('span');
+                startLabel.textContent = firstTime.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+
+                const endLabel = document.createElement('span');
+                endLabel.textContent = lastTime.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+
+                timeContainer.appendChild(startLabel);
+                timeContainer.appendChild(endLabel);
+            }
+
+            timeLabels.appendChild(spacer);
+            timeLabels.appendChild(timeContainer);
+
             chartWrapper.appendChild(chart);
             chartWrapper.appendChild(timeLabels);
             container.appendChild(chartWrapper);
