@@ -988,10 +988,14 @@ def dashboard():
                 return;
             }
 
+            // Filter to show only last 4 hours of data (48 points at 5-min intervals)
+            // This keeps the chart focused on recent data
+            const recentHistory = history.slice(-48);
+
             const chartWrapper = document.createElement('div');
 
             // Calculate Y-axis range
-            const basisValues = history.map(p => p.basis);
+            const basisValues = recentHistory.map(p => p.basis);
             const minBasis = Math.min(...basisValues);
             const maxBasis = Math.max(...basisValues);
             const padding = Math.max(10, (maxBasis - minBasis) * 0.1);
@@ -1051,7 +1055,7 @@ def dashboard():
             }
             bars.appendChild(gridContainer);
 
-            history.forEach((point, idx) => {
+            recentHistory.forEach((point, idx) => {
                 const basisValue = point.basis;
                 const heightPercent = ((basisValue - yMin) / yRange) * 100;
                 const color = getStatusColorHex(point.status);
@@ -1097,9 +1101,9 @@ def dashboard():
             timeContainer.style.textTransform = 'uppercase';
             timeContainer.style.letterSpacing = '0.05em';
 
-            if (history.length > 0) {
-                const firstTime = new Date(history[0].time);
-                const lastTime = new Date(history[history.length - 1].time);
+            if (recentHistory.length > 0) {
+                const firstTime = new Date(recentHistory[0].time);
+                const lastTime = new Date(recentHistory[recentHistory.length - 1].time);
 
                 const startLabel = document.createElement('span');
                 startLabel.textContent = firstTime.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
