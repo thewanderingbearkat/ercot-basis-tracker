@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 from functools import wraps
 import logging
 import os
+import json
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -33,6 +34,9 @@ PJM_HUB_ID = 34497127
 ALERT_THRESHOLD = 100
 GREEN_THRESHOLD = -100
 DASHBOARD_PASSWORD = os.getenv('DASHBOARD_PASSWORD', 'SV2026!!!')
+
+# Storage file for PJM historical data
+PJM_HISTORY_FILE = 'pjm_history.json'
 
 # Global state
 data_lock = threading.Lock()
@@ -69,6 +73,31 @@ def login_required(f):
             return redirect('/login')
         return f(*args, **kwargs)
     return decorated_function
+
+# PJM History Storage Functions
+def save_pjm_history(history):
+    """Save PJM history to JSON file."""
+    try:
+        with open(PJM_HISTORY_FILE, 'w') as f:
+            json.dump(history, f)
+        logger.info(f"Saved {len(history)} PJM historical points to {PJM_HISTORY_FILE}")
+    except Exception as e:
+        logger.error(f"Error saving PJM history: {e}")
+
+def load_pjm_history():
+    """Load PJM history from JSON file."""
+    try:
+        if os.path.exists(PJM_HISTORY_FILE):
+            with open(PJM_HISTORY_FILE, 'r') as f:
+                history = json.load(f)
+            logger.info(f"Loaded {len(history)} PJM historical points from {PJM_HISTORY_FILE}")
+            return history
+        else:
+            logger.info(f"No existing PJM history file found at {PJM_HISTORY_FILE}")
+            return []
+    except Exception as e:
+        logger.error(f"Error loading PJM history: {e}")
+        return []
 
 # PJM API Helper Functions
 def get_pjm_subscription_key():
@@ -241,12 +270,35 @@ def background_data_fetch():
         logger.info(f"First ERCOT point: {initial_history[0]}")
         logger.info(f"Last ERCOT point: {initial_history[-1]}")
 
-    # Fetch initial PJM data
-    logger.info("Fetching initial PJM historical data...")
-    initial_pjm_history = get_pjm_lmp_data()
+    # Load existing PJM data from file
+    logger.info("Loading existing PJM historical data from file...")
+    stored_pjm_history = load_pjm_history()
 
-    logger.info(f"Got {len(initial_pjm_history)} PJM points")
+    # Fetch fresh PJM data from API
+    logger.info("Fetching fresh PJM historical data from API...")
+    fresh_pjm_history = get_pjm_lmp_data()
+
+    # Merge stored and fresh data, avoiding duplicates
+    if stored_pjm_history:
+        # Create set of existing timestamps
+        existing_times = {point['time'] for point in stored_pjm_history}
+        # Add only new points from fresh data
+        for point in fresh_pjm_history:
+            if point['time'] not in existing_times:
+                stored_pjm_history.append(point)
+        # Sort by time
+        stored_pjm_history.sort(key=lambda x: x['time'])
+        # Keep last 2000 points (about 7 days of 5-min data)
+        stored_pjm_history = stored_pjm_history[-2000:]
+        initial_pjm_history = stored_pjm_history
+        logger.info(f"Merged PJM data: {len(stored_pjm_history)} total points")
+    else:
+        initial_pjm_history = fresh_pjm_history
+        logger.info(f"No stored history, using {len(fresh_pjm_history)} fresh points")
+
+    # Save merged history
     if initial_pjm_history:
+        save_pjm_history(initial_pjm_history)
         logger.info(f"First PJM point: {initial_pjm_history[0]}")
         logger.info(f"Last PJM point: {initial_pjm_history[-1]}")
 
@@ -352,8 +404,12 @@ def background_data_fetch():
                         latest_data["pjm_basis"] = latest_pjm_point['basis']
                         latest_data["pjm_status"] = latest_pjm_point['status']
                         latest_data["pjm_history"].append(latest_pjm_point)
-                        latest_data["pjm_history"] = latest_data["pjm_history"][-100:]
+                        # Keep last 2000 points (about 7 days of 5-min data)
+                        latest_data["pjm_history"] = latest_data["pjm_history"][-2000:]
                         latest_data["last_update"] = datetime.now().isoformat()
+
+                        # Save updated history to file
+                        save_pjm_history(latest_data["pjm_history"])
 
                     last_pjm_time = latest_pjm_time
                     logger.info(f"PJM update: {PJM_NODE}=${latest_pjm_point['node_price']}, {PJM_HUB}=${latest_pjm_point['hub_price']}, Basis=${latest_pjm_point['basis']}")
