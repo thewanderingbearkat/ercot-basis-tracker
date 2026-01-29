@@ -1452,7 +1452,7 @@ def background_data_fetch():
                 pnl_data["record_count"] = aggregated["record_count"]
                 pnl_data["assets"] = aggregated.get("assets", {})
                 pnl_data["worst_basis_intervals"] = aggregated.get("worst_basis_intervals", [])
-                pnl_data["last_tenaska_update"] = datetime.now().isoformat()
+                pnl_data["last_tenaska_update"] = datetime.now(ZoneInfo("America/New_York")).isoformat()
             save_pnl_data(pnl_data)
             assets_loaded = list(aggregated.get("assets", {}).keys())
             logger.info(f"PnL data updated: {aggregated['record_count']} records, total_pnl=${aggregated['total_pnl']}, assets={assets_loaded}")
@@ -1856,7 +1856,7 @@ def reload_pnl():
                 pnl_data["record_count"] = aggregated["record_count"]
                 pnl_data["assets"] = aggregated.get("assets", {})
                 pnl_data["worst_basis_intervals"] = aggregated.get("worst_basis_intervals", [])
-                pnl_data["last_tenaska_update"] = datetime.now().isoformat()
+                pnl_data["last_tenaska_update"] = datetime.now(ZoneInfo("America/New_York")).isoformat()
 
             # Save to JSON for persistence
             save_pnl_data(pnl_data)
