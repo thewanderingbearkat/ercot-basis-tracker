@@ -7,6 +7,7 @@ import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from functools import wraps
+from collections import defaultdict
 import logging
 import os
 import json
@@ -14,6 +15,101 @@ import json
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# ============================================================================
+# TENASKA API CONFIGURATION
+# ============================================================================
+TENASKA_API_AUTH = (
+    os.getenv("TENASKA_API_USER", "tmartin@skyvest.com"),
+    os.getenv("TENASKA_API_PASSWORD", "Rowhard2024!!!")
+)
+TENASKA_TOKEN_URL = "https://api.ptp.energy/v1/token"
+TENASKA_ENERGY_IMBALANCE_URL = "https://api.ptp.energy/v1/markets/ERCOTNodal/endpoints/EnergySettlement/data"
+
+# Storage file for PnL data
+PNL_HISTORY_FILE = 'pnl_history.json'
+
+# Local Excel file for testing (Predictive Real-Time Energy Imbalance report)
+ENERGY_IMBALANCE_EXCEL = r"C:\Users\TylerMartin\Downloads\Real-TimeEnergyImbalance_2026-01-26_2026-01-28.xlsx"
+
+# API fetch configuration
+TENASKA_AUTO_FETCH = True  # Set to True to fetch from API, False for Excel-only
+TENASKA_FETCH_INTERVAL = 1800  # Fetch new data every 30 minutes (in seconds)
+TENASKA_FETCH_DAYS_BACK = 30   # How many days of history to fetch (used as fallback)
+TENASKA_FETCH_START_DATE = "2026-01-01"  # Start date for YTD historical data
+TENASKA_MARKET_PRICES_URL = "https://api.ptp.energy/v1/markets/ERCOTNodal/endpoints/Market-Prices/data"
+HUB_SETTLEMENT_POINT = "HB_WEST"  # Hub for basis calculation
+
+# ============================================================================
+# ASSET CONFIGURATION - PPA/Merchant Split & PnL Formulas
+# ============================================================================
+# Each asset has:
+#   - element_patterns: list of strings to match in the 'Element' column
+#   - settlement_point: the node where this asset settles
+#   - ppa_percent: percentage under PPA (0-100)
+#   - merchant_percent: percentage merchant (0-100), should sum to 100 with ppa_percent
+#   - ppa_price: $/MWh PPA strike price
+#   - ppa_settlement: how PPA is settled - "node", "hub", or "split" (50/50 node/hub)
+#   - ppa_basis_exposure: percentage of basis risk borne (100 = full basis, 50 = half)
+#
+# PnL Calculation Logic:
+#   - Merchant PnL = merchant_percent × Volume × RTSPP (or NodePrice)
+#   - PPA PnL depends on settlement:
+#       - "node": ppa_percent × Volume × (NodePrice - ppa_price) [full basis exposure]
+#       - "hub": ppa_percent × Volume × (HubPrice - ppa_price) [no basis exposure]
+#       - "split": ppa_percent × Volume × ((NodePrice + HubPrice)/2 - ppa_price) [50% basis]
+
+ASSET_CONFIG = {
+    "BKII": {
+        "display_name": "McCrae (BKII)",
+        # Match generation elements for BKII/McCrae
+        # API returns: "Bearkat Wind Energy II, LLC - Gen" for generation data
+        # Note: "McCrae Wind Energy II - Main" has netting data (buy+sell), not generation
+        "element_patterns": [
+            "Bearkat Wind Energy II, LLC - Gen",
+        ],
+        "settlement_point": "NBOHR_RN",
+        "ppa_percent": 100,
+        "merchant_percent": 0,
+        "ppa_price": 34.00,
+        "ppa_settlement": "split",  # 50% node, 50% hub
+        "ppa_basis_exposure": 50,   # Bears 50% of basis risk
+    },
+    "BKI": {
+        "display_name": "Bearkat I",
+        # Match generation elements for BKI
+        # API returns: "Bearkat Wind Energy I, LLC - Gen"
+        "element_patterns": [
+            "Bearkat Wind Energy I, LLC - Gen",
+        ],
+        "settlement_point": "NBOHR_RN",
+        "ppa_percent": 0,
+        "merchant_percent": 100,
+        "ppa_price": 0,
+        "ppa_settlement": "node",
+        "ppa_basis_exposure": 0,
+    },
+    "HOLSTEIN": {
+        "display_name": "Holstein",
+        # Match generation elements for Holstein
+        # API returns: "Holstein Solar - Generation"
+        "element_patterns": [
+            "Holstein Solar - Generation",
+        ],
+        "settlement_point": "HOLSTEIN_ALL",
+        "ppa_percent": 87.5,
+        "merchant_percent": 12.5,
+        "ppa_price": 35.00,
+        "ppa_settlement": "node",   # 100% settled at node = 100% basis exposure
+        "ppa_basis_exposure": 100,
+    },
+}
+
+# Number of worst basis intervals to track (for PPA exclusion clause)
+# Per contract, exclusions can only be made from the prior day
+# Formula: Gen × Basis = Volume × (Node Price - Hub Price)
+WORST_BASIS_INTERVALS_TO_TRACK = 96  # Max 96 intervals in a day (15-min intervals)
+WORST_BASIS_DISPLAY_COUNT = 10  # Show top 10 in dashboard
 
 app = Flask(__name__)
 CORS(app)
@@ -62,6 +158,32 @@ latest_data = {
     "last_update": None,
     "data_time": None,
 }
+
+# PnL data storage - now includes per-asset breakdown and worst basis tracking
+pnl_data = {
+    "energy_imbalance_history": [],  # Raw energy imbalance data from Tenaska
+    "pnl_history": [],               # Calculated PnL points
+
+    # Aggregated totals (all assets combined)
+    "daily_pnl": {},                 # Aggregated by day
+    "monthly_pnl": {},               # Aggregated by month
+    "annual_pnl": {},                # Aggregated by year
+    "total_pnl": 0,
+    "total_volume": 0,
+
+    # Per-asset breakdown
+    "assets": {
+        # Each asset will have: daily_pnl, monthly_pnl, annual_pnl, total_pnl, total_volume
+    },
+
+    # Worst basis intervals for PPA exclusion tracking
+    # Sorted list of worst basis intervals (most negative first)
+    "worst_basis_intervals": [],     # [{interval, basis, volume, pnl_impact, asset}]
+
+    "last_tenaska_update": None,
+    "record_count": 0,
+}
+
 last_basis_time = None
 last_pjm_time = None
 
@@ -195,7 +317,959 @@ def get_pjm_lmp_data(hours_back=4):
         logger.error(f"Error fetching PJM data: {e}")
         return []
 
+# ============================================================================
+# TENASKA API FUNCTIONS
+# ============================================================================
+def get_tenaska_token():
+    """Get authentication token from Tenaska API."""
+    try:
+        response = requests.get(TENASKA_TOKEN_URL, auth=TENASKA_API_AUTH, timeout=10)
+        if response.status_code == 200:
+            token = response.json().get('data')
+            logger.info("Successfully obtained Tenaska API token")
+            return token
+        else:
+            logger.error(f"Failed to get Tenaska token: {response.status_code}")
+            return None
+    except Exception as e:
+        logger.error(f"Error getting Tenaska token: {e}")
+        return None
+
+def fetch_energy_imbalance_data(start_date=None, days_back=30):
+    """
+    Fetch energy imbalance data from Tenaska API.
+    Returns data in the same format as load_energy_imbalance_from_excel() for compatibility.
+
+    Args:
+        start_date: Start date string (YYYY-MM-DD) or None to use days_back
+        days_back: Number of days back if start_date not specified
+
+    Expected API fields:
+    - Real_Time_Energy_Imbalance_Volume: MWh volume
+    - RTEIAMT: Real-Time Energy Imbalance Amount ($)
+    - Energy_Imbalance_Average_Price: $/MWh price
+    - RTSPP: Real-Time Settlement Point Price
+    """
+    try:
+        token = get_tenaska_token()
+        if not token:
+            logger.error("Could not obtain Tenaska API token")
+            return []
+
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # Calculate date range
+        end_date = datetime.now(ZoneInfo("UTC"))
+        if start_date:
+            begin_str = f"{start_date}T00:00:00Z"
+        else:
+            begin_dt = end_date - timedelta(days=days_back)
+            begin_str = begin_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        params = {
+            "begin": begin_str,
+            "end": end_date.strftime("%Y-%m-%dT%H:%M:%SZ")
+        }
+
+        logger.info(f"Fetching Tenaska energy imbalance data from {params['begin']} to {params['end']}")
+        response = requests.get(TENASKA_ENERGY_IMBALANCE_URL, headers=headers, params=params, timeout=120)
+
+        if response.status_code != 200:
+            logger.error(f"Tenaska API returned status {response.status_code}: {response.text[:200]}")
+            return []
+
+        data = response.json()
+        cst_tz = ZoneInfo("America/Chicago")
+
+        # Debug: save raw API response to file
+        try:
+            with open("C:/Users/TylerMartin/tenaska_api_debug.json", "w") as f:
+                import json as json_module
+                json_module.dump(data, f, indent=2)
+            logger.info("Saved raw Tenaska API response to tenaska_api_debug.json")
+
+            # Log structure of first few items
+            items = data.get("data", [])
+            logger.info(f"API returned {len(items)} top-level data items")
+            for i, item in enumerate(items[:3]):
+                logger.info(f"Item {i} keys: {list(item.keys())}")
+                logger.info(f"  parent={item.get('parent')}, element={item.get('element')}, name={item.get('name')}")
+        except Exception as e:
+            logger.warning(f"Could not save debug API response: {e}")
+
+        # Fields we want to extract
+        target_fields = {
+            "Real_Time_Energy_Imbalance_Volume": "volume",
+            "RTEIAMT": "amount",
+            "Energy_Imbalance_Average_Price": "price",
+            "RTSPP": "rtspp",
+        }
+
+        # Build a dictionary keyed by (element, interval, settlement_point) to combine all fields
+        interval_data = defaultdict(lambda: {
+            "element": "",
+            "settlement_point": "",
+            "interval": "",
+            "volume_mwh": 0,
+            "pnl": 0,
+            "price": 0,
+            "rtspp": 0,
+        })
+
+        for item in data.get("data", []):
+            # Use 'element' for asset name (e.g., "Bearkat Wind Energy II, LLC - Gen")
+            # Fall back to 'parent' only if element is not available
+            element_name = item.get("element") or item.get("parent", "Unknown")
+
+            for data_point in item.get("dataPoints", []):
+                key_name = data_point.get("keyName", "")
+
+                # Skip fields we don't need
+                if key_name not in target_fields:
+                    continue
+
+                field_name = target_fields[key_name]
+
+                for value_entry in data_point.get("values", []):
+                    interval_start_utc = value_entry.get("intervalStartUtc")
+
+                    for nested_data in value_entry.get("data", []):
+                        value = nested_data.get("value", 0)
+                        settlement_point = nested_data.get("coords", {}).get("settlementPoint", "")
+
+                        # Convert to CST for interval key
+                        try:
+                            interval_dt = datetime.strptime(interval_start_utc, "%Y-%m-%dT%H:%M:%SZ")
+                            interval_dt = interval_dt.replace(tzinfo=ZoneInfo("UTC")).astimezone(cst_tz)
+                            interval_str = interval_dt.isoformat()
+                        except:
+                            continue
+
+                        # Create unique key for this interval
+                        key = (element_name, interval_str, settlement_point)
+                        interval_data[key]["element"] = element_name
+                        interval_data[key]["settlement_point"] = settlement_point
+                        interval_data[key]["interval"] = interval_str
+
+                        # Parse value safely
+                        try:
+                            float_value = float(value) if value else 0
+                        except (ValueError, TypeError):
+                            float_value = 0
+
+                        # Assign to appropriate field
+                        if field_name == "volume":
+                            interval_data[key]["volume_mwh"] = float_value
+                        elif field_name == "amount":
+                            interval_data[key]["pnl"] = float_value
+                        elif field_name == "price":
+                            interval_data[key]["price"] = float_value
+                        elif field_name == "rtspp":
+                            interval_data[key]["rtspp"] = float_value
+
+        # Convert to list format compatible with Excel loader
+        records = list(interval_data.values())
+
+        # Filter out records with no volume (empty intervals)
+        records = [r for r in records if r["volume_mwh"] != 0 or r["pnl"] != 0]
+
+        # Derive RTSPP from reported amount when not provided by API
+        # RTEIAMT (pnl field) = -Volume × RTSPP (has opposite sign)
+        # So RTSPP = -pnl / volume
+        rtspp_derived_count = 0
+        for r in records:
+            if r["rtspp"] == 0 and r["pnl"] != 0 and r["volume_mwh"] != 0:
+                r["rtspp"] = -r["pnl"] / r["volume_mwh"]
+                rtspp_derived_count += 1
+        if rtspp_derived_count > 0:
+            logger.info(f"Derived RTSPP from RTEIAMT for {rtspp_derived_count} records")
+
+        logger.info(f"Fetched {len(records)} energy imbalance records from Tenaska API")
+
+        # Log sample of data for debugging
+        if records:
+            elements = set(r["element"] for r in records[:100])
+            logger.info(f"Elements found: {elements}")
+            # Log sample record to verify RTSPP values
+            sample = records[0]
+            logger.info(f"Sample record - Element: {sample['element']}, Volume: {sample['volume_mwh']}, RTSPP: {sample['rtspp']}, PnL: {sample['pnl']}")
+
+        return records
+
+    except requests.Timeout:
+        logger.error("Tenaska API request timed out")
+        return []
+    except Exception as e:
+        logger.error(f"Error fetching Tenaska energy imbalance data: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return []
+
+def fetch_hub_prices(start_date=None, end_date=None):
+    """
+    Fetch HB_WEST hub prices from Tenaska Market-Prices endpoint.
+    Returns a dictionary keyed by interval timestamp (CST) with hub RTSPP price.
+
+    Args:
+        start_date: Start date string (YYYY-MM-DD) or None for TENASKA_FETCH_START_DATE
+        end_date: End date string (YYYY-MM-DD) or None for today
+    """
+    try:
+        token = get_tenaska_token()
+        if not token:
+            logger.error("Could not obtain Tenaska API token for hub prices")
+            return {}
+
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # Calculate date range
+        if start_date is None:
+            start_date = TENASKA_FETCH_START_DATE
+        if end_date is None:
+            end_date = datetime.now(ZoneInfo("UTC")).strftime("%Y-%m-%d")
+
+        cst_tz = ZoneInfo("America/Chicago")
+        hub_prices = {}
+
+        # Parse dates
+        start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+        end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+
+        # Fetch day by day to avoid API limit (1,000,000 records max)
+        logger.info(f"Fetching hub prices ({HUB_SETTLEMENT_POINT}) from {start_date} to {end_date} (day by day)")
+        current_dt = start_dt
+        days_fetched = 0
+
+        while current_dt <= end_dt:
+            day_str = current_dt.strftime("%Y-%m-%d")
+            params = {
+                "begin": f"{day_str}T00:00:00Z",
+                "end": f"{day_str}T23:59:59Z"
+            }
+
+            try:
+                response = requests.get(TENASKA_MARKET_PRICES_URL, headers=headers, params=params, timeout=60)
+
+                if response.status_code == 200:
+                    data = response.json()
+
+                    for item in data.get("data", []):
+                        if item.get("element") != HUB_SETTLEMENT_POINT:
+                            continue
+
+                        for data_point in item.get("dataPoints", []):
+                            if data_point.get("keyName") != "RTSPP":
+                                continue
+
+                            for value_entry in data_point.get("values", []):
+                                interval_start_utc = value_entry.get("intervalStartUtc")
+
+                                for nested_data in value_entry.get("data", []):
+                                    price = nested_data.get("value", 0)
+
+                                    try:
+                                        interval_dt = datetime.strptime(interval_start_utc, "%Y-%m-%dT%H:%M:%SZ")
+                                        interval_dt = interval_dt.replace(tzinfo=ZoneInfo("UTC")).astimezone(cst_tz)
+                                        interval_str = interval_dt.isoformat()
+
+                                        hub_prices[interval_str] = float(price) if price else 0
+                                    except:
+                                        continue
+                    days_fetched += 1
+                else:
+                    logger.warning(f"Hub prices API returned {response.status_code} for {day_str}")
+
+            except requests.Timeout:
+                logger.warning(f"Hub prices request timed out for {day_str}")
+            except Exception as e:
+                logger.warning(f"Error fetching hub prices for {day_str}: {e}")
+
+            current_dt += timedelta(days=1)
+
+        logger.info(f"Fetched {len(hub_prices)} hub price intervals from {days_fetched} days")
+        return hub_prices
+
+    except requests.Timeout:
+        logger.error("Market-Prices API request timed out")
+        return {}
+    except Exception as e:
+        logger.error(f"Error fetching hub prices: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return {}
+
+def calculate_pnl(energy_imbalance_records, lmp_history):
+    """
+    Calculate PnL by matching energy imbalance volumes with LMP prices.
+    PnL = Volume × (Node Price - Hub Price) = Volume × Basis
+
+    For energy imbalance, if you're selling at node and buying at hub:
+    - Positive basis = profit (selling high, buying low)
+    - Negative basis = loss (selling low, buying high)
+    """
+    pnl_records = []
+
+    # Group energy imbalance by interval and settlement point
+    imbalance_by_interval = defaultdict(lambda: {"volume": 0, "amount": 0, "settlement_point": ""})
+
+    for record in energy_imbalance_records:
+        interval = record["interval_start"]
+        sp = record["settlement_point"]
+        key = f"{interval}_{sp}"
+
+        if record["key_name"] == "Real_Time_Energy_Imbalance_Volume":
+            imbalance_by_interval[key]["volume"] = record["value"]
+            imbalance_by_interval[key]["settlement_point"] = sp
+            imbalance_by_interval[key]["interval"] = interval
+        elif record["key_name"] == "RTEIAMT":
+            imbalance_by_interval[key]["amount"] = record["value"]
+
+    # Create a lookup for LMP basis by time
+    basis_lookup = {}
+    for point in lmp_history:
+        time_str = str(point.get("time", ""))
+        basis_lookup[time_str] = {
+            "basis1": point.get("basis1", 0),
+            "basis2": point.get("basis2", 0),
+            "node1_price": point.get("node1_price", 0),
+            "node2_price": point.get("node2_price", 0),
+            "hub_price": point.get("hub_price", 0)
+        }
+
+    # Calculate PnL for each interval
+    for key, data in imbalance_by_interval.items():
+        if data["volume"] == 0:
+            continue
+
+        interval = data.get("interval", "")
+        volume = data["volume"]  # MWh
+        settlement_point = data["settlement_point"]
+        reported_amount = data["amount"]  # This is the actual settlement amount from Tenaska
+
+        # Determine which basis to use based on settlement point
+        if settlement_point == NODE_1 or "NBOHR" in settlement_point:
+            basis_field = "basis1"
+        elif settlement_point == NODE_2 or "HOLSTEIN" in settlement_point:
+            basis_field = "basis2"
+        else:
+            basis_field = "basis1"  # Default
+
+        # Try to find matching LMP data
+        basis = 0
+        for time_key, lmp_data in basis_lookup.items():
+            if interval[:16] in time_key[:16]:  # Match by minute
+                basis = lmp_data.get(basis_field, 0)
+                break
+
+        # Calculate PnL: Volume × Basis
+        # Use reported amount if available, otherwise calculate
+        if reported_amount != 0:
+            calculated_pnl = reported_amount
+        else:
+            calculated_pnl = volume * basis
+
+        pnl_records.append({
+            "interval": interval,
+            "settlement_point": settlement_point,
+            "volume_mwh": round(volume, 4),
+            "basis": round(basis, 2),
+            "pnl": round(calculated_pnl, 2),
+            "reported_amount": round(reported_amount, 2)
+        })
+
+    return pnl_records
+
+def aggregate_pnl(pnl_records):
+    """Aggregate PnL by daily, monthly, and annual periods."""
+    daily = defaultdict(lambda: {"pnl": 0, "volume": 0, "count": 0})
+    monthly = defaultdict(lambda: {"pnl": 0, "volume": 0, "count": 0})
+    annual = defaultdict(lambda: {"pnl": 0, "volume": 0, "count": 0})
+
+    for record in pnl_records:
+        try:
+            interval = record["interval"]
+            # Parse the interval timestamp
+            if "T" in interval:
+                dt = datetime.fromisoformat(interval.replace("Z", "+00:00"))
+            else:
+                dt = datetime.strptime(interval[:19], "%Y-%m-%d %H:%M:%S")
+
+            day_key = dt.strftime("%Y-%m-%d")
+            month_key = dt.strftime("%Y-%m")
+            year_key = dt.strftime("%Y")
+
+            pnl = record["pnl"]
+            volume = record["volume_mwh"]
+
+            daily[day_key]["pnl"] += pnl
+            daily[day_key]["volume"] += volume
+            daily[day_key]["count"] += 1
+
+            monthly[month_key]["pnl"] += pnl
+            monthly[month_key]["volume"] += volume
+            monthly[month_key]["count"] += 1
+
+            annual[year_key]["pnl"] += pnl
+            annual[year_key]["volume"] += volume
+            annual[year_key]["count"] += 1
+
+        except Exception as e:
+            logger.error(f"Error aggregating PnL record: {e}")
+            continue
+
+    # Round the aggregated values
+    for d in daily.values():
+        d["pnl"] = round(d["pnl"], 2)
+        d["volume"] = round(d["volume"], 4)
+    for d in monthly.values():
+        d["pnl"] = round(d["pnl"], 2)
+        d["volume"] = round(d["volume"], 4)
+    for d in annual.values():
+        d["pnl"] = round(d["pnl"], 2)
+        d["volume"] = round(d["volume"], 4)
+
+    return dict(daily), dict(monthly), dict(annual)
+
+def save_pnl_data(data):
+    """Save PnL data to JSON file."""
+    try:
+        with open(PNL_HISTORY_FILE, 'w') as f:
+            json.dump(data, f, default=str)
+        logger.info(f"Saved PnL data to {PNL_HISTORY_FILE}")
+    except Exception as e:
+        logger.error(f"Error saving PnL data: {e}")
+
+def load_pnl_data():
+    """Load PnL data from JSON file."""
+    try:
+        if os.path.exists(PNL_HISTORY_FILE):
+            with open(PNL_HISTORY_FILE, 'r') as f:
+                data = json.load(f)
+            logger.info(f"Loaded PnL data from {PNL_HISTORY_FILE}")
+            return data
+        return None
+    except Exception as e:
+        logger.error(f"Error loading PnL data: {e}")
+        return None
+
+def load_energy_imbalance_from_excel(file_path=None):
+    """
+    Load energy imbalance data from Excel file.
+    Supports both report formats:
+
+    1. Predictive Real-Time Energy Imbalance report:
+       - Energy Imbalance Volume, Energy Imbalance Amount, Energy Imbalance Average Price, RTSPP
+
+    2. Real-Time Energy Imbalance report:
+       - Real-Time Energy Imbalance Volume (MWh), Real-Time Energy Imbalance Amount ($)
+       - Real-Time Settlement Point Price ($/MWh), Weighted Average Price ($/MWh)
+
+    NOTE: The "Amount" in both reports has OPPOSITE sign convention.
+          Report shows negative amounts, but Volume × RTSPP = positive revenue.
+          We calculate PnL as Volume × RTSPP (positive for generation revenue).
+    """
+    try:
+        import pandas as pd
+
+        if file_path is None:
+            file_path = ENERGY_IMBALANCE_EXCEL
+
+        if not os.path.exists(file_path):
+            logger.warning(f"Energy imbalance Excel file not found: {file_path}")
+            return []
+
+        logger.info(f"Loading energy imbalance data from Excel: {file_path}")
+        df = pd.read_excel(file_path)
+
+        logger.info(f"Excel columns found: {df.columns.tolist()}")
+
+        # Combine Flowday and Interval to create timestamp
+        # Handle '24:00' interval specially - it should stay on the same flowday
+        df['Flowday (Central)'] = pd.to_datetime(df['Flowday (Central)'])
+
+        def parse_interval(row):
+            interval_str = str(row['Interval'])
+            flowday = row['Flowday (Central)']
+            # Handle 24:00 as 23:59:59 to keep it on the same day
+            if interval_str == '24:00':
+                return flowday + pd.Timedelta(hours=23, minutes=59, seconds=59)
+            else:
+                return flowday + pd.to_timedelta(interval_str + ':00')
+
+        df['DateTime'] = df.apply(parse_interval, axis=1)
+
+        # Detect column format and normalize column names
+        # Format 1: Predictive report
+        if 'Energy Imbalance Volume' in df.columns:
+            vol_col = 'Energy Imbalance Volume'
+            amt_col = 'Energy Imbalance Amount'
+            price_col = 'Energy Imbalance Average Price'
+            rtspp_col = 'RTSPP'
+        # Format 2: Real-Time report
+        elif 'Real-Time Energy Imbalance Volume (MWh)' in df.columns:
+            vol_col = 'Real-Time Energy Imbalance Volume (MWh)'
+            amt_col = 'Real-Time Energy Imbalance Amount ($)'
+            price_col = 'Weighted Average Price ($/MWh)'
+            rtspp_col = 'Real-Time Settlement Point Price ($/MWh)'
+        else:
+            logger.error(f"Unknown Excel format. Columns: {df.columns.tolist()}")
+            return []
+
+        # Convert to records for PnL calculation
+        records = []
+        for _, row in df.iterrows():
+            volume = float(row[vol_col]) if pd.notna(row[vol_col]) else 0
+            rtspp = float(row[rtspp_col]) if rtspp_col in df.columns and pd.notna(row[rtspp_col]) else 0
+            price = float(row[price_col]) if price_col in df.columns and pd.notna(row[price_col]) else rtspp
+
+            # Calculate PnL as Volume × RTSPP (positive = revenue for generation)
+            # Don't use the report's "Amount" column as it has opposite sign convention
+            calculated_pnl = volume * rtspp
+
+            records.append({
+                "interval": row['DateTime'].isoformat(),
+                "element": row['Element'],
+                "settlement_point": row['Settlement Point'],
+                "volume_mwh": volume,
+                "pnl": calculated_pnl,  # Use calculated value, not report's Amount
+                "price": price,
+                "rtspp": rtspp,
+            })
+
+        logger.info(f"Loaded {len(records)} energy imbalance records from Excel")
+
+        # Log summary by element
+        from collections import defaultdict
+        element_summary = defaultdict(lambda: {"volume": 0, "pnl": 0, "count": 0})
+        for r in records:
+            element_summary[r["element"]]["volume"] += r["volume_mwh"]
+            element_summary[r["element"]]["pnl"] += r["pnl"]
+            element_summary[r["element"]]["count"] += 1
+        for elem, data in element_summary.items():
+            logger.info(f"  {elem}: {data['count']} records, {data['volume']:.2f} MWh, ${data['pnl']:.2f}")
+
+        return records
+
+    except ImportError:
+        logger.error("pandas is required to load Excel files. Install with: pip install pandas openpyxl")
+        return []
+    except Exception as e:
+        logger.error(f"Error loading energy imbalance from Excel: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return []
+
+def identify_asset(element_name):
+    """
+    Identify which asset an element belongs to based on ASSET_CONFIG patterns.
+    Returns the asset key (e.g., 'BKII', 'BKI', 'HOLSTEIN') or 'UNKNOWN'.
+
+    The API returns data at multiple hierarchy levels (Main, Hedge/Gen, Gen).
+    We ONLY use "- Gen" elements to avoid double-counting the same generation data.
+    - BKI: "Bearkat Wind Energy I, LLC - Gen"
+    - BKII: "Bearkat Wind Energy II, LLC - Gen"
+    - Holstein: "Holstein Solar - Generation"
+    """
+    element_lower = element_name.lower() if element_name else ""
+
+    # Only process "- Gen" or "- Generation" elements to avoid double-counting
+    # The API reports same data at Main, Hedge/Gen, and Gen levels - we only want Gen
+    is_generation = "- generation" in element_lower
+    is_gen = element_lower.endswith("- gen")  # Exact match to avoid matching "hedge/gen"
+
+    if not is_generation and not is_gen:
+        return "UNKNOWN"
+
+    for asset_key, config in ASSET_CONFIG.items():
+        for pattern in config.get("element_patterns", []):
+            if pattern.lower() in element_lower:
+                return asset_key
+
+    return "UNKNOWN"
+
+def calculate_asset_pnl(record, asset_key, hub_price=None):
+    """
+    Calculate PnL for a record based on asset-specific configuration.
+
+    PnL Formulas (per user specification):
+    - BKI (100% Merchant): Volume × RTSPP
+    - McCrae/BKII (100% PPA at $34, 50% basis): Volume × $34 + 50% × Volume × basis
+    - Holstein (87.5% PPA at $35 + 100% basis, 12.5% Merchant):
+        PPA: 87.5% × Volume × ($35 + basis)
+        Merchant: 12.5% × Volume × RTSPP
+
+    Where basis = Node Price (RTSPP) - Hub Price
+    """
+    config = ASSET_CONFIG.get(asset_key)
+    if not config:
+        # Unknown asset - just use Volume × RTSPP
+        volume = record.get("volume_mwh", 0)
+        rtspp = record.get("rtspp", 0)
+        return volume * rtspp, 0  # (pnl, basis)
+
+    volume = record.get("volume_mwh", 0)
+    node_price = record.get("rtspp", 0)  # RTSPP is the node price
+
+    # If no hub price provided, assume 0 basis (hub = node)
+    # In production, we'd match with actual hub LMP data from ERCOT
+    if hub_price is None:
+        hub_price = node_price
+
+    # Calculate basis (node - hub)
+    basis = node_price - hub_price
+
+    ppa_pct = config["ppa_percent"] / 100
+    merchant_pct = config["merchant_percent"] / 100
+    ppa_price = config["ppa_price"]
+    basis_exposure = config.get("ppa_basis_exposure", 100) / 100  # % of basis risk
+
+    # Calculate PnL components
+    merchant_pnl = 0
+    ppa_pnl = 0
+
+    # Merchant portion: Revenue = Volume × RTSPP
+    if merchant_pct > 0:
+        merchant_pnl = merchant_pct * volume * node_price
+
+    # PPA portion: Revenue = Volume × PPA_Price + basis_exposure × Volume × basis
+    # This gives: PPA revenue + gain/loss from basis
+    if ppa_pct > 0:
+        ppa_revenue = ppa_pct * volume * ppa_price
+        basis_adjustment = ppa_pct * volume * basis * basis_exposure
+        ppa_pnl = ppa_revenue + basis_adjustment
+
+    total_pnl = merchant_pnl + ppa_pnl
+
+    return total_pnl, basis
+
+def aggregate_excel_pnl(records, hub_prices=None):
+    """
+    Aggregate PnL data from Excel/API records by daily, monthly, and annual periods.
+    Supports per-asset breakdown and worst basis interval tracking.
+
+    Args:
+        records: List of energy imbalance records
+        hub_prices: Dictionary of hub prices keyed by interval timestamp (CST ISO format)
+                   e.g., {"2026-01-26T00:00:00-06:00": 100.50, ...}
+    """
+    # Hub price lookup - directly use the provided dictionary
+    hub_price_lookup = hub_prices or {}
+    if hub_price_lookup:
+        logger.info(f"Using hub price lookup with {len(hub_price_lookup)} entries")
+
+    # Total aggregations
+    daily = defaultdict(lambda: {"pnl": 0, "volume": 0, "count": 0, "records": []})
+    monthly = defaultdict(lambda: {"pnl": 0, "volume": 0, "count": 0})
+    annual = defaultdict(lambda: {"pnl": 0, "volume": 0, "count": 0})
+
+    # Per-asset aggregations
+    asset_daily = defaultdict(lambda: defaultdict(lambda: {"pnl": 0, "volume": 0, "count": 0}))
+    asset_monthly = defaultdict(lambda: defaultdict(lambda: {"pnl": 0, "volume": 0, "count": 0}))
+    asset_annual = defaultdict(lambda: defaultdict(lambda: {"pnl": 0, "volume": 0, "count": 0}))
+    asset_totals = defaultdict(lambda: {"pnl": 0, "volume": 0, "count": 0})
+
+    # Realized price tracking at multiple time levels
+    # For BKI (100% merchant): realized = total_revenue / total_volume
+    # For BKII (100% PPA, 50% basis): realized = PPA_price + 50% × GWA_basis
+    # For Holstein: PPA = PPA_price + 100% × GWA_basis, Merchant = total_merchant_revenue / total_merchant_volume
+    def make_realized_tracker():
+        return {
+            "total_revenue": 0,           # Sum of volume × RTSPP (for merchant pricing)
+            "total_volume": 0,            # Sum of volume
+            "volume_basis_product": 0,    # Sum of volume × basis (for GWA basis)
+            "merchant_revenue": 0,        # For Holstein merchant portion
+            "merchant_volume": 0,         # For Holstein merchant portion
+        }
+
+    # YTD totals
+    asset_realized = defaultdict(make_realized_tracker)
+    # Daily tracking: asset_realized_daily[asset_key][day_key]
+    asset_realized_daily = defaultdict(lambda: defaultdict(make_realized_tracker))
+    # Monthly tracking: asset_realized_monthly[asset_key][month_key]
+    asset_realized_monthly = defaultdict(lambda: defaultdict(make_realized_tracker))
+
+    # Worst basis intervals tracking - ONLY for prior day (yesterday) per contractual requirements
+    all_intervals = []
+    hub_matches = 0
+    hub_misses = 0
+
+    # Calculate yesterday's date (in CST) for PPA exclusion interval filtering
+    cst_tz = ZoneInfo("America/Chicago")
+    now_cst = datetime.now(cst_tz)
+    yesterday_cst = (now_cst - timedelta(days=1)).strftime("%Y-%m-%d")
+
+    for record in records:
+        try:
+            interval = record["interval"]
+            # Parse the interval timestamp
+            if "T" in interval:
+                dt = datetime.fromisoformat(interval.replace("Z", "+00:00"))
+            else:
+                dt = datetime.strptime(interval[:19], "%Y-%m-%d %H:%M:%S")
+
+            day_key = dt.strftime("%Y-%m-%d")
+            month_key = dt.strftime("%Y-%m")
+            year_key = dt.strftime("%Y")
+
+            # Identify asset based on element name pattern
+            element = record.get("element", "")
+            asset_key = identify_asset(element)
+
+            # Look up hub price from Tenaska hub prices
+            hub_price = None
+            if hub_price_lookup:
+                # Hub prices are keyed by CST ISO format (e.g., "2026-01-26T00:00:00-06:00")
+                # Try the exact interval timestamp first, then truncated versions
+                hub_price = hub_price_lookup.get(interval)
+                if not hub_price:
+                    # Try without timezone offset
+                    time_key_no_tz = dt.strftime("%Y-%m-%dT%H:%M:%S")
+                    for key in hub_price_lookup:
+                        if key.startswith(time_key_no_tz[:16]):  # Match to minute
+                            hub_price = hub_price_lookup[key]
+                            break
+                if hub_price:
+                    hub_matches += 1
+                else:
+                    hub_misses += 1
+
+            # Calculate PnL (using asset-specific formula)
+            pnl, basis = calculate_asset_pnl(record, asset_key, hub_price=hub_price)
+            volume = record.get("volume_mwh", 0)
+            node_price = record.get("rtspp", 0)
+
+            # Track interval for worst basis calculation (HOLSTEIN ONLY, PRIOR DAY ONLY)
+            # Holstein is the only site with PPA exclusion clause
+            # Per contractual requirements, can only exclude intervals from the prior day
+            # Formula: Basis Revenue = Gen (Volume) × Basis (Node Price - Hub Price)
+            # Most negative = worst intervals (candidates for exclusion)
+            if asset_key == "HOLSTEIN" and volume != 0 and day_key == yesterday_cst:
+                # Basis revenue = Volume × Basis (where Basis = Node - Hub)
+                basis_revenue = volume * basis
+
+                all_intervals.append({
+                    "interval": interval,
+                    "datetime": dt.isoformat(),
+                    "asset": asset_key,
+                    "element": element,
+                    "basis": round(basis, 2),
+                    "volume": round(volume, 4),
+                    "basis_pnl_impact": round(basis_revenue, 2),  # Gen × Basis
+                    "node_price": round(node_price, 2),
+                    "hub_price": round(hub_price, 2) if hub_price else None,
+                })
+
+            # Total aggregations - only include known assets (exclude UNKNOWN to avoid double-counting)
+            if asset_key != "UNKNOWN":
+                daily[day_key]["pnl"] += pnl
+                daily[day_key]["volume"] += volume
+                daily[day_key]["count"] += 1
+                daily[day_key]["records"].append({
+                    "time": dt.strftime("%H:%M"),
+                    "pnl": round(pnl, 2),
+                    "volume": round(volume, 4),
+                    "asset": asset_key,
+                    "settlement_point": record.get("settlement_point", ""),
+                    "price": node_price
+                })
+
+                monthly[month_key]["pnl"] += pnl
+                monthly[month_key]["volume"] += volume
+                monthly[month_key]["count"] += 1
+
+                annual[year_key]["pnl"] += pnl
+                annual[year_key]["volume"] += volume
+                annual[year_key]["count"] += 1
+
+            # Per-asset aggregations
+            asset_daily[asset_key][day_key]["pnl"] += pnl
+            asset_daily[asset_key][day_key]["volume"] += volume
+            asset_daily[asset_key][day_key]["count"] += 1
+
+            asset_monthly[asset_key][month_key]["pnl"] += pnl
+            asset_monthly[asset_key][month_key]["volume"] += volume
+            asset_monthly[asset_key][month_key]["count"] += 1
+
+            asset_annual[asset_key][year_key]["pnl"] += pnl
+            asset_annual[asset_key][year_key]["volume"] += volume
+            asset_annual[asset_key][year_key]["count"] += 1
+
+            asset_totals[asset_key]["pnl"] += pnl
+            asset_totals[asset_key]["volume"] += volume
+            asset_totals[asset_key]["count"] += 1
+
+            # Track data for realized price calculations at all time levels
+            if volume != 0:
+                # YTD totals
+                asset_realized[asset_key]["total_volume"] += volume
+                asset_realized[asset_key]["total_revenue"] += volume * node_price
+                asset_realized[asset_key]["volume_basis_product"] += volume * basis
+
+                # Daily tracking
+                asset_realized_daily[asset_key][day_key]["total_volume"] += volume
+                asset_realized_daily[asset_key][day_key]["total_revenue"] += volume * node_price
+                asset_realized_daily[asset_key][day_key]["volume_basis_product"] += volume * basis
+
+                # Monthly tracking
+                asset_realized_monthly[asset_key][month_key]["total_volume"] += volume
+                asset_realized_monthly[asset_key][month_key]["total_revenue"] += volume * node_price
+                asset_realized_monthly[asset_key][month_key]["volume_basis_product"] += volume * basis
+
+                # For Holstein, track merchant portion separately (12.5% merchant)
+                if asset_key == "HOLSTEIN":
+                    merchant_pct = ASSET_CONFIG.get("HOLSTEIN", {}).get("merchant_percent", 12.5) / 100
+                    # YTD
+                    asset_realized[asset_key]["merchant_volume"] += volume * merchant_pct
+                    asset_realized[asset_key]["merchant_revenue"] += volume * merchant_pct * node_price
+                    # Daily
+                    asset_realized_daily[asset_key][day_key]["merchant_volume"] += volume * merchant_pct
+                    asset_realized_daily[asset_key][day_key]["merchant_revenue"] += volume * merchant_pct * node_price
+                    # Monthly
+                    asset_realized_monthly[asset_key][month_key]["merchant_volume"] += volume * merchant_pct
+                    asset_realized_monthly[asset_key][month_key]["merchant_revenue"] += volume * merchant_pct * node_price
+
+        except Exception as e:
+            logger.error(f"Error aggregating Excel PnL record: {e}")
+            continue
+
+    # Round the aggregated values
+    for key, d in daily.items():
+        d["pnl"] = round(d["pnl"], 2)
+        d["volume"] = round(d["volume"], 4)
+        d["avg_pnl_per_interval"] = round(d["pnl"] / d["count"], 2) if d["count"] > 0 else 0
+        d["records"] = d["records"][-20:]  # Keep last 20 records
+
+    for d in monthly.values():
+        d["pnl"] = round(d["pnl"], 2)
+        d["volume"] = round(d["volume"], 4)
+
+    for d in annual.values():
+        d["pnl"] = round(d["pnl"], 2)
+        d["volume"] = round(d["volume"], 4)
+
+    # Helper function to calculate realized prices from tracking data
+    def calc_realized_prices(asset_key, realized_data):
+        """Calculate realized prices for an asset from tracking data."""
+        config = ASSET_CONFIG.get(asset_key, {})
+        result = {
+            "realized_price": None,
+            "realized_ppa_price": None,
+            "realized_merchant_price": None,
+            "gwa_basis": None,
+        }
+
+        total_vol = realized_data["total_volume"]
+        if total_vol > 0:
+            # GWA Basis = Sum(Volume × Basis) / Sum(Volume)
+            gwa_basis = realized_data["volume_basis_product"] / total_vol
+            result["gwa_basis"] = round(gwa_basis, 2)
+
+            if asset_key == "BKI":
+                # BKI (100% Merchant): Realized = Total Revenue / Total Volume
+                result["realized_price"] = round(realized_data["total_revenue"] / total_vol, 2)
+
+            elif asset_key == "BKII":
+                # BKII (100% PPA at $34, 50% basis exposure):
+                # Realized = PPA Price + (50% × GWA Basis)
+                ppa_price = config.get("ppa_price", 34.0)
+                basis_exposure = config.get("ppa_basis_exposure", 50) / 100
+                result["realized_price"] = round(ppa_price + (basis_exposure * gwa_basis), 2)
+
+            elif asset_key == "HOLSTEIN":
+                # Holstein (87.5% PPA at $35 + 100% basis, 12.5% Merchant)
+                ppa_price = config.get("ppa_price", 35.0)
+                basis_exposure = config.get("ppa_basis_exposure", 100) / 100
+                result["realized_ppa_price"] = round(ppa_price + (basis_exposure * gwa_basis), 2)
+
+                merchant_vol = realized_data["merchant_volume"]
+                if merchant_vol > 0:
+                    result["realized_merchant_price"] = round(realized_data["merchant_revenue"] / merchant_vol, 2)
+
+        return result
+
+    # Round per-asset aggregations and calculate realized prices at all time levels
+    assets_result = {}
+    for asset_key in asset_totals.keys():
+        config = ASSET_CONFIG.get(asset_key, {})
+
+        # Calculate YTD realized prices
+        ytd_realized = calc_realized_prices(asset_key, asset_realized[asset_key])
+
+        # Calculate daily realized prices
+        daily_realized = {}
+        for day_key, day_data in asset_realized_daily[asset_key].items():
+            daily_realized[day_key] = calc_realized_prices(asset_key, day_data)
+
+        # Calculate monthly realized prices
+        monthly_realized = {}
+        for month_key, month_data in asset_realized_monthly[asset_key].items():
+            monthly_realized[month_key] = calc_realized_prices(asset_key, month_data)
+
+        assets_result[asset_key] = {
+            "display_name": config.get("display_name", asset_key),
+            "ppa_percent": config.get("ppa_percent", 0),
+            "merchant_percent": config.get("merchant_percent", 0),
+            "ppa_price": config.get("ppa_price", 0),
+            "total_pnl": round(asset_totals[asset_key]["pnl"], 2),
+            "total_volume": round(asset_totals[asset_key]["volume"], 4),
+            "record_count": asset_totals[asset_key]["count"],
+            # YTD Realized price fields
+            "realized_price": ytd_realized["realized_price"],
+            "realized_ppa_price": ytd_realized["realized_ppa_price"],
+            "realized_merchant_price": ytd_realized["realized_merchant_price"],
+            "gwa_basis": ytd_realized["gwa_basis"],
+            # Daily data with PnL, volume, and realized prices
+            "daily_pnl": {k: {
+                "pnl": round(v["pnl"], 2),
+                "volume": round(v["volume"], 4),
+                "count": v["count"],
+                **daily_realized.get(k, {})
+            } for k, v in asset_daily[asset_key].items()},
+            # Monthly data with PnL, volume, and realized prices
+            "monthly_pnl": {k: {
+                "pnl": round(v["pnl"], 2),
+                "volume": round(v["volume"], 4),
+                "count": v["count"],
+                **monthly_realized.get(k, {})
+            } for k, v in asset_monthly[asset_key].items()},
+            "annual_pnl": {k: {"pnl": round(v["pnl"], 2), "volume": round(v["volume"], 4), "count": v["count"]}
+                          for k, v in asset_annual[asset_key].items()},
+        }
+
+    # Calculate worst basis intervals (sorted by basis_pnl_impact, most negative first)
+    # These are the intervals that hurt PnL the most due to basis
+    worst_intervals = sorted(all_intervals, key=lambda x: x["basis_pnl_impact"])[:WORST_BASIS_INTERVALS_TO_TRACK]
+
+    # Calculate total PnL
+    total_pnl = sum(d["pnl"] for d in daily.values())
+    total_volume = sum(d["volume"] for d in daily.values())
+
+    # Log hub price matching stats
+    if hub_price_lookup:
+        logger.info(f"Hub price matches: {hub_matches}, misses: {hub_misses}")
+    logger.info(f"Holstein worst basis intervals (yesterday only): {len(all_intervals)}")
+
+    # Log asset distribution for debugging
+    asset_summary = {k: {"pnl": round(v["pnl"], 2), "volume": round(v["volume"], 2), "count": v["count"]}
+                     for k, v in asset_totals.items()}
+    logger.info(f"Asset distribution: {asset_summary}")
+    logger.info(f"Total PnL: ${round(total_pnl, 2)}, Total Volume: {round(total_volume, 2)} MWh")
+
+    return {
+        "daily": dict(daily),
+        "monthly": dict(monthly),
+        "annual": dict(annual),
+        "total_pnl": round(total_pnl, 2),
+        "total_volume": round(total_volume, 4),
+        "record_count": len(records),
+        "assets": assets_result,
+        "worst_basis_intervals": worst_intervals[:WORST_BASIS_DISPLAY_COUNT],  # Top 10 for display
+        "all_worst_intervals": worst_intervals,  # Full list for API
+    }
+
+# ============================================================================
 # ERCOT Helper Functions
+# ============================================================================
 def get_historical_prices(hours_back=4):
     try:
         cst_tz = ZoneInfo("US/Central")
@@ -333,6 +1407,79 @@ def background_data_fetch():
 
     logger.info(f"Loaded {len(initial_history)} ERCOT + {len(initial_pjm_history)} PJM historical data points")
 
+    # Load PnL data - try API first if enabled, then Excel as fallback
+    last_tenaska_fetch_time = None
+
+    def refresh_pnl_data(source="auto"):
+        """
+        Refresh PnL data from API or Excel.
+        source: "api", "excel", or "auto" (try API first, then Excel)
+        """
+        nonlocal last_tenaska_fetch_time
+        records = []
+        hub_prices = {}
+
+        if source in ("api", "auto") and TENASKA_AUTO_FETCH:
+            logger.info(f"Fetching PnL data from Tenaska API (start_date={TENASKA_FETCH_START_DATE})...")
+            records = fetch_energy_imbalance_data(start_date=TENASKA_FETCH_START_DATE)
+            if records:
+                logger.info(f"Successfully fetched {len(records)} records from Tenaska API")
+                # Also fetch hub prices for basis calculation
+                logger.info("Fetching hub prices from Tenaska API...")
+                hub_prices = fetch_hub_prices(start_date=TENASKA_FETCH_START_DATE)
+                last_tenaska_fetch_time = datetime.now()
+
+        # Fall back to Excel if API returned nothing
+        if not records and source in ("excel", "auto"):
+            logger.info("Loading PnL data from Excel file...")
+            records = load_energy_imbalance_from_excel()
+            if records:
+                logger.info(f"Loaded {len(records)} records from Excel file")
+                # Try to fetch hub prices for basis calculation
+                if TENASKA_AUTO_FETCH and not hub_prices:
+                    logger.info("Fetching hub prices from Tenaska API for Excel data...")
+                    hub_prices = fetch_hub_prices(start_date=TENASKA_FETCH_START_DATE)
+
+        if records:
+            # Pass hub prices for basis calculation
+            aggregated = aggregate_excel_pnl(records, hub_prices=hub_prices)
+            with data_lock:
+                pnl_data["daily_pnl"] = aggregated["daily"]
+                pnl_data["monthly_pnl"] = aggregated["monthly"]
+                pnl_data["annual_pnl"] = aggregated["annual"]
+                pnl_data["total_pnl"] = aggregated["total_pnl"]
+                pnl_data["total_volume"] = aggregated["total_volume"]
+                pnl_data["record_count"] = aggregated["record_count"]
+                pnl_data["assets"] = aggregated.get("assets", {})
+                pnl_data["worst_basis_intervals"] = aggregated.get("worst_basis_intervals", [])
+                pnl_data["last_tenaska_update"] = datetime.now().isoformat()
+            save_pnl_data(pnl_data)
+            assets_loaded = list(aggregated.get("assets", {}).keys())
+            logger.info(f"PnL data updated: {aggregated['record_count']} records, total_pnl=${aggregated['total_pnl']}, assets={assets_loaded}")
+            return True
+        return False
+
+    logger.info("Loading initial PnL data...")
+    try:
+        # First try to load from cached JSON for quick startup
+        cached_pnl = load_pnl_data()
+        if cached_pnl:
+            with data_lock:
+                pnl_data.update(cached_pnl)
+            logger.info(f"Loaded cached PnL data: total_pnl=${pnl_data.get('total_pnl', 0)}")
+            # Skip initial API refresh for fast startup - the while loop will refresh periodically
+            # Set last_tenaska_fetch_time to None so the while loop refreshes on first iteration
+            last_tenaska_fetch_time = None
+            logger.info("Using cached data for fast startup. API refresh will happen in background loop.")
+        else:
+            # No cache, must load fresh data on first run
+            logger.info("No cached PnL data found. Fetching from API (first run)...")
+            refresh_pnl_data(source="auto")
+    except Exception as e:
+        logger.error(f"Error loading PnL data: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+
     # Signal that initial data is ready
     logger.info("Initial data ready, entering update loop")
     
@@ -416,10 +1563,29 @@ def background_data_fetch():
             else:
                 logger.warning("No PJM data available")
 
+            # Periodic Tenaska API refresh for PnL data
+            if TENASKA_AUTO_FETCH:
+                should_refresh = False
+                if last_tenaska_fetch_time is None:
+                    should_refresh = True
+                else:
+                    seconds_since_fetch = (datetime.now() - last_tenaska_fetch_time).total_seconds()
+                    if seconds_since_fetch >= TENASKA_FETCH_INTERVAL:
+                        should_refresh = True
+
+                if should_refresh:
+                    logger.info("Refreshing PnL data from Tenaska API...")
+                    try:
+                        refresh_pnl_data(source="api")
+                    except Exception as e:
+                        logger.error(f"Error refreshing Tenaska PnL data: {e}")
+
             time.sleep(120)
 
         except Exception as e:
             logger.error(f"Error in background fetch: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             # Keep last known good data instead of setting status to error
             time.sleep(60)
 
@@ -479,6 +1645,245 @@ def health():
         "ercot_status2": latest_data["status2"],
         "pjm_status": latest_data["pjm_status"]
     })
+
+# ============================================================================
+# PnL API ENDPOINTS
+# ============================================================================
+@app.route('/api/pnl', methods=['GET'])
+@login_required
+def get_pnl():
+    """Get PnL summary and aggregated data including per-asset breakdown."""
+    with data_lock:
+        return jsonify({
+            "total_pnl": pnl_data.get("total_pnl", 0),
+            "total_volume": pnl_data.get("total_volume", 0),
+            "record_count": pnl_data.get("record_count", 0),
+            "daily_pnl": pnl_data.get("daily_pnl", {}),
+            "monthly_pnl": pnl_data.get("monthly_pnl", {}),
+            "annual_pnl": pnl_data.get("annual_pnl", {}),
+            "assets": pnl_data.get("assets", {}),
+            "worst_basis_intervals": pnl_data.get("worst_basis_intervals", []),
+            "last_update": pnl_data.get("last_tenaska_update"),
+        })
+
+@app.route('/api/pnl/status', methods=['GET'])
+@login_required
+def get_pnl_status():
+    """Get Tenaska API configuration and connection status."""
+    # Test token fetch
+    token_status = "unknown"
+    try:
+        token = get_tenaska_token()
+        token_status = "ok" if token else "failed"
+    except Exception as e:
+        token_status = f"error: {str(e)}"
+
+    return jsonify({
+        "tenaska_auto_fetch": TENASKA_AUTO_FETCH,
+        "tenaska_fetch_interval_seconds": TENASKA_FETCH_INTERVAL,
+        "tenaska_fetch_days_back": TENASKA_FETCH_DAYS_BACK,
+        "tenaska_token_status": token_status,
+        "excel_file_path": ENERGY_IMBALANCE_EXCEL,
+        "excel_file_exists": os.path.exists(ENERGY_IMBALANCE_EXCEL),
+        "last_update": pnl_data.get("last_tenaska_update"),
+        "record_count": pnl_data.get("record_count", 0),
+        "assets_configured": list(ASSET_CONFIG.keys()),
+        "assets_loaded": list(pnl_data.get("assets", {}).keys()),
+    })
+
+@app.route('/api/pnl/assets', methods=['GET'])
+@login_required
+def get_asset_pnl():
+    """Get per-asset PnL breakdown."""
+    asset_filter = request.args.get('asset')  # Optional: filter by specific asset
+
+    with data_lock:
+        assets = pnl_data.get("assets", {})
+
+        if asset_filter and asset_filter in assets:
+            return jsonify({
+                "asset": asset_filter,
+                "data": assets[asset_filter]
+            })
+
+        return jsonify({
+            "assets": assets,
+            "asset_config": {k: {
+                "display_name": v["display_name"],
+                "ppa_percent": v["ppa_percent"],
+                "merchant_percent": v["merchant_percent"],
+                "ppa_price": v["ppa_price"],
+            } for k, v in ASSET_CONFIG.items()}
+        })
+
+@app.route('/api/pnl/worst-basis', methods=['GET'])
+@login_required
+def get_worst_basis():
+    """Get worst basis intervals for PPA exclusion tracking."""
+    limit = request.args.get('limit', WORST_BASIS_DISPLAY_COUNT, type=int)
+    asset_filter = request.args.get('asset')
+
+    with data_lock:
+        intervals = pnl_data.get("worst_basis_intervals", [])
+
+        if asset_filter:
+            intervals = [i for i in intervals if i.get("asset") == asset_filter]
+
+        # Limit results
+        intervals = intervals[:min(limit, WORST_BASIS_INTERVALS_TO_TRACK)]
+
+        # Calculate total impact if all worst intervals were excluded
+        total_excludable_impact = sum(abs(i.get("basis_pnl_impact", 0)) for i in intervals)
+
+        return jsonify({
+            "worst_intervals": intervals,
+            "count": len(intervals),
+            "max_excludable": WORST_BASIS_INTERVALS_TO_TRACK,
+            "total_excludable_impact": round(total_excludable_impact, 2),
+            "note": "PPA exclusion candidates from prior day only (Gen × Basis formula)"
+        })
+
+@app.route('/api/pnl/daily', methods=['GET'])
+@login_required
+def get_daily_pnl():
+    """Get daily PnL data with optional date filtering."""
+    start_date = request.args.get('start')
+    end_date = request.args.get('end')
+
+    with data_lock:
+        daily = pnl_data.get("daily_pnl", {})
+
+        if start_date or end_date:
+            filtered = {}
+            for date_key, data in daily.items():
+                if start_date and date_key < start_date:
+                    continue
+                if end_date and date_key > end_date:
+                    continue
+                filtered[date_key] = data
+            daily = filtered
+
+        # Sort by date descending (most recent first)
+        sorted_daily = dict(sorted(daily.items(), reverse=True))
+
+        return jsonify({
+            "daily_pnl": sorted_daily,
+            "total_pnl": sum(d.get("pnl", 0) for d in sorted_daily.values()),
+            "total_volume": sum(d.get("volume", 0) for d in sorted_daily.values()),
+            "count": len(sorted_daily)
+        })
+
+@app.route('/api/pnl/monthly', methods=['GET'])
+@login_required
+def get_monthly_pnl():
+    """Get monthly PnL data."""
+    with data_lock:
+        monthly = pnl_data.get("monthly_pnl", {})
+        sorted_monthly = dict(sorted(monthly.items(), reverse=True))
+
+        return jsonify({
+            "monthly_pnl": sorted_monthly,
+            "total_pnl": sum(d.get("pnl", 0) for d in sorted_monthly.values()),
+            "total_volume": sum(d.get("volume", 0) for d in sorted_monthly.values()),
+            "count": len(sorted_monthly)
+        })
+
+@app.route('/api/pnl/annual', methods=['GET'])
+@login_required
+def get_annual_pnl():
+    """Get annual PnL data."""
+    with data_lock:
+        annual = pnl_data.get("annual_pnl", {})
+        sorted_annual = dict(sorted(annual.items(), reverse=True))
+
+        return jsonify({
+            "annual_pnl": sorted_annual,
+            "total_pnl": sum(d.get("pnl", 0) for d in sorted_annual.values()),
+            "total_volume": sum(d.get("volume", 0) for d in sorted_annual.values()),
+            "count": len(sorted_annual)
+        })
+
+@app.route('/api/pnl/reload', methods=['POST'])
+@login_required
+def reload_pnl():
+    """
+    Force reload PnL data.
+    Query params:
+    - source: "api", "excel", or "auto" (default: "auto")
+    - days: number of days to fetch from API (default: TENASKA_FETCH_DAYS_BACK)
+    """
+    global pnl_data
+
+    source = request.args.get('source', 'auto')
+    start_date = request.args.get('start_date', TENASKA_FETCH_START_DATE)
+
+    try:
+        records = []
+        hub_prices = {}
+        data_source = ""
+
+        # Try API first if requested
+        if source in ("api", "auto") and TENASKA_AUTO_FETCH:
+            logger.info(f"Reloading PnL data from Tenaska API (start_date={start_date})...")
+            records = fetch_energy_imbalance_data(start_date=start_date)
+            if records:
+                data_source = "api"
+                logger.info(f"Loaded {len(records)} records from Tenaska API")
+                # Also fetch hub prices
+                hub_prices = fetch_hub_prices(start_date=start_date)
+
+        # Fall back to Excel if API returned nothing
+        if not records and source in ("excel", "auto"):
+            logger.info("Reloading PnL data from Excel file...")
+            records = load_energy_imbalance_from_excel()
+            if records:
+                data_source = "excel"
+                logger.info(f"Loaded {len(records)} records from Excel file")
+                # Fetch hub prices for basis calculation
+                if TENASKA_AUTO_FETCH:
+                    hub_prices = fetch_hub_prices(start_date=start_date)
+
+        if records:
+            # Aggregate the data with hub prices for basis calculation
+            aggregated = aggregate_excel_pnl(records, hub_prices=hub_prices)
+
+            with data_lock:
+                pnl_data["daily_pnl"] = aggregated["daily"]
+                pnl_data["monthly_pnl"] = aggregated["monthly"]
+                pnl_data["annual_pnl"] = aggregated["annual"]
+                pnl_data["total_pnl"] = aggregated["total_pnl"]
+                pnl_data["total_volume"] = aggregated["total_volume"]
+                pnl_data["record_count"] = aggregated["record_count"]
+                pnl_data["assets"] = aggregated.get("assets", {})
+                pnl_data["worst_basis_intervals"] = aggregated.get("worst_basis_intervals", [])
+                pnl_data["last_tenaska_update"] = datetime.now().isoformat()
+
+            # Save to JSON for persistence
+            save_pnl_data(pnl_data)
+
+            # Build asset summary for response
+            asset_summary = {k: v.get("total_pnl", 0) for k, v in aggregated.get("assets", {}).items()}
+
+            return jsonify({
+                "success": True,
+                "message": f"Loaded {aggregated['record_count']} records from {data_source}",
+                "source": data_source,
+                "total_pnl": aggregated["total_pnl"],
+                "assets": asset_summary,
+                "worst_intervals_count": len(aggregated.get("worst_basis_intervals", []))
+            })
+        else:
+            return jsonify({
+                "success": False,
+                "message": f"No records found (source={source})"
+            }), 400
+
+    except Exception as e:
+        logger.error(f"Error reloading PnL data: {e}")
+        return jsonify({
+            "success": False,
+            "message": str(e)
+        }), 500
 
 @app.route('/', methods=['GET'])
 @login_required
@@ -672,8 +2077,242 @@ def dashboard():
                     <div id="pjm-chart-container"></div>
                 </div>
             </div>
+
+            <!-- PnL Section -->
+            <div class="mb-2 mt-4">
+                <h2 class="text-lg font-bold mb-2" style="color: var(--skyvest-navy); border-left: 3px solid var(--skyvest-blue); padding-left: 8px;">Energy Imbalance PnL</h2>
+            </div>
+
+            <!-- Toggle Controls -->
+            <div class="card rounded-sm p-3 mb-3">
+                <div class="flex flex-wrap gap-4 items-center">
+                    <!-- Time Period Toggle -->
+                    <div class="flex items-center gap-2">
+                        <span class="text-xs font-semibold" style="color: #666;">Period:</span>
+                        <div class="flex rounded overflow-hidden border" style="border-color: var(--skyvest-navy);">
+                            <button id="period-daily" onclick="setPeriod('daily')" class="px-3 py-1 text-xs font-semibold period-btn" style="background-color: white; color: var(--skyvest-navy);">Daily</button>
+                            <button id="period-mtd" onclick="setPeriod('mtd')" class="px-3 py-1 text-xs font-semibold period-btn" style="background-color: white; color: var(--skyvest-navy);">MTD</button>
+                            <button id="period-ytd" onclick="setPeriod('ytd')" class="px-3 py-1 text-xs font-semibold period-btn active" style="background-color: var(--skyvest-navy); color: white;">YTD</button>
+                        </div>
+                    </div>
+                    <!-- Asset Filter Toggle -->
+                    <div class="flex items-center gap-2">
+                        <span class="text-xs font-semibold" style="color: #666;">Asset:</span>
+                        <div class="flex rounded overflow-hidden border" style="border-color: var(--skyvest-navy);">
+                            <button id="asset-all" onclick="setAssetFilter('all')" class="px-3 py-1 text-xs font-semibold asset-btn active" style="background-color: var(--skyvest-navy); color: white;">All</button>
+                            <button id="asset-BKI" onclick="setAssetFilter('BKI')" class="px-3 py-1 text-xs font-semibold asset-btn" style="background-color: white; color: var(--skyvest-navy);">BKI</button>
+                            <button id="asset-BKII" onclick="setAssetFilter('BKII')" class="px-3 py-1 text-xs font-semibold asset-btn" style="background-color: white; color: var(--skyvest-navy);">BKII</button>
+                            <button id="asset-HOLSTEIN" onclick="setAssetFilter('HOLSTEIN')" class="px-3 py-1 text-xs font-semibold asset-btn" style="background-color: white; color: var(--skyvest-navy);">Holstein</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Summary Cards (updates based on toggles) -->
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-2 mb-3">
+                <div class="card rounded-sm p-3" style="background-color: var(--skyvest-navy);">
+                    <p class="metric-label mb-1" style="color: var(--skyvest-light-blue);"><span id="pnl-label">YTD</span> PnL</p>
+                    <span id="filtered-pnl" class="text-2xl font-bold text-white">$0.00</span>
+                </div>
+                <div class="card rounded-sm p-3">
+                    <p class="metric-label mb-1" style="color: #666;"><span id="volume-label">YTD</span> Volume</p>
+                    <span id="filtered-volume" class="text-2xl font-light" style="color: var(--skyvest-navy);">0 MWh</span>
+                </div>
+                <div class="card rounded-sm p-3">
+                    <p class="metric-label mb-1" style="color: #666;">Realized Price</p>
+                    <span id="filtered-realized" class="text-2xl font-light" style="color: var(--skyvest-navy);">--</span>
+                </div>
+                <div class="card rounded-sm p-3">
+                    <p class="metric-label mb-1" style="color: #666;">GWA Basis</p>
+                    <span id="filtered-basis" class="text-2xl font-light" style="color: var(--skyvest-navy);">--</span>
+                </div>
+            </div>
+
+            <!-- Hidden fields for original values -->
+            <input type="hidden" id="total-pnl" value="0">
+            <input type="hidden" id="total-volume" value="0">
+            <input type="hidden" id="today-pnl" value="0">
+            <input type="hidden" id="mtd-pnl" value="0">
+
+            <!-- Per-Asset PnL Cards (shown when "All" is selected) -->
+            <div id="asset-cards-container" class="grid grid-cols-1 md:grid-cols-3 gap-2 mb-3">
+                <div class="card rounded-sm p-3" id="asset-card-BKII">
+                    <div class="flex justify-between items-start mb-1">
+                        <p class="metric-label" style="color: #666;">McCrae (BKII)</p>
+                        <span class="text-xs px-2 py-0.5 rounded" style="background-color: var(--skyvest-light-blue); color: var(--skyvest-navy);">100% PPA @ $34</span>
+                    </div>
+                    <span id="asset-pnl-BKII" class="text-xl font-bold" style="color: var(--skyvest-navy);">$0.00</span>
+                    <p class="text-xs mt-1" style="color: #999;"><span id="asset-volume-BKII">0</span> MWh</p>
+                    <div class="mt-2 pt-2" style="border-top: 1px solid #eee;">
+                        <p class="text-xs" style="color: #666;">Realized: <span id="asset-realized-BKII" class="font-semibold" style="color: var(--skyvest-navy);">--</span></p>
+                        <p class="text-xs" style="color: #999;">GWA Basis: <span id="asset-basis-BKII">--</span> (50%)</p>
+                    </div>
+                </div>
+                <div class="card rounded-sm p-3" id="asset-card-BKI">
+                    <div class="flex justify-between items-start mb-1">
+                        <p class="metric-label" style="color: #666;">Bearkat I</p>
+                        <span class="text-xs px-2 py-0.5 rounded" style="background-color: var(--skyvest-gold); color: var(--skyvest-navy);">100% Merchant</span>
+                    </div>
+                    <span id="asset-pnl-BKI" class="text-xl font-bold" style="color: var(--skyvest-navy);">$0.00</span>
+                    <p class="text-xs mt-1" style="color: #999;"><span id="asset-volume-BKI">0</span> MWh</p>
+                    <div class="mt-2 pt-2" style="border-top: 1px solid #eee;">
+                        <p class="text-xs" style="color: #666;">Realized: <span id="asset-realized-BKI" class="font-semibold" style="color: var(--skyvest-navy);">--</span></p>
+                        <p class="text-xs" style="color: #999;">GWA Basis: <span id="asset-basis-BKI">--</span></p>
+                    </div>
+                </div>
+                <div class="card rounded-sm p-3" id="asset-card-HOLSTEIN">
+                    <div class="flex justify-between items-start mb-1">
+                        <p class="metric-label" style="color: #666;">Holstein</p>
+                        <span class="text-xs px-2 py-0.5 rounded" style="background-color: var(--skyvest-light-blue); color: var(--skyvest-navy);">87.5% PPA @ $35</span>
+                    </div>
+                    <span id="asset-pnl-HOLSTEIN" class="text-xl font-bold" style="color: var(--skyvest-navy);">$0.00</span>
+                    <p class="text-xs mt-1" style="color: #999;"><span id="asset-volume-HOLSTEIN">0</span> MWh</p>
+                    <div class="mt-2 pt-2" style="border-top: 1px solid #eee;">
+                        <p class="text-xs" style="color: #666;">PPA: <span id="asset-realized-ppa-HOLSTEIN" class="font-semibold" style="color: var(--skyvest-navy);">--</span> <span style="color: #999;">(87.5%)</span></p>
+                        <p class="text-xs" style="color: #666;">Merchant: <span id="asset-realized-merchant-HOLSTEIN" class="font-semibold" style="color: var(--skyvest-navy);">--</span> <span style="color: #999;">(12.5%)</span></p>
+                        <p class="text-xs" style="color: #999;">GWA Basis: <span id="asset-basis-HOLSTEIN">--</span> (100%)</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Single Asset Detail Card (shown when specific asset selected) -->
+            <div id="single-asset-detail" class="card rounded-sm p-3 mb-3" style="display: none;">
+                <div class="flex justify-between items-start mb-2">
+                    <div>
+                        <p id="single-asset-name" class="text-lg font-semibold" style="color: var(--skyvest-navy);">Asset Name</p>
+                        <p id="single-asset-type" class="text-xs" style="color: #999;">Type details</p>
+                    </div>
+                </div>
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3">
+                    <div>
+                        <p class="text-xs" style="color: #666;">PnL</p>
+                        <p id="single-asset-pnl" class="text-lg font-bold" style="color: var(--skyvest-navy);">$0.00</p>
+                    </div>
+                    <div>
+                        <p class="text-xs" style="color: #666;">Volume</p>
+                        <p id="single-asset-volume" class="text-lg font-bold" style="color: var(--skyvest-navy);">0 MWh</p>
+                    </div>
+                    <div>
+                        <p class="text-xs" style="color: #666;">Realized Price</p>
+                        <p id="single-asset-realized" class="text-lg font-bold" style="color: var(--skyvest-navy);">--</p>
+                    </div>
+                    <div>
+                        <p class="text-xs" style="color: #666;">GWA Basis</p>
+                        <p id="single-asset-basis" class="text-lg font-bold" style="color: var(--skyvest-navy);">--</p>
+                    </div>
+                </div>
+                <!-- Holstein-specific fields -->
+                <div id="holstein-extra" class="mt-3 pt-3" style="border-top: 1px solid #eee; display: none;">
+                    <div class="grid grid-cols-2 gap-3">
+                        <div>
+                            <p class="text-xs" style="color: #666;">PPA Realized (87.5%)</p>
+                            <p id="single-ppa-realized" class="text-lg font-bold" style="color: var(--skyvest-navy);">--</p>
+                        </div>
+                        <div>
+                            <p class="text-xs" style="color: #666;">Merchant Realized (12.5%)</p>
+                            <p id="single-merchant-realized" class="text-lg font-bold" style="color: var(--skyvest-navy);">--</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Worst Basis Intervals (PPA Exclusion Tracking) -->
+            <div class="card rounded-sm p-3 mb-3">
+                <div class="flex justify-between items-center mb-2">
+                    <h3 class="text-sm font-semibold" style="color: var(--skyvest-navy);">Worst Basis Intervals - Yesterday (PPA Exclusion Candidates)</h3>
+                    <span class="text-xs" style="color: #999;">Gen × Basis (prior day only per contract)</span>
+                </div>
+                <div id="worst-basis-container" style="max-height: 200px; overflow-y: auto;">
+                    <table class="w-full text-xs">
+                        <thead>
+                            <tr style="border-bottom: 1px solid #e5e5e5;">
+                                <th class="text-left py-1 px-2" style="color: #666;">Date/Time</th>
+                                <th class="text-left py-1 px-2" style="color: #666;">Asset</th>
+                                <th class="text-right py-1 px-2" style="color: #666;">Basis</th>
+                                <th class="text-right py-1 px-2" style="color: #666;">Volume</th>
+                                <th class="text-right py-1 px-2" style="color: #666;">PnL Impact</th>
+                            </tr>
+                        </thead>
+                        <tbody id="worst-basis-body">
+                            <tr><td colspan="5" class="text-center py-2" style="color: #999;">Loading...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="mt-2 pt-2" style="border-top: 1px solid #e5e5e5;">
+                    <span class="text-xs" style="color: #666;">Potential savings if excluded: </span>
+                    <span id="excludable-savings" class="text-sm font-bold" style="color: var(--skyvest-blue);">$0.00</span>
+                </div>
+            </div>
+
+            <!-- PnL View Selector -->
+            <div class="card rounded-sm p-3 mb-3">
+                <div class="flex justify-between items-center mb-3">
+                    <h3 class="text-sm font-semibold" style="color: var(--skyvest-navy);">PnL by Period</h3>
+                    <div class="flex gap-2 flex-wrap">
+                        <select id="asset-filter" onchange="updatePnlTable()" class="px-2 py-1 text-xs rounded" style="border: 1px solid #e5e5e5;">
+                            <option value="all">All Assets</option>
+                            <option value="BKII">McCrae (BKII)</option>
+                            <option value="BKI">Bearkat I</option>
+                            <option value="HOLSTEIN">Holstein</option>
+                        </select>
+                        <button id="btn-daily" onclick="setPnlView('daily')" class="px-3 py-1 text-xs font-semibold rounded" style="background-color: var(--skyvest-blue); color: white;">Daily</button>
+                        <button id="btn-monthly" onclick="setPnlView('monthly')" class="px-3 py-1 text-xs font-semibold rounded" style="background-color: #e5e5e5; color: var(--skyvest-navy);">Monthly</button>
+                        <button id="btn-annual" onclick="setPnlView('annual')" class="px-3 py-1 text-xs font-semibold rounded" style="background-color: #e5e5e5; color: var(--skyvest-navy);">Annual</button>
+                        <button onclick="reloadPnlData()" class="px-3 py-1 text-xs font-semibold rounded" style="background-color: var(--skyvest-gold); color: var(--skyvest-navy);">Reload</button>
+                    </div>
+                </div>
+                <div id="pnl-table-container" style="max-height: 400px; overflow-y: auto;">
+                    <table class="w-full text-sm">
+                        <thead>
+                            <tr style="border-bottom: 2px solid var(--skyvest-navy);">
+                                <th class="text-left py-2 px-2" style="color: var(--skyvest-navy);">Period</th>
+                                <th class="text-right py-2 px-2" style="color: var(--skyvest-navy);">PnL</th>
+                                <th class="text-right py-2 px-2" style="color: var(--skyvest-navy);">Volume (MWh)</th>
+                                <th class="text-right py-2 px-2" style="color: var(--skyvest-navy);">Intervals</th>
+                            </tr>
+                        </thead>
+                        <tbody id="pnl-table-body">
+                            <tr><td colspan="4" class="text-center py-4" style="color: #999;">Loading PnL data...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- PnL Chart -->
+            <div class="card rounded-sm p-3 mb-3">
+                <h3 class="text-sm font-semibold mb-2" style="color: var(--skyvest-navy); border-bottom: 1px solid #e5e5e5; padding-bottom: 4px;">PnL Trend</h3>
+                <div id="pnl-chart-container"></div>
+            </div>
         </div>
     </div>
+
+    <!-- Data Refresh Status Footer -->
+    <div class="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 px-4 py-2 text-xs" style="z-index: 100;">
+        <div class="max-w-7xl mx-auto flex flex-wrap justify-between items-center gap-4">
+            <div class="flex flex-wrap gap-6">
+                <div class="flex items-center gap-2">
+                    <span class="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
+                    <span style="color: #666;"><strong>ERCOT/PJM LMP:</strong> 30s</span>
+                    <span id="lmp-last-update" style="color: #999;"></span>
+                </div>
+                <div class="flex items-center gap-2">
+                    <span class="w-2 h-2 rounded-full bg-blue-500"></span>
+                    <span style="color: #666;"><strong>PnL Display:</strong> 60s</span>
+                    <span id="pnl-last-update" style="color: #999;"></span>
+                </div>
+                <div class="flex items-center gap-2">
+                    <span class="w-2 h-2 rounded-full bg-yellow-500"></span>
+                    <span style="color: #666;"><strong>Tenaska API:</strong> 30min</span>
+                    <span id="tenaska-last-update" style="color: #999;"></span>
+                </div>
+            </div>
+            <div style="color: #999;">
+                <span id="current-time"></span>
+            </div>
+        </div>
+    </div>
+    <!-- Spacer to prevent content from being hidden behind fixed footer -->
+    <div class="h-12"></div>
 
     <script>
         const API_URL = window.location.protocol + '//' + window.location.host + '/api/basis';
@@ -1153,8 +2792,755 @@ def dashboard():
             container.appendChild(chartWrapper);
         }
 
+        // ============================================================================
+        // PnL Functions
+        // ============================================================================
+        const PNL_API_URL = window.location.protocol + '//' + window.location.host + '/api/pnl';
+        let currentPnlView = 'daily';
+        let pnlData = null;
+
+        // Toggle state variables
+        let currentPeriod = 'ytd';  // 'daily', 'mtd', 'ytd'
+        let currentAssetFilter = 'all';  // 'all', 'BKI', 'BKII', 'HOLSTEIN'
+
+        function setPeriod(period) {
+            currentPeriod = period;
+
+            // Update button styles
+            ['daily', 'mtd', 'ytd'].forEach(p => {
+                const btn = document.getElementById('period-' + p);
+                if (p === period) {
+                    btn.style.backgroundColor = 'var(--skyvest-navy)';
+                    btn.style.color = 'white';
+                } else {
+                    btn.style.backgroundColor = 'white';
+                    btn.style.color = 'var(--skyvest-navy)';
+                }
+            });
+
+            // Update labels
+            const periodLabels = { 'daily': 'Daily', 'mtd': 'MTD', 'ytd': 'YTD' };
+            const label = periodLabels[period];
+            document.getElementById('pnl-label').textContent = label;
+            document.getElementById('volume-label').textContent = label;
+
+            updateFilteredDisplay();
+            updateAssetCards();  // Update asset cards to reflect selected period
+        }
+
+        function setAssetFilter(asset) {
+            currentAssetFilter = asset;
+
+            // Update button styles
+            ['all', 'BKI', 'BKII', 'HOLSTEIN'].forEach(a => {
+                const btn = document.getElementById('asset-' + a);
+                if (a === asset) {
+                    btn.style.backgroundColor = 'var(--skyvest-navy)';
+                    btn.style.color = 'white';
+                } else {
+                    btn.style.backgroundColor = 'white';
+                    btn.style.color = 'var(--skyvest-navy)';
+                }
+            });
+
+            // Show/hide asset cards vs single asset detail
+            const assetCardsContainer = document.getElementById('asset-cards-container');
+            const singleAssetDetail = document.getElementById('single-asset-detail');
+
+            if (asset === 'all') {
+                assetCardsContainer.style.display = '';
+                singleAssetDetail.style.display = 'none';
+            } else {
+                assetCardsContainer.style.display = 'none';
+                singleAssetDetail.style.display = '';
+            }
+
+            updateFilteredDisplay();
+        }
+
+        function updateFilteredDisplay() {
+            if (!pnlData) return;
+
+            // Use local date (not UTC) to match backend date keys
+            const now = new Date();
+            let today = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
+            const currentMonth = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0');
+            const currentYear = now.getFullYear().toString();
+
+            // If today's data doesn't exist, find the most recent available date
+            if (currentPeriod === 'daily' && pnlData.daily_pnl && !pnlData.daily_pnl[today]) {
+                const availableDates = Object.keys(pnlData.daily_pnl).sort();
+                if (availableDates.length > 0) {
+                    today = availableDates[availableDates.length - 1];
+                }
+            }
+
+            let pnl = 0, volume = 0, realizedPrice = null, gwaBasis = null;
+            let realizedPpaPrice = null, realizedMerchantPrice = null;
+
+            if (currentAssetFilter === 'all') {
+                // Aggregate all assets
+                if (currentPeriod === 'daily') {
+                    const dayData = pnlData.daily_pnl?.[today];
+                    pnl = dayData?.pnl || 0;
+                    volume = dayData?.volume || 0;
+                } else if (currentPeriod === 'mtd') {
+                    const monthData = pnlData.monthly_pnl?.[currentMonth];
+                    pnl = monthData?.pnl || 0;
+                    volume = monthData?.volume || 0;
+                } else {
+                    // YTD - use current year's annual data, not total
+                    const yearData = pnlData.annual_pnl?.[currentYear];
+                    pnl = yearData?.pnl || 0;
+                    volume = yearData?.volume || 0;
+                }
+                // Calculate aggregate realized price as weighted average across assets
+                let totalWeightedPrice = 0;
+                let totalVolumeForAvg = 0;
+                const assets = pnlData.assets || {};
+                for (const [key, asset] of Object.entries(assets)) {
+                    if (key === 'UNKNOWN') continue;
+                    let assetVol = 0, assetPrice = null;
+                    if (currentPeriod === 'daily') {
+                        const d = asset.daily_pnl?.[today];
+                        assetVol = d?.volume || 0;
+                        assetPrice = d?.realized_price || d?.realized_ppa_price;
+                    } else if (currentPeriod === 'mtd') {
+                        const m = asset.monthly_pnl?.[currentMonth];
+                        assetVol = m?.volume || 0;
+                        assetPrice = m?.realized_price || m?.realized_ppa_price;
+                    } else {
+                        assetVol = asset.total_volume || 0;
+                        assetPrice = asset.realized_price || asset.realized_ppa_price;
+                    }
+                    if (assetPrice && assetVol > 0) {
+                        totalWeightedPrice += assetPrice * assetVol;
+                        totalVolumeForAvg += assetVol;
+                    }
+                }
+                realizedPrice = totalVolumeForAvg > 0 ? Math.round(totalWeightedPrice / totalVolumeForAvg * 100) / 100 : null;
+
+                // Calculate aggregate GWA basis as weighted average across assets
+                let totalWeightedBasis = 0;
+                let totalVolumeForBasis = 0;
+                for (const [key, asset] of Object.entries(assets)) {
+                    if (key === 'UNKNOWN') continue;
+                    let assetVol = 0, assetBasis = null;
+                    if (currentPeriod === 'daily') {
+                        const d = asset.daily_pnl?.[today];
+                        assetVol = d?.volume || 0;
+                        assetBasis = d?.gwa_basis;
+                    } else if (currentPeriod === 'mtd') {
+                        const m = asset.monthly_pnl?.[currentMonth];
+                        assetVol = m?.volume || 0;
+                        assetBasis = m?.gwa_basis;
+                    } else {
+                        assetVol = asset.total_volume || 0;
+                        assetBasis = asset.gwa_basis;
+                    }
+                    if (assetBasis !== null && assetBasis !== undefined && assetVol > 0) {
+                        totalWeightedBasis += assetBasis * assetVol;
+                        totalVolumeForBasis += assetVol;
+                    }
+                }
+                gwaBasis = totalVolumeForBasis > 0 ? Math.round(totalWeightedBasis / totalVolumeForBasis * 100) / 100 : null;
+            } else {
+                // Single asset selected
+                const assetData = pnlData.assets?.[currentAssetFilter];
+                if (assetData) {
+                    if (currentPeriod === 'daily') {
+                        const dayData = assetData.daily_pnl?.[today];
+                        pnl = dayData?.pnl || 0;
+                        volume = dayData?.volume || 0;
+                        realizedPrice = dayData?.realized_price;
+                        gwaBasis = dayData?.gwa_basis;
+                        realizedPpaPrice = dayData?.realized_ppa_price;
+                        realizedMerchantPrice = dayData?.realized_merchant_price;
+                    } else if (currentPeriod === 'mtd') {
+                        const monthData = assetData.monthly_pnl?.[currentMonth];
+                        pnl = monthData?.pnl || 0;
+                        volume = monthData?.volume || 0;
+                        realizedPrice = monthData?.realized_price;
+                        gwaBasis = monthData?.gwa_basis;
+                        realizedPpaPrice = monthData?.realized_ppa_price;
+                        realizedMerchantPrice = monthData?.realized_merchant_price;
+                    } else {
+                        // YTD - use current year's annual data
+                        const yearData = assetData.annual_pnl?.[currentYear];
+                        pnl = yearData?.pnl || 0;
+                        volume = yearData?.volume || 0;
+                        // For YTD realized prices, still use the asset's YTD totals (they're calculated for full data)
+                        realizedPrice = assetData.realized_price;
+                        gwaBasis = assetData.gwa_basis;
+                        realizedPpaPrice = assetData.realized_ppa_price;
+                        realizedMerchantPrice = assetData.realized_merchant_price;
+                    }
+                }
+
+                // Update single asset detail view
+                updateSingleAssetDetail(currentAssetFilter, pnl, volume, realizedPrice, gwaBasis, realizedPpaPrice, realizedMerchantPrice);
+            }
+
+            // Update summary cards
+            document.getElementById('filtered-pnl').textContent = formatCurrency(pnl);
+            document.getElementById('filtered-pnl').style.color = pnl >= 0 ? '#4ade80' : '#ef4444';
+            document.getElementById('filtered-volume').textContent = formatNumber(volume) + ' MWh';
+
+            // For Holstein, calculate blended realized price if we have both PPA and merchant
+            if (currentAssetFilter === 'HOLSTEIN') {
+                if (realizedPpaPrice !== null && realizedMerchantPrice !== null) {
+                    // 87.5% PPA + 12.5% Merchant
+                    realizedPrice = Math.round((0.875 * realizedPpaPrice + 0.125 * realizedMerchantPrice) * 100) / 100;
+                } else if (realizedPpaPrice !== null) {
+                    realizedPrice = realizedPpaPrice;
+                }
+            }
+
+            // Update summary cards - show realized price for all views
+            document.getElementById('filtered-realized').textContent = realizedPrice !== null && realizedPrice !== undefined ? formatCurrency(realizedPrice) + '/MWh' : '--';
+            document.getElementById('filtered-basis').textContent = gwaBasis !== null && gwaBasis !== undefined ? formatCurrency(gwaBasis) : '--';
+            if (gwaBasis !== null && gwaBasis !== undefined) {
+                document.getElementById('filtered-basis').style.color = gwaBasis < 0 ? '#ef4444' : '#22c55e';
+            }
+
+            // Update label to show actual date when displaying daily data from a different day
+            if (currentPeriod === 'daily') {
+                const actualNow = new Date();
+                const actualToday = actualNow.getFullYear() + '-' + String(actualNow.getMonth() + 1).padStart(2, '0') + '-' + String(actualNow.getDate()).padStart(2, '0');
+                if (today !== actualToday) {
+                    // Format the date nicely (e.g., "Jan 28")
+                    const [year, month, day] = today.split('-');
+                    const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+                    const formattedDate = monthNames[parseInt(month) - 1] + ' ' + parseInt(day);
+                    document.getElementById('pnl-label').textContent = formattedDate;
+                    document.getElementById('volume-label').textContent = formattedDate;
+                } else {
+                    document.getElementById('pnl-label').textContent = 'Daily';
+                    document.getElementById('volume-label').textContent = 'Daily';
+                }
+            }
+        }
+
+        function updateSingleAssetDetail(assetKey, pnl, volume, realizedPrice, gwaBasis, realizedPpaPrice, realizedMerchantPrice) {
+            const assetNames = {
+                'BKI': 'Bearkat I',
+                'BKII': 'McCrae (BKII)',
+                'HOLSTEIN': 'Holstein'
+            };
+            const assetTypes = {
+                'BKI': '100% Merchant',
+                'BKII': '100% PPA @ $34 (50% Basis Exposure)',
+                'HOLSTEIN': '87.5% PPA @ $35 / 12.5% Merchant (100% Basis)'
+            };
+
+            document.getElementById('single-asset-name').textContent = assetNames[assetKey] || assetKey;
+            document.getElementById('single-asset-type').textContent = assetTypes[assetKey] || '';
+
+            document.getElementById('single-asset-pnl').textContent = formatCurrency(pnl);
+            document.getElementById('single-asset-pnl').style.color = pnl >= 0 ? 'var(--skyvest-blue)' : '#ef4444';
+            document.getElementById('single-asset-volume').textContent = formatNumber(volume) + ' MWh';
+
+            if (assetKey === 'HOLSTEIN') {
+                // Calculate blended realized price: 87.5% PPA + 12.5% Merchant
+                let blendedPrice = null;
+                if (realizedPpaPrice !== null && realizedPpaPrice !== undefined && realizedMerchantPrice !== null && realizedMerchantPrice !== undefined) {
+                    blendedPrice = Math.round((0.875 * realizedPpaPrice + 0.125 * realizedMerchantPrice) * 100) / 100;
+                } else if (realizedPpaPrice !== null && realizedPpaPrice !== undefined) {
+                    blendedPrice = realizedPpaPrice;
+                }
+                document.getElementById('single-asset-realized').textContent = blendedPrice !== null ? formatCurrency(blendedPrice) + '/MWh' : '--';
+                document.getElementById('holstein-extra').style.display = '';
+                document.getElementById('single-ppa-realized').textContent = realizedPpaPrice !== null && realizedPpaPrice !== undefined ? formatCurrency(realizedPpaPrice) + '/MWh' : '--';
+                document.getElementById('single-merchant-realized').textContent = realizedMerchantPrice !== null && realizedMerchantPrice !== undefined ? formatCurrency(realizedMerchantPrice) + '/MWh' : '--';
+            } else {
+                document.getElementById('holstein-extra').style.display = 'none';
+                document.getElementById('single-asset-realized').textContent = realizedPrice !== null && realizedPrice !== undefined ? formatCurrency(realizedPrice) + '/MWh' : '--';
+            }
+
+            document.getElementById('single-asset-basis').textContent = gwaBasis !== null && gwaBasis !== undefined ? formatCurrency(gwaBasis) : '--';
+            if (gwaBasis !== null && gwaBasis !== undefined) {
+                document.getElementById('single-asset-basis').style.color = gwaBasis < 0 ? '#ef4444' : '#22c55e';
+            }
+        }
+
+        async function fetchPnlData() {
+            try {
+                const response = await fetch(PNL_API_URL);
+                pnlData = await response.json();
+                updatePnlDisplay();
+                // Update Tenaska timestamp in footer
+                if (typeof updateTenaskaTimestamp === 'function') {
+                    updateTenaskaTimestamp(pnlData);
+                }
+            } catch (error) {
+                console.error('Error fetching PnL data:', error);
+            }
+        }
+
+        function updatePnlDisplay() {
+            if (!pnlData) return;
+
+            // Store hidden values for reference
+            const totalPnl = pnlData.total_pnl || 0;
+            const totalVolume = pnlData.total_volume || 0;
+            document.getElementById('total-pnl').value = totalPnl;
+            document.getElementById('total-volume').value = totalVolume;
+
+            // Calculate today's PnL
+            const today = new Date().toISOString().split('T')[0];
+            const todayData = pnlData.daily_pnl?.[today];
+            const todayPnl = todayData?.pnl || 0;
+            document.getElementById('today-pnl').value = todayPnl;
+
+            // Calculate MTD PnL
+            const currentMonth = new Date().toISOString().slice(0, 7);
+            const mtdData = pnlData.monthly_pnl?.[currentMonth];
+            const mtdPnl = mtdData?.pnl || 0;
+            document.getElementById('mtd-pnl').value = mtdPnl;
+
+            // Update per-asset PnL cards (always updated for YTD totals)
+            updateAssetCards();
+
+            // Update filtered display based on current toggles
+            updateFilteredDisplay();
+
+            // Update worst basis intervals
+            updateWorstBasisTable();
+
+            // Update table based on current view
+            updatePnlTable();
+            renderPnlChart();
+        }
+
+        function updateAssetCards() {
+            const assets = pnlData.assets || {};
+
+            // Get date keys based on current period
+            const now = new Date();
+            let today = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
+            const currentMonth = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0');
+            const currentYear = now.getFullYear().toString();
+
+            // If today's data doesn't exist for daily period, use most recent available date
+            if (currentPeriod === 'daily' && pnlData.daily_pnl && !pnlData.daily_pnl[today]) {
+                const availableDates = Object.keys(pnlData.daily_pnl).sort();
+                if (availableDates.length > 0) {
+                    today = availableDates[availableDates.length - 1];
+                }
+            }
+
+            ['BKII', 'BKI', 'HOLSTEIN'].forEach(assetKey => {
+                const assetData = assets[assetKey];
+                const pnlEl = document.getElementById('asset-pnl-' + assetKey);
+                const volEl = document.getElementById('asset-volume-' + assetKey);
+                const basisEl = document.getElementById('asset-basis-' + assetKey);
+
+                if (assetData) {
+                    // Get data based on current period toggle
+                    let pnl, volume, gwaBasis, realizedPrice, realizedPpaPrice, realizedMerchantPrice;
+
+                    if (currentPeriod === 'daily') {
+                        const dayData = assetData.daily_pnl?.[today];
+                        pnl = dayData?.pnl || 0;
+                        volume = dayData?.volume || 0;
+                        gwaBasis = dayData?.gwa_basis;
+                        realizedPrice = dayData?.realized_price;
+                        realizedPpaPrice = dayData?.realized_ppa_price;
+                        realizedMerchantPrice = dayData?.realized_merchant_price;
+                    } else if (currentPeriod === 'mtd') {
+                        const monthData = assetData.monthly_pnl?.[currentMonth];
+                        pnl = monthData?.pnl || 0;
+                        volume = monthData?.volume || 0;
+                        gwaBasis = monthData?.gwa_basis;
+                        realizedPrice = monthData?.realized_price;
+                        realizedPpaPrice = monthData?.realized_ppa_price;
+                        realizedMerchantPrice = monthData?.realized_merchant_price;
+                    } else {
+                        // YTD - use current year's annual data
+                        const yearData = assetData.annual_pnl?.[currentYear];
+                        pnl = yearData?.pnl || 0;
+                        volume = yearData?.volume || 0;
+                        gwaBasis = assetData.gwa_basis;
+                        realizedPrice = assetData.realized_price;
+                        realizedPpaPrice = assetData.realized_ppa_price;
+                        realizedMerchantPrice = assetData.realized_merchant_price;
+                    }
+
+                    if (pnlEl) {
+                        pnlEl.textContent = formatCurrency(pnl);
+                        pnlEl.style.color = pnl >= 0 ? 'var(--skyvest-blue)' : '#ef4444';
+                    }
+                    if (volEl) {
+                        volEl.textContent = formatNumber(volume);
+                    }
+                    if (basisEl && gwaBasis !== null && gwaBasis !== undefined) {
+                        basisEl.textContent = formatCurrency(gwaBasis);
+                        basisEl.style.color = gwaBasis < 0 ? '#ef4444' : '#22c55e';
+                    }
+
+                    // Update realized prices based on asset type (using period-specific data)
+                    if (assetKey === 'BKI') {
+                        const realizedEl = document.getElementById('asset-realized-BKI');
+                        if (realizedEl) {
+                            realizedEl.textContent = realizedPrice !== null && realizedPrice !== undefined ? formatCurrency(realizedPrice) + '/MWh' : '--';
+                        }
+                    } else if (assetKey === 'BKII') {
+                        const realizedEl = document.getElementById('asset-realized-BKII');
+                        if (realizedEl) {
+                            realizedEl.textContent = realizedPrice !== null && realizedPrice !== undefined ? formatCurrency(realizedPrice) + '/MWh' : '--';
+                        }
+                    } else if (assetKey === 'HOLSTEIN') {
+                        const ppaEl = document.getElementById('asset-realized-ppa-HOLSTEIN');
+                        const merchantEl = document.getElementById('asset-realized-merchant-HOLSTEIN');
+                        if (ppaEl) {
+                            ppaEl.textContent = realizedPpaPrice !== null && realizedPpaPrice !== undefined ? formatCurrency(realizedPpaPrice) + '/MWh' : '--';
+                        }
+                        if (merchantEl) {
+                            merchantEl.textContent = realizedMerchantPrice !== null && realizedMerchantPrice !== undefined ? formatCurrency(realizedMerchantPrice) + '/MWh' : '--';
+                        }
+                    }
+                } else {
+                    if (pnlEl) pnlEl.textContent = 'N/A';
+                    if (volEl) volEl.textContent = '0';
+                }
+            });
+        }
+
+        function updateWorstBasisTable() {
+            const intervals = pnlData.worst_basis_intervals || [];
+            const tbody = document.getElementById('worst-basis-body');
+
+            if (intervals.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="5" class="text-center py-2" style="color: #999;">No basis data available</td></tr>';
+                document.getElementById('excludable-savings').textContent = '$0.00';
+                return;
+            }
+
+            tbody.innerHTML = intervals.map(interval => {
+                const datetime = interval.datetime || interval.interval;
+                const dt = new Date(datetime);
+                const dateStr = dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+                const timeStr = dt.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+                const basis = interval.basis || 0;
+                const volume = interval.volume || 0;
+                const impact = interval.basis_pnl_impact || 0;
+                const asset = interval.asset || 'UNKNOWN';
+
+                return `
+                    <tr style="border-bottom: 1px solid #f5f5f5;">
+                        <td class="py-1 px-2">${dateStr} ${timeStr}</td>
+                        <td class="py-1 px-2">${asset}</td>
+                        <td class="py-1 px-2 text-right" style="color: ${basis < 0 ? '#ef4444' : '#666'};">${formatCurrency(basis)}</td>
+                        <td class="py-1 px-2 text-right">${volume.toFixed(2)}</td>
+                        <td class="py-1 px-2 text-right font-semibold" style="color: ${impact < 0 ? '#ef4444' : 'var(--skyvest-blue)'};">${formatCurrency(impact)}</td>
+                    </tr>
+                `;
+            }).join('');
+
+            // Calculate total excludable savings (sum of absolute negative impacts)
+            const totalSavings = intervals
+                .filter(i => i.basis_pnl_impact < 0)
+                .reduce((sum, i) => sum + Math.abs(i.basis_pnl_impact), 0);
+            document.getElementById('excludable-savings').textContent = formatCurrency(totalSavings);
+        }
+
+        function setPnlView(view) {
+            currentPnlView = view;
+
+            // Update button styles
+            ['daily', 'monthly', 'annual'].forEach(v => {
+                const btn = document.getElementById('btn-' + v);
+                if (v === view) {
+                    btn.style.backgroundColor = 'var(--skyvest-blue)';
+                    btn.style.color = 'white';
+                } else {
+                    btn.style.backgroundColor = '#e5e5e5';
+                    btn.style.color = 'var(--skyvest-navy)';
+                }
+            });
+
+            updatePnlTable();
+            renderPnlChart();
+        }
+
+        function updatePnlTable() {
+            if (!pnlData) return;
+
+            const tbody = document.getElementById('pnl-table-body');
+            const assetFilter = document.getElementById('asset-filter')?.value || 'all';
+
+            let data = {};
+
+            // Get data based on view and asset filter
+            if (assetFilter === 'all') {
+                // Use total aggregations
+                if (currentPnlView === 'daily') {
+                    data = pnlData.daily_pnl || {};
+                } else if (currentPnlView === 'monthly') {
+                    data = pnlData.monthly_pnl || {};
+                } else {
+                    data = pnlData.annual_pnl || {};
+                }
+            } else {
+                // Use per-asset data
+                const assetData = pnlData.assets?.[assetFilter];
+                if (assetData) {
+                    if (currentPnlView === 'daily') {
+                        data = assetData.daily_pnl || {};
+                    } else if (currentPnlView === 'monthly') {
+                        data = assetData.monthly_pnl || {};
+                    } else {
+                        data = assetData.annual_pnl || {};
+                    }
+                }
+            }
+
+            // Sort by period descending
+            const sortedEntries = Object.entries(data).sort((a, b) => b[0].localeCompare(a[0]));
+
+            if (sortedEntries.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="4" class="text-center py-4" style="color: #999;">No PnL data available for ' + (assetFilter === 'all' ? 'all assets' : assetFilter) + '</td></tr>';
+                return;
+            }
+
+            tbody.innerHTML = sortedEntries.map(([period, values]) => {
+                const pnl = values.pnl || 0;
+                const volume = values.volume || 0;
+                const count = values.count || 0;
+                const pnlColor = pnl >= 0 ? 'var(--skyvest-blue)' : '#ef4444';
+
+                return `
+                    <tr style="border-bottom: 1px solid #f0f0f0;">
+                        <td class="py-2 px-2 font-medium" style="color: var(--skyvest-navy);">${period}</td>
+                        <td class="py-2 px-2 text-right font-bold" style="color: ${pnlColor};">${formatCurrency(pnl)}</td>
+                        <td class="py-2 px-2 text-right" style="color: #666;">${formatNumber(volume)}</td>
+                        <td class="py-2 px-2 text-right" style="color: #999;">${count}</td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
+        function renderPnlChart() {
+            const container = document.getElementById('pnl-chart-container');
+            if (!container || !pnlData) return;
+
+            container.innerHTML = '';
+
+            const assetFilter = document.getElementById('asset-filter')?.value || 'all';
+            let data = {};
+
+            // Get data based on view and asset filter
+            if (assetFilter === 'all') {
+                if (currentPnlView === 'daily') {
+                    data = pnlData.daily_pnl || {};
+                } else if (currentPnlView === 'monthly') {
+                    data = pnlData.monthly_pnl || {};
+                } else {
+                    data = pnlData.annual_pnl || {};
+                }
+            } else {
+                const assetData = pnlData.assets?.[assetFilter];
+                if (assetData) {
+                    if (currentPnlView === 'daily') {
+                        data = assetData.daily_pnl || {};
+                    } else if (currentPnlView === 'monthly') {
+                        data = assetData.monthly_pnl || {};
+                    } else {
+                        data = assetData.annual_pnl || {};
+                    }
+                }
+            }
+
+            // Sort by period ascending for chart
+            const sortedEntries = Object.entries(data).sort((a, b) => a[0].localeCompare(b[0]));
+
+            // Take last 30 entries for daily, all for others
+            const chartData = currentPnlView === 'daily' ? sortedEntries.slice(-30) : sortedEntries;
+
+            if (chartData.length === 0) {
+                container.innerHTML = '<p style="color: #999; text-align: center; padding: 40px;">No data available</p>';
+                return;
+            }
+
+            const values = chartData.map(([_, v]) => v.pnl);
+            const minVal = Math.min(...values, 0);
+            const maxVal = Math.max(...values, 0);
+            const absMax = Math.max(Math.abs(minVal), Math.abs(maxVal));
+            const yRange = absMax * 2 || 100;
+            const yMin = -absMax || -50;
+            const yMax = absMax || 50;
+
+            const chartWrapper = document.createElement('div');
+            chartWrapper.style.display = 'flex';
+            chartWrapper.style.flexDirection = 'column';
+            chartWrapper.style.gap = '4px';
+
+            const chart = document.createElement('div');
+            chart.style.display = 'grid';
+            chart.style.gridTemplateColumns = '80px 1fr';
+            chart.style.gap = '8px';
+
+            // Y-axis
+            const yAxis = document.createElement('div');
+            yAxis.style.display = 'flex';
+            yAxis.style.flexDirection = 'column';
+            yAxis.style.justifyContent = 'space-between';
+            yAxis.style.textAlign = 'right';
+            yAxis.style.paddingRight = '12px';
+            yAxis.style.fontSize = '11px';
+            yAxis.style.color = '#999';
+            yAxis.style.borderRight = '1px solid #e5e5e5';
+
+            const step = Math.ceil(absMax / 3 / 100) * 100 || 100;
+            for (let i = yMax; i >= yMin; i -= step) {
+                const label = document.createElement('div');
+                label.textContent = formatCurrency(i);
+                label.style.padding = '4px 0';
+                yAxis.appendChild(label);
+            }
+
+            // Bars container
+            const bars = document.createElement('div');
+            bars.style.display = 'flex';
+            bars.style.alignItems = 'center';
+            bars.style.gap = '2px';
+            bars.style.minHeight = '120px';
+            bars.style.position = 'relative';
+
+            // Zero line
+            const zeroLine = document.createElement('div');
+            zeroLine.style.position = 'absolute';
+            zeroLine.style.left = '0';
+            zeroLine.style.right = '0';
+            zeroLine.style.top = '50%';
+            zeroLine.style.height = '1px';
+            zeroLine.style.backgroundColor = '#999';
+            bars.appendChild(zeroLine);
+
+            // Draw bars
+            chartData.forEach(([period, values]) => {
+                const pnl = values.pnl;
+                const heightPercent = Math.abs(pnl) / yRange * 100;
+                const isPositive = pnl >= 0;
+                const color = isPositive ? 'var(--skyvest-blue)' : '#ef4444';
+
+                const barContainer = document.createElement('div');
+                barContainer.style.flex = '1';
+                barContainer.style.height = '100%';
+                barContainer.style.display = 'flex';
+                barContainer.style.flexDirection = 'column';
+                barContainer.style.justifyContent = 'center';
+                barContainer.style.position = 'relative';
+
+                const bar = document.createElement('div');
+                bar.style.width = '100%';
+                bar.style.height = Math.max(heightPercent, 2) + '%';
+                bar.style.backgroundColor = color;
+                bar.style.opacity = '0.85';
+                bar.style.position = 'absolute';
+                bar.style.left = '0';
+                bar.style.right = '0';
+                bar.style.transition = 'opacity 0.2s';
+                bar.title = period + ': ' + formatCurrency(pnl);
+
+                if (isPositive) {
+                    bar.style.bottom = '50%';
+                    bar.style.borderRadius = '2px 2px 0 0';
+                } else {
+                    bar.style.top = '50%';
+                    bar.style.borderRadius = '0 0 2px 2px';
+                }
+
+                bar.addEventListener('mouseenter', () => bar.style.opacity = '1');
+                bar.addEventListener('mouseleave', () => bar.style.opacity = '0.85');
+
+                barContainer.appendChild(bar);
+                bars.appendChild(barContainer);
+            });
+
+            chart.appendChild(yAxis);
+            chart.appendChild(bars);
+            chartWrapper.appendChild(chart);
+            container.appendChild(chartWrapper);
+        }
+
+        async function reloadPnlData() {
+            try {
+                const response = await fetch(PNL_API_URL + '/reload', { method: 'POST' });
+                const result = await response.json();
+                if (result.success) {
+                    await fetchPnlData();
+                    alert('PnL data reloaded: ' + result.message);
+                } else {
+                    alert('Failed to reload: ' + result.message);
+                }
+            } catch (error) {
+                console.error('Error reloading PnL data:', error);
+                alert('Error reloading PnL data');
+            }
+        }
+
+        function formatCurrency(value) {
+            if (value === null || value === undefined) return '$0.00';
+            const formatted = Math.abs(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+            return (value < 0 ? '-$' : '$') + formatted;
+        }
+
+        function formatNumber(value) {
+            if (value === null || value === undefined) return '0';
+            return value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        }
+
+        // Status footer update functions
+        let lmpLastUpdate = null;
+        let pnlLastUpdate = null;
+
+        function updateLmpTimestamp() {
+            lmpLastUpdate = new Date();
+            const el = document.getElementById('lmp-last-update');
+            if (el) el.textContent = '(updated ' + lmpLastUpdate.toLocaleTimeString() + ')';
+        }
+
+        function updatePnlTimestamp() {
+            pnlLastUpdate = new Date();
+            const el = document.getElementById('pnl-last-update');
+            if (el) el.textContent = '(updated ' + pnlLastUpdate.toLocaleTimeString() + ')';
+        }
+
+        function updateCurrentTime() {
+            const el = document.getElementById('current-time');
+            if (el) el.textContent = new Date().toLocaleString();
+        }
+
+        // Update Tenaska timestamp from PnL data if available
+        function updateTenaskaTimestamp(pnlData) {
+            const el = document.getElementById('tenaska-last-update');
+            if (el && pnlData && pnlData.last_update) {
+                const lastUpdated = new Date(pnlData.last_update);
+                el.textContent = '(last fetch ' + lastUpdated.toLocaleTimeString() + ')';
+            }
+        }
+
+        // Wrap original fetch functions to update timestamps
+        const originalFetchData = fetchData;
+        fetchData = async function() {
+            await originalFetchData();
+            updateLmpTimestamp();
+        };
+
+        const originalFetchPnlData = fetchPnlData;
+        fetchPnlData = async function() {
+            await originalFetchPnlData();
+            updatePnlTimestamp();
+        };
+
+        // Initialize both basis and PnL data
         fetchData();
+        fetchPnlData();
         setInterval(fetchData, 30000);
+        setInterval(fetchPnlData, 2100000);  // Refresh PnL every 35 minutes (Tenaska updates every 15 mins)
+        setInterval(updateCurrentTime, 1000);  // Update clock every second
+        updateCurrentTime();
     </script>
 </body>
 </html>'''
@@ -1163,3 +3549,4 @@ if __name__ == '__main__':
     # Only start background thread here for local development
     start_background_thread_if_needed()
     app.run(debug=False, host='0.0.0.0', port=int(os.getenv('PORT', 5000)))
+
