@@ -3495,21 +3495,33 @@ def dashboard():
         let lmpLastUpdate = null;
         let pnlLastUpdate = null;
 
+        // Format time in Eastern Time
+        const estTimeOptions = { timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true };
+        const estDateTimeOptions = { timeZone: 'America/New_York', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true };
+
+        function formatTimeEST(date) {
+            return date.toLocaleTimeString('en-US', estTimeOptions);
+        }
+
+        function formatDateTimeEST(date) {
+            return date.toLocaleString('en-US', estDateTimeOptions);
+        }
+
         function updateLmpTimestamp() {
             lmpLastUpdate = new Date();
             const el = document.getElementById('lmp-last-update');
-            if (el) el.textContent = '(updated ' + lmpLastUpdate.toLocaleTimeString() + ')';
+            if (el) el.textContent = '(updated ' + formatTimeEST(lmpLastUpdate) + ' ET)';
         }
 
         function updatePnlTimestamp() {
             pnlLastUpdate = new Date();
             const el = document.getElementById('pnl-last-update');
-            if (el) el.textContent = '(updated ' + pnlLastUpdate.toLocaleTimeString() + ')';
+            if (el) el.textContent = '(updated ' + formatTimeEST(pnlLastUpdate) + ' ET)';
         }
 
         function updateCurrentTime() {
             const el = document.getElementById('current-time');
-            if (el) el.textContent = new Date().toLocaleString();
+            if (el) el.textContent = formatDateTimeEST(new Date()) + ' ET';
         }
 
         // Update Tenaska timestamp from PnL data if available
@@ -3517,7 +3529,7 @@ def dashboard():
             const el = document.getElementById('tenaska-last-update');
             if (el && pnlData && pnlData.last_update) {
                 const lastUpdated = new Date(pnlData.last_update);
-                el.textContent = '(last fetch ' + lastUpdated.toLocaleTimeString() + ')';
+                el.textContent = '(last fetch ' + formatTimeEST(lastUpdated) + ' ET)';
             }
         }
 
