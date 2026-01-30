@@ -956,6 +956,10 @@ def aggregate_excel_pnl(records, hub_prices=None):
     hub_price_lookup = hub_prices or {}
     if hub_price_lookup:
         logger.info(f"Using hub price lookup with {len(hub_price_lookup)} entries")
+        # Log sample hub price keys for debugging
+        sample_keys = list(hub_price_lookup.keys())[:3]
+        for key in sample_keys:
+            logger.info(f"Hub price sample: {key} = ${hub_price_lookup[key]:.2f}")
 
     # Total aggregations
     daily = defaultdict(lambda: {"pnl": 0, "volume": 0, "count": 0, "records": []})
@@ -1032,6 +1036,12 @@ def aggregate_excel_pnl(records, hub_prices=None):
                     hub_matches += 1
                 else:
                     hub_misses += 1
+
+            # Debug logging for Holstein intervals on current day
+            today_cst = now_cst.strftime("%Y-%m-%d")
+            if asset_key == "HOLSTEIN" and day_key == today_cst and hub_matches + hub_misses <= 10:
+                node_price_debug = record.get("rtspp", 0)
+                logger.info(f"HOLSTEIN DEBUG [{day_key}]: interval={interval}, node=${node_price_debug:.2f}, hub=${hub_price:.2f if hub_price else 'None'}, basis=${(node_price_debug - hub_price) if hub_price else 'N/A':.2f if hub_price else 'N/A'}")
 
             # Calculate PnL (using asset-specific formula)
             pnl, basis = calculate_asset_pnl(record, asset_key, hub_price=hub_price)
@@ -1248,6 +1258,15 @@ def aggregate_excel_pnl(records, hub_prices=None):
     if hub_price_lookup:
         logger.info(f"Hub price matches: {hub_matches}, misses: {hub_misses}")
     logger.info(f"Holstein worst basis intervals (yesterday only): {len(all_intervals)}")
+
+    # Debug: Log Holstein today's GWA basis calculation
+    today_cst = datetime.now(ZoneInfo("America/Chicago")).strftime("%Y-%m-%d")
+    if "HOLSTEIN" in asset_realized_daily:
+        holstein_today = asset_realized_daily["HOLSTEIN"].get(today_cst, {})
+        vol = holstein_today.get("total_volume", 0)
+        vbp = holstein_today.get("volume_basis_product", 0)
+        gwa = vbp / vol if vol > 0 else 0
+        logger.info(f"HOLSTEIN TODAY ({today_cst}): volume={vol:.2f} MWh, volume_basis_product={vbp:.2f}, GWA_basis=${gwa:.2f}")
 
     # Log asset distribution for debugging
     asset_summary = {k: {"pnl": round(v["pnl"], 2), "volume": round(v["volume"], 2), "count": v["count"]}
