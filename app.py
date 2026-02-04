@@ -1480,20 +1480,23 @@ def background_data_fetch():
 
     logger.info("Loading initial PnL data...")
     try:
-        # First try to load from cached JSON for quick startup
-        cached_pnl = load_pnl_data()
-        if cached_pnl:
-            with data_lock:
-                pnl_data.update(cached_pnl)
-            logger.info(f"Loaded cached PnL data: total_pnl=${pnl_data.get('total_pnl', 0)}")
-            # Skip initial API refresh for fast startup - the while loop will refresh periodically
-            # Set last_tenaska_fetch_time to None so the while loop refreshes on first iteration
-            last_tenaska_fetch_time = None
-            logger.info("Using cached data for fast startup. API refresh will happen in background loop.")
+        # Always fetch fresh data on startup to avoid stale cache issues
+        # (Render's ephemeral filesystem means cache is lost on redeploy anyway)
+        logger.info("Fetching fresh PnL data from Tenaska API on startup...")
+        if refresh_pnl_data(source="api"):
+            logger.info(f"Successfully loaded fresh PnL data: total_pnl=${pnl_data.get('total_pnl', 0)}")
         else:
-            # No cache, must load fresh data on first run
-            logger.info("No cached PnL data found. Fetching from API (first run)...")
-            refresh_pnl_data(source="auto")
+            # API fetch failed, try loading from cache as fallback
+            logger.warning("API fetch failed on startup, trying cached data as fallback...")
+            cached_pnl = load_pnl_data()
+            if cached_pnl:
+                with data_lock:
+                    pnl_data.update(cached_pnl)
+                logger.info(f"Loaded cached PnL data as fallback: total_pnl=${pnl_data.get('total_pnl', 0)}")
+                # Set to None so the while loop retries the API refresh
+                last_tenaska_fetch_time = None
+            else:
+                logger.error("No cached PnL data available and API fetch failed")
     except Exception as e:
         logger.error(f"Error loading PnL data: {e}")
         import traceback
