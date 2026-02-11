@@ -1753,6 +1753,139 @@ def fetch_pharos_unit_operations(start_date=None, end_date=None):
         logger.error(f"Error fetching Pharos unit operations: {e}")
         return []
 
+def fetch_pharos_price_caps():
+    """
+    Fetch current price cap status from Pharos schedules.
+    Returns price cap info for any hours that are currently capped.
+    Schedule 79 (PLS) contains hourly price cap updates.
+    """
+    try:
+        url = f"{PHAROS_BASE_URL}/pjm/schedules/current"
+        params = {"organization_key": PHAROS_ORGANIZATION_KEY}
+
+        response = requests.get(url, auth=get_pharos_auth(), params=params, timeout=30)
+
+        if response.status_code == 200:
+            data = response.json()
+            schedules = data.get("schedules", [])
+
+            price_caps = []
+            for sched in schedules:
+                # PLS schedule (79) contains price caps
+                if sched.get("schedule") == 79 and sched.get("market") == "real_time":
+                    updates = sched.get("updates", [])
+                    for update in updates:
+                        cap_price = None
+                        curve = update.get("curve", [])
+                        if curve and len(curve) > 0:
+                            cap_price = curve[0].get("price")
+
+                        if cap_price is not None and cap_price > 0:  # Positive price = capped
+                            price_caps.append({
+                                "hour_ending": update.get("hour_ending"),
+                                "cap_price": cap_price,
+                                "timestamp": update.get("timestamp"),
+                            })
+
+            return {
+                "is_capped": len(price_caps) > 0,
+                "caps": price_caps,
+                "fetched_at": datetime.now().isoformat(),
+            }
+        else:
+            logger.error(f"Pharos schedules API returned {response.status_code}")
+            return {"is_capped": False, "caps": [], "error": response.status_code}
+
+    except Exception as e:
+        logger.error(f"Error fetching Pharos price caps: {e}")
+        return {"is_capped": False, "caps": [], "error": str(e)}
+
+def fetch_pharos_next_day_awards():
+    """
+    Fetch next-day (tomorrow) DA awards from Pharos unit_operations.
+    Returns hourly DA awards for tomorrow to show what we've been awarded.
+    """
+    try:
+        tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+        url = f"{PHAROS_BASE_URL}/pjm/unit_operations/historic"
+        params = {
+            "organization_key": PHAROS_ORGANIZATION_KEY,
+            "start_date": tomorrow,
+            "end_date": tomorrow,
+        }
+
+        response = requests.get(url, auth=get_pharos_auth(), params=params, timeout=60)
+
+        if response.status_code == 200:
+            data = response.json()
+            ops = data.get("unit_operations", data) if isinstance(data, dict) else data
+
+            # Extract hourly DA awards for tomorrow
+            hourly_awards = []
+            total_da_mwh = 0
+
+            for op in ops:
+                da_award = float(op.get("da_award", 0) or 0)
+                da_lmp = float(op.get("da_lmp", 0) or 0)
+                timestamp = op.get("timestamp", "")
+
+                hourly_awards.append({
+                    "timestamp": timestamp,
+                    "da_award_mw": da_award,
+                    "da_lmp": da_lmp,
+                    "da_revenue": da_award * da_lmp,
+                })
+                total_da_mwh += da_award
+
+            return {
+                "date": tomorrow,
+                "total_da_mwh": round(total_da_mwh, 2),
+                "hourly": hourly_awards,
+                "hours_awarded": len([h for h in hourly_awards if h["da_award_mw"] > 0]),
+                "fetched_at": datetime.now().isoformat(),
+            }
+        else:
+            logger.warning(f"No next-day awards available yet: {response.status_code}")
+            return {"date": tomorrow, "total_da_mwh": 0, "hourly": [], "hours_awarded": 0}
+
+    except Exception as e:
+        logger.error(f"Error fetching next-day DA awards: {e}")
+        return {"date": None, "total_da_mwh": 0, "hourly": [], "error": str(e)}
+
+def fetch_pharos_current_dispatch():
+    """
+    Fetch current dispatch status from Pharos to show real-time performance.
+    """
+    try:
+        url = f"{PHAROS_BASE_URL}/pjm/dispatches/current"
+        params = {"organization_key": PHAROS_ORGANIZATION_KEY}
+
+        response = requests.get(url, auth=get_pharos_auth(), params=params, timeout=30)
+
+        if response.status_code == 200:
+            data = response.json()
+            dispatches = data.get("dispatches", [])
+
+            if dispatches:
+                d = dispatches[0]
+                return {
+                    "timestamp": d.get("timestamp"),
+                    "gen_send_out": d.get("gen_send_out", 0),
+                    "lambda_mw": d.get("lambda_mw", 0),
+                    "deviation_mw": d.get("deviation_mw", 0),
+                    "energy_max": d.get("energy_max", 0),
+                    "capacity_max": d.get("capacity_max", 0),
+                    "dispatch_rate": d.get("lambda_dispatch_rate", 0),
+                    "status": d.get("status"),
+                }
+            return None
+        else:
+            return None
+
+    except Exception as e:
+        logger.error(f"Error fetching current dispatch: {e}")
+        return None
+
 def aggregate_pharos_unit_operations(ops):
     """
     Aggregate Pharos unit operations data by daily, monthly, and annual periods.
@@ -3095,6 +3228,55 @@ def reload_pharos():
             "message": str(e)
         }), 500
 
+@app.route('/api/nwoh/status', methods=['GET'])
+@login_required
+def get_nwoh_status():
+    """
+    Get real-time NWOH status including:
+    - Price cap status and current caps
+    - Next-day DA awards
+    - Current dispatch performance
+    - Today's DA commitment vs actual generation
+    """
+    try:
+        # Fetch price caps
+        price_caps = fetch_pharos_price_caps()
+
+        # Fetch next-day DA awards
+        next_day = fetch_pharos_next_day_awards()
+
+        # Fetch current dispatch
+        current_dispatch = fetch_pharos_current_dispatch()
+
+        # Get today's DA commitment from unit_operations
+        today = datetime.now().strftime("%Y-%m-%d")
+        today_da_commitment = 0
+        today_actual_gen = 0
+
+        with data_lock:
+            daily_pnl = pharos_data.get("daily_pnl", {})
+            today_data = daily_pnl.get(today, {})
+            today_da_commitment = today_data.get("da_mwh", 0)
+            today_actual_gen = today_data.get("volume", 0)
+
+        return jsonify({
+            "price_caps": price_caps,
+            "next_day_awards": next_day,
+            "current_dispatch": current_dispatch,
+            "today": {
+                "date": today,
+                "da_commitment_mwh": round(today_da_commitment, 2),
+                "actual_gen_mwh": round(today_actual_gen, 2),
+                "deviation_mwh": round(today_actual_gen - today_da_commitment, 2),
+                "performance_pct": round((today_actual_gen / today_da_commitment * 100), 1) if today_da_commitment > 0 else 0,
+            },
+            "fetched_at": datetime.now().isoformat(),
+        })
+
+    except Exception as e:
+        logger.error(f"Error getting NWOH status: {e}")
+        return jsonify({"error": str(e)}), 500
+
 @app.route('/', methods=['GET'])
 @login_required
 def dashboard():
@@ -3346,7 +3528,7 @@ def dashboard():
             <input type="hidden" id="mtd-pnl" value="0">
 
             <!-- Per-Asset PnL Cards (shown when "All" is selected) -->
-            <div id="asset-cards-container" class="grid grid-cols-1 md:grid-cols-3 gap-2 mb-3">
+            <div id="asset-cards-container" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-2 mb-3">
                 <div class="card rounded-sm p-3" id="asset-card-BKII">
                     <div class="flex justify-between items-start mb-1">
                         <p class="metric-label" style="color: #666;">McCrae (BKII)</p>
@@ -3384,16 +3566,70 @@ def dashboard():
                         <p class="text-xs" style="color: #999;">GWA Basis: <span id="asset-basis-HOLSTEIN">--</span> (100%)</p>
                     </div>
                 </div>
+                <div class="card rounded-sm p-3" id="asset-card-NWOH" style="border-left: 3px solid var(--skyvest-blue);">
+                    <div class="flex justify-between items-start mb-1">
+                        <p class="metric-label" style="color: #666;">NW Ohio Wind</p>
+                        <span class="text-xs px-2 py-0.5 rounded" style="background-color: var(--skyvest-light-blue); color: var(--skyvest-navy);">PJM</span>
+                    </div>
+                    <span id="asset-pnl-NWOH" class="text-xl font-bold" style="color: var(--skyvest-navy);">$0.00</span>
+                    <p class="text-xs mt-1" style="color: #999;"><span id="asset-volume-NWOH">0</span> MWh</p>
+                    <div class="mt-2 pt-2" style="border-top: 1px solid #eee;">
+                        <p class="text-xs" style="color: #666;">Realized: <span id="asset-realized-NWOH" class="font-semibold" style="color: var(--skyvest-navy);">--</span></p>
+                        <p class="text-xs" style="color: #999;">GWA Basis: <span id="asset-basis-NWOH">--</span></p>
+                    </div>
+                    <div id="nwoh-price-cap-warning" class="mt-2 p-2 rounded text-xs" style="display: none; background-color: #fef3c7; border: 1px solid #f59e0b; color: #92400e;">
+                        <span style="font-weight: bold;">⚠️ PRICE CAPPED</span>
+                        <span id="nwoh-cap-details"></span>
+                    </div>
+                </div>
             </div>
 
             <!-- NWOH Detailed Card (PJM market settlement view) -->
             <div id="nwoh-detail-card" class="card rounded-sm p-4 mb-3" style="display: none; border-left: 4px solid var(--skyvest-blue);">
+                <!-- Price Cap Warning Banner -->
+                <div id="nwoh-detail-cap-warning" class="mb-3 p-3 rounded" style="display: none; background-color: #fef3c7; border: 1px solid #f59e0b;">
+                    <div class="flex items-center gap-2">
+                        <span style="font-size: 1.2em;">⚠️</span>
+                        <div>
+                            <p class="font-bold text-sm" style="color: #92400e;">PRICE CAPPED - Exercise Caution</p>
+                            <p id="nwoh-detail-cap-info" class="text-xs" style="color: #a16207;">Capped hours: loading...</p>
+                        </div>
+                    </div>
+                </div>
+
                 <div class="flex justify-between items-start mb-3">
                     <div>
                         <p class="text-lg font-semibold" style="color: var(--skyvest-navy);">Northwest Ohio Wind</p>
                         <p class="text-xs" style="color: #999;">PJM DA/RT Market | 100% PPA @ $33.31/MWh with GM</p>
                     </div>
                     <span class="text-xs px-2 py-1 rounded" style="background-color: #e8f4f8; color: var(--skyvest-navy);">105 MW</span>
+                </div>
+
+                <!-- DA Performance & Awards Section -->
+                <div class="mb-4">
+                    <p class="text-xs font-semibold mb-2" style="color: #666; border-bottom: 1px solid #eee; padding-bottom: 4px;">Day-Ahead Awards & Performance</p>
+                    <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+                        <div>
+                            <p class="text-xs" style="color: #999;">Today's DA Commitment</p>
+                            <p id="nwoh-today-da-commitment" class="text-lg font-bold" style="color: var(--skyvest-navy);">-- MWh</p>
+                            <p class="text-xs" style="color: #999;">Awarded yesterday</p>
+                        </div>
+                        <div>
+                            <p class="text-xs" style="color: #999;">Today's Actual Gen</p>
+                            <p id="nwoh-today-actual-gen" class="text-lg font-bold" style="color: var(--skyvest-navy);">-- MWh</p>
+                            <p id="nwoh-da-performance" class="text-xs" style="color: #999;">-- vs commitment</p>
+                        </div>
+                        <div>
+                            <p class="text-xs" style="color: #999;">Tomorrow's DA Awards</p>
+                            <p id="nwoh-tomorrow-da-total" class="text-lg font-bold" style="color: var(--skyvest-blue);">-- MWh</p>
+                            <p id="nwoh-tomorrow-da-hours" class="text-xs" style="color: #999;">-- hours awarded</p>
+                        </div>
+                        <div>
+                            <p class="text-xs" style="color: #999;">RT Deviation (Today)</p>
+                            <p id="nwoh-rt-deviation" class="text-lg font-bold" style="color: var(--skyvest-navy);">-- MWh</p>
+                            <p class="text-xs" style="color: #999;">Actual - DA</p>
+                        </div>
+                    </div>
                 </div>
 
                 <!-- PJM Market Revenue Section -->
@@ -4294,6 +4530,44 @@ def dashboard():
             const totalRevenue = totalPjmRevenue + netPpaSettlement;
             const realizedPrice = genMwh > 0 ? totalRevenue / genMwh : 0;
             document.getElementById('nwoh-realized-price').textContent = '$' + formatNumber(realizedPrice);
+
+            // Update DA Performance & Awards section from nwohStatus
+            updateNwohDaSection();
+        }
+
+        function updateNwohDaSection() {
+            if (!nwohStatus) return;
+
+            // Update price cap warning in detail card
+            const detailWarning = document.getElementById('nwoh-detail-cap-warning');
+            const detailCapInfo = document.getElementById('nwoh-detail-cap-info');
+            if (nwohStatus.price_caps?.is_capped) {
+                detailWarning.style.display = 'block';
+                const capList = nwohStatus.price_caps.caps.map(c => `HE${c.hour_ending}: $${c.cap_price}`).join(', ');
+                detailCapInfo.textContent = 'Capped hours: ' + capList;
+            } else {
+                detailWarning.style.display = 'none';
+            }
+
+            // Update today's DA commitment and actual generation
+            const today = nwohStatus.today || {};
+            document.getElementById('nwoh-today-da-commitment').textContent = formatNumber(today.da_commitment_mwh || 0) + ' MWh';
+            document.getElementById('nwoh-today-actual-gen').textContent = formatNumber(today.actual_gen_mwh || 0) + ' MWh';
+
+            const deviation = today.deviation_mwh || 0;
+            const deviationEl = document.getElementById('nwoh-rt-deviation');
+            deviationEl.textContent = (deviation >= 0 ? '+' : '') + formatNumber(deviation) + ' MWh';
+            deviationEl.style.color = deviation >= 0 ? '#22c55e' : '#ef4444';
+
+            const perfPct = today.performance_pct || 0;
+            const perfEl = document.getElementById('nwoh-da-performance');
+            perfEl.textContent = perfPct.toFixed(1) + '% of DA';
+            perfEl.style.color = perfPct >= 80 ? '#22c55e' : '#f59e0b';
+
+            // Update tomorrow's DA awards
+            const nextDay = nwohStatus.next_day_awards || {};
+            document.getElementById('nwoh-tomorrow-da-total').textContent = formatNumber(nextDay.total_da_mwh || 0) + ' MWh';
+            document.getElementById('nwoh-tomorrow-da-hours').textContent = (nextDay.hours_awarded || 0) + ' hours awarded';
         }
 
         function updateFilteredDisplay() {
@@ -4543,8 +4817,44 @@ def dashboard():
                 if (typeof updateTenaskaTimestamp === 'function') {
                     updateTenaskaTimestamp(pnlData);
                 }
+                // Fetch NWOH status (price caps, next-day awards)
+                fetchNwohStatus();
             } catch (error) {
                 console.error('Error fetching PnL data:', error);
+            }
+        }
+
+        let nwohStatus = null;
+
+        async function fetchNwohStatus() {
+            try {
+                const response = await fetch('/api/nwoh/status');
+                nwohStatus = await response.json();
+                updateNwohPriceCapWarning();
+            } catch (error) {
+                console.error('Error fetching NWOH status:', error);
+            }
+        }
+
+        function updateNwohPriceCapWarning() {
+            const warningEl = document.getElementById('nwoh-price-cap-warning');
+            const detailsEl = document.getElementById('nwoh-cap-details');
+
+            if (!nwohStatus || !nwohStatus.price_caps) {
+                if (warningEl) warningEl.style.display = 'none';
+                return;
+            }
+
+            const caps = nwohStatus.price_caps;
+            if (caps.is_capped && caps.caps && caps.caps.length > 0) {
+                // Show price cap warning
+                if (warningEl) {
+                    warningEl.style.display = 'block';
+                    const capList = caps.caps.map(c => `HE${c.hour_ending}: $${c.cap_price}`).join(', ');
+                    if (detailsEl) detailsEl.textContent = ' - ' + capList;
+                }
+            } else {
+                if (warningEl) warningEl.style.display = 'none';
             }
         }
 
@@ -4668,6 +4978,36 @@ def dashboard():
                         }
                         if (merchantEl) {
                             merchantEl.textContent = realizedMerchantPrice !== null && realizedMerchantPrice !== undefined ? formatCurrency(realizedMerchantPrice) + '/MWh' : '--';
+                        }
+                    } else if (assetKey === 'NWOH') {
+                        // Calculate NWOH blended realized price
+                        const realizedEl = document.getElementById('asset-realized-NWOH');
+                        if (realizedEl && volume > 0) {
+                            // Get period-specific NWOH data for realized price calc
+                            let periodData = {};
+                            if (currentPeriod === 'daily') {
+                                const days = Object.keys(assetData.daily_pnl || {}).sort();
+                                periodData = assetData.daily_pnl?.[days[days.length - 1]] || {};
+                            } else if (currentPeriod === 'mtd') {
+                                periodData = assetData.monthly_pnl?.[currentMonth] || {};
+                            } else {
+                                periodData = assetData.annual_pnl?.[currentYear] || {};
+                            }
+
+                            const daRev = periodData.da_revenue || 0;
+                            const rtSales = periodData.rt_sales_revenue || 0;
+                            const rtPurchase = periodData.rt_purchase_cost || 0;
+                            const totalPjm = daRev + rtSales - rtPurchase;
+                            const avgHub = periodData.avg_hub_price || periodData.avg_rt_price || 0;
+
+                            const fixedPmt = volume * 33.31;
+                            const floatingPmt = volume * avgHub;
+                            const netPpa = fixedPmt - floatingPmt;
+
+                            const nwohRealized = Math.round((totalPjm + netPpa) / volume * 100) / 100;
+                            realizedEl.textContent = formatCurrency(nwohRealized) + '/MWh';
+                        } else if (realizedEl) {
+                            realizedEl.textContent = '--';
                         }
                     }
                 } else {
