@@ -1755,45 +1755,52 @@ def fetch_pharos_unit_operations(start_date=None, end_date=None):
 
 def fetch_pharos_price_caps():
     """
-    Fetch current price cap status from Pharos schedules.
+    Fetch current price cap status from Pharos market_results.
     Returns price cap info for any hours that are currently capped.
-    Schedule 79 (PLS) contains hourly price cap updates.
+    Uses the price_capped field from /pjm/market_results/historic endpoint.
     """
     try:
-        url = f"{PHAROS_BASE_URL}/pjm/schedules/current"
-        params = {"organization_key": PHAROS_ORGANIZATION_KEY}
+        today = datetime.now().strftime("%Y-%m-%d")
+        url = f"{PHAROS_BASE_URL}/pjm/market_results/historic"
+        params = {
+            "organization_key": PHAROS_ORGANIZATION_KEY,
+            "start_date": today,
+            "end_date": today,
+        }
 
-        response = requests.get(url, auth=get_pharos_auth(), params=params, timeout=30)
+        response = requests.get(url, auth=get_pharos_auth(), params=params, timeout=60)
 
         if response.status_code == 200:
             data = response.json()
-            schedules = data.get("schedules", [])
+            results = data.get("market_results", data) if isinstance(data, dict) else data
 
             price_caps = []
-            for sched in schedules:
-                # PLS schedule (79) contains price caps
-                if sched.get("schedule") == 79 and sched.get("market") == "real_time":
-                    updates = sched.get("updates", [])
-                    for update in updates:
-                        cap_price = None
-                        curve = update.get("curve", [])
-                        if curve and len(curve) > 0:
-                            cap_price = curve[0].get("price")
+            for r in results:
+                if r.get("price_capped"):
+                    # Extract hour from timestamp (format: "2026-02-11 15:00:00 -0500")
+                    ts = r.get("timestamp", "")
+                    hour_ending = None
+                    if " " in ts:
+                        time_part = ts.split(" ")[1]
+                        hour = int(time_part.split(":")[0])
+                        hour_ending = hour + 1  # Convert to hour ending
 
-                        if cap_price is not None and cap_price > 0:  # Positive price = capped
-                            price_caps.append({
-                                "hour_ending": update.get("hour_ending"),
-                                "cap_price": cap_price,
-                                "timestamp": update.get("timestamp"),
-                            })
+                    price_caps.append({
+                        "hour_ending": hour_ending,
+                        "energy_price": r.get("energy_price"),
+                        "energy_mw": r.get("energy_mw"),
+                        "timestamp": ts,
+                    })
 
             return {
                 "is_capped": len(price_caps) > 0,
                 "caps": price_caps,
+                "total_hours": len(results),
+                "capped_count": len(price_caps),
                 "fetched_at": datetime.now().isoformat(),
             }
         else:
-            logger.error(f"Pharos schedules API returned {response.status_code}")
+            logger.error(f"Pharos market_results API returned {response.status_code}")
             return {"is_capped": False, "caps": [], "error": response.status_code}
 
     except Exception as e:
@@ -1802,12 +1809,13 @@ def fetch_pharos_price_caps():
 
 def fetch_pharos_next_day_awards():
     """
-    Fetch next-day (tomorrow) DA awards from Pharos unit_operations.
+    Fetch next-day (tomorrow) DA awards from Pharos market_results.
     Returns hourly DA awards for tomorrow to show what we've been awarded.
+    Uses the energy_mw field from /pjm/market_results/historic endpoint.
     """
     try:
         tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
-        url = f"{PHAROS_BASE_URL}/pjm/unit_operations/historic"
+        url = f"{PHAROS_BASE_URL}/pjm/market_results/historic"
         params = {
             "organization_key": PHAROS_ORGANIZATION_KEY,
             "start_date": tomorrow,
@@ -1818,35 +1826,41 @@ def fetch_pharos_next_day_awards():
 
         if response.status_code == 200:
             data = response.json()
-            ops = data.get("unit_operations", data) if isinstance(data, dict) else data
+            results = data.get("market_results", data) if isinstance(data, dict) else data
 
             # Extract hourly DA awards for tomorrow
             hourly_awards = []
             total_da_mwh = 0
+            capped_hours = 0
 
-            for op in ops:
-                da_award = float(op.get("da_award", 0) or 0)
-                da_lmp = float(op.get("da_lmp", 0) or 0)
-                timestamp = op.get("timestamp", "")
+            for r in results:
+                energy_mw = float(r.get("energy_mw", 0) or 0)
+                energy_price = float(r.get("energy_price", 0) or 0)
+                timestamp = r.get("timestamp", "")
+                is_capped = r.get("price_capped", False)
 
                 hourly_awards.append({
                     "timestamp": timestamp,
-                    "da_award_mw": da_award,
-                    "da_lmp": da_lmp,
-                    "da_revenue": da_award * da_lmp,
+                    "da_award_mw": energy_mw,
+                    "da_lmp": energy_price,
+                    "da_revenue": energy_mw * energy_price,
+                    "price_capped": is_capped,
                 })
-                total_da_mwh += da_award
+                total_da_mwh += energy_mw
+                if is_capped:
+                    capped_hours += 1
 
             return {
                 "date": tomorrow,
                 "total_da_mwh": round(total_da_mwh, 2),
                 "hourly": hourly_awards,
                 "hours_awarded": len([h for h in hourly_awards if h["da_award_mw"] > 0]),
+                "capped_hours": capped_hours,
                 "fetched_at": datetime.now().isoformat(),
             }
         else:
             logger.warning(f"No next-day awards available yet: {response.status_code}")
-            return {"date": tomorrow, "total_da_mwh": 0, "hourly": [], "hours_awarded": 0}
+            return {"date": tomorrow, "total_da_mwh": 0, "hourly": [], "hours_awarded": 0, "capped_hours": 0}
 
     except Exception as e:
         logger.error(f"Error fetching next-day DA awards: {e}")
