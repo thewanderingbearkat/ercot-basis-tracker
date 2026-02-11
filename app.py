@@ -1965,9 +1965,21 @@ def aggregate_pharos_unit_operations(ops):
             if not timestamp:
                 continue
 
-            # Parse timestamp
+            # Parse timestamp - handle multiple formats
+            # ISO format: 2026-02-11T00:00:00.000
+            # Pharos format: 2026-02-11 00:00:00 -0500
             if "T" in timestamp:
                 dt = datetime.fromisoformat(timestamp.replace(".000", ""))
+            elif " " in timestamp:
+                # Pharos format: "2026-02-11 00:00:00 -0500"
+                # Split off the timezone suffix and parse
+                parts = timestamp.rsplit(" ", 1)
+                if len(parts) == 2 and (parts[1].startswith("-") or parts[1].startswith("+")):
+                    # Has timezone suffix like -0500
+                    dt = datetime.strptime(parts[0], "%Y-%m-%d %H:%M:%S")
+                else:
+                    # No timezone suffix
+                    dt = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S")
             else:
                 continue
 
