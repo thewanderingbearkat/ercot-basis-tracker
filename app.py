@@ -4492,34 +4492,38 @@ def dashboard():
                 const currentMonth = new Date().getFullYear() + '-' + String(new Date().getMonth() + 1).padStart(2, '0');
                 data = nwoh.monthly_pnl?.[currentMonth] || {};
             } else {
-                // YTD - sum all monthly data or use annual
+                // YTD - aggregate all daily data to ensure we have complete totals
+                // This is more reliable than using annual_pnl which might not be populated
+                data = {pnl: 0, volume: 0, da_revenue: 0, da_mwh: 0, rt_sales_revenue: 0, rt_sales_mwh: 0,
+                        rt_purchase_cost: 0, rt_purchase_mwh: 0, avg_da_price: 0, avg_rt_price: 0,
+                        avg_hub_price: 0, gwa_basis: 0, da_lmp_product: 0, rt_lmp_product: 0, hub_lmp_product: 0, hub_volume: 0};
+
+                // Aggregate from daily data for current year
                 const currentYear = new Date().getFullYear().toString();
-                data = nwoh.annual_pnl?.[currentYear] || {};
-                // If no annual, aggregate monthly
-                if (!data.volume && nwoh.monthly_pnl) {
-                    data = {pnl: 0, volume: 0, da_revenue: 0, da_mwh: 0, rt_sales_revenue: 0, rt_sales_mwh: 0,
-                            rt_purchase_cost: 0, rt_purchase_mwh: 0, avg_da_price: 0, avg_rt_price: 0,
-                            avg_hub_price: 0, gwa_basis: 0, da_lmp_product: 0, rt_lmp_product: 0, hub_lmp_product: 0, hub_volume: 0};
-                    Object.values(nwoh.monthly_pnl).forEach(m => {
-                        data.pnl += m.pnl || 0;
-                        data.volume += m.volume || 0;
-                        data.da_revenue += m.da_revenue || 0;
-                        data.da_mwh += m.da_mwh || 0;
-                        data.rt_sales_revenue += m.rt_sales_revenue || 0;
-                        data.rt_sales_mwh += m.rt_sales_mwh || 0;
-                        data.rt_purchase_cost += m.rt_purchase_cost || 0;
-                        data.rt_purchase_mwh += m.rt_purchase_mwh || 0;
-                        data.da_lmp_product += m.da_lmp_product || 0;
-                        data.rt_lmp_product += m.rt_lmp_product || 0;
-                        data.hub_lmp_product += m.hub_lmp_product || 0;
-                        data.hub_volume += m.hub_volume || 0;
+                if (nwoh.daily_pnl) {
+                    Object.entries(nwoh.daily_pnl).forEach(([day, d]) => {
+                        // Only include days from current year
+                        if (day.startsWith(currentYear)) {
+                            data.pnl += d.pnl || 0;
+                            data.volume += d.volume || 0;
+                            data.da_revenue += d.da_revenue || 0;
+                            data.da_mwh += d.da_mwh || 0;
+                            data.rt_sales_revenue += d.rt_sales_revenue || 0;
+                            data.rt_sales_mwh += d.rt_sales_mwh || 0;
+                            data.rt_purchase_cost += d.rt_purchase_cost || 0;
+                            data.rt_purchase_mwh += d.rt_purchase_mwh || 0;
+                            data.da_lmp_product += d.da_lmp_product || 0;
+                            data.rt_lmp_product += d.rt_lmp_product || 0;
+                            data.hub_lmp_product += d.hub_lmp_product || 0;
+                            data.hub_volume += d.hub_volume || 0;
+                        }
                     });
-                    // Calculate weighted averages
-                    if (data.da_mwh > 0) data.avg_da_price = data.da_lmp_product / data.da_mwh;
-                    if (data.volume > 0) data.avg_rt_price = data.rt_lmp_product / data.volume;
-                    if (data.hub_volume > 0) data.avg_hub_price = data.hub_lmp_product / data.hub_volume;
-                    if (data.volume > 0) data.gwa_basis = (data.hub_lmp_product - data.rt_lmp_product) / data.volume;
                 }
+                // Calculate weighted averages
+                if (data.da_mwh > 0) data.avg_da_price = data.da_lmp_product / data.da_mwh;
+                if (data.volume > 0) data.avg_rt_price = data.rt_lmp_product / data.volume;
+                if (data.hub_volume > 0) data.avg_hub_price = data.hub_lmp_product / data.hub_volume;
+                if (data.volume > 0) data.gwa_basis = (data.hub_lmp_product - data.rt_lmp_product) / data.volume;
             }
 
             const formatCurrency = (val) => {
