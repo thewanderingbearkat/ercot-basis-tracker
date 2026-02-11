@@ -41,6 +41,19 @@ TENASKA_MARKET_PRICES_URL = "https://api.ptp.energy/v1/markets/ERCOTNodal/endpoi
 HUB_SETTLEMENT_POINT = "HB_WEST"  # Hub for basis calculation
 
 # ============================================================================
+# PHAROS AMS API CONFIGURATION (for NWOH - PJM asset)
+# ============================================================================
+PHAROS_API_TOKEN = os.getenv("PHAROS_API_TOKEN", "57f04df5c470974f7f50bz9JDaUsvLTi_qDR2iJso")
+PHAROS_BASE_URL = "https://ams.pharos-ei.com/api"
+PHAROS_ORGANIZATION_KEY = "skyv-nwo"  # Northwest Ohio Wind
+PHAROS_AUTO_FETCH = True  # Set to True to fetch from Pharos API
+PHAROS_FETCH_INTERVAL = 1800  # Fetch new data every 30 minutes (in seconds)
+PHAROS_FETCH_START_DATE = "2026-02-05"  # Start date for NWOH data (Pharos access started Feb 5)
+
+# Storage file for Pharos/NWOH data
+PHAROS_HISTORY_FILE = 'pharos_nwoh_history.json'
+
+# ============================================================================
 # ASSET CONFIGURATION - PPA/Merchant Split & PnL Formulas
 # ============================================================================
 # Each asset has:
@@ -102,6 +115,35 @@ ASSET_CONFIG = {
         "ppa_price": 35.00,
         "ppa_settlement": "node",   # 100% settled at node = 100% basis exposure
         "ppa_basis_exposure": 100,
+        "iso": "ERCOT",
+    },
+    "NWOH": {
+        "display_name": "Northwest Ohio Wind",
+        # Match Pharos API data for NWOH
+        # Pharos returns: "HAVILAND 34.5 KV NTHWSTWF GEN"
+        "element_patterns": [
+            "HAVILAND 34.5 KV NTHWSTWF GEN",
+            "Northwest Ohio Wind",
+        ],
+        "settlement_point": "HAVILAND34.5 KV NTHWSTWF",
+        "pnode_id": "1318144721",
+        "hub": "AEP-DAYTON HUB",
+        "hub_id": "34497127",
+        "zone": "AEP ZONE",
+        "nameplate_mw": 105,  # 105 MW nameplate capacity
+        # PPA Structure with General Motors:
+        # - Fixed PPA Price: $33.31/MWh
+        # - Settlement: Generation sold to GM at floating hub price
+        # - GM pays: Generation × Hub Price (floating)
+        # - NWOH receives: Generation × Fixed PPA Price
+        # - Basis exposure: Hub - Node (NWOH keeps node revenue, pays hub to GM)
+        "ppa_percent": 100,
+        "merchant_percent": 0,
+        "ppa_price": 33.31,  # Fixed PPA price $/MWh
+        "ppa_settlement": "hub",  # Settles at hub (AEP-Dayton)
+        "ppa_basis_exposure": 100,  # 100% exposed to hub-node basis
+        "iso": "PJM",
+        "data_source": "pharos",  # Indicates data comes from Pharos API
     },
 }
 
@@ -316,6 +358,152 @@ def get_pjm_lmp_data(hours_back=4):
     except Exception as e:
         logger.error(f"Error fetching PJM data: {e}")
         return []
+
+# Cache for PJM hub prices (for Pharos basis calculation)
+PJM_HUB_CACHE_FILE = 'pjm_hub_prices.json'
+pjm_hub_price_cache = {}  # {timestamp_str: hub_lmp}
+
+def load_pjm_hub_cache():
+    """Load cached PJM hub prices from file."""
+    global pjm_hub_price_cache
+    try:
+        if os.path.exists(PJM_HUB_CACHE_FILE):
+            with open(PJM_HUB_CACHE_FILE, 'r') as f:
+                pjm_hub_price_cache = json.load(f)
+            logger.info(f"Loaded {len(pjm_hub_price_cache)} cached PJM hub prices")
+    except Exception as e:
+        logger.error(f"Error loading PJM hub cache: {e}")
+        pjm_hub_price_cache = {}
+
+def save_pjm_hub_cache():
+    """Save PJM hub price cache to file."""
+    try:
+        with open(PJM_HUB_CACHE_FILE, 'w') as f:
+            json.dump(pjm_hub_price_cache, f)
+        logger.info(f"Saved {len(pjm_hub_price_cache)} PJM hub prices to cache")
+    except Exception as e:
+        logger.error(f"Error saving PJM hub cache: {e}")
+
+def fetch_pjm_hub_prices_for_date(date_str):
+    """
+    Fetch PJM hub (AEP-DAYTON) 5-minute prices for a specific date.
+    Returns dict of {timestamp_str: hub_lmp}.
+    """
+    try:
+        key = get_pjm_subscription_key()
+        if not key:
+            return {}
+
+        headers = {"Ocp-Apim-Subscription-Key": key}
+
+        # Find the unverified 5-minute feed
+        response = requests.get("https://api.pjm.com/api/v1/", headers=headers, timeout=10)
+        feeds = response.json()
+
+        feed_url = None
+        for item in feeds.get('items', []):
+            if item.get('name') == 'rt_unverified_fivemin_lmps':
+                feed_url = item['links'][0]['href']
+                break
+
+        if not feed_url:
+            logger.error("Could not find PJM 5-minute LMP feed")
+            return {}
+
+        # Fetch data for the specific date
+        from datetime import timezone as tz
+        start_time = f"{date_str}T00:00:00"
+        end_time = f"{date_str}T23:59:59"
+
+        params = {
+            'datetime_beginning_utc': f'{start_time} to {end_time}',
+            'pnode_id': PJM_HUB_ID,  # Only fetch hub prices
+            'startRow': 1,
+            'rowCount': 500  # 288 intervals per day + buffer
+        }
+
+        response = requests.get(feed_url, headers=headers, params=params, timeout=30)
+
+        if response.status_code != 200:
+            logger.error(f"PJM API returned status {response.status_code} for {date_str}")
+            return {}
+
+        data = response.json()
+        items = data.get('items', [])
+
+        # Build lookup dict
+        hub_prices = {}
+        for item in items:
+            time_utc = item.get('datetime_beginning_utc', '')
+            hub_lmp = item.get('total_lmp_rt', 0)
+            if time_utc:
+                hub_prices[time_utc] = float(hub_lmp)
+
+        logger.info(f"Fetched {len(hub_prices)} hub prices for {date_str}")
+        return hub_prices
+
+    except Exception as e:
+        logger.error(f"Error fetching PJM hub prices for {date_str}: {e}")
+        return {}
+
+def get_hub_price_for_timestamp(timestamp_str):
+    """
+    Get hub price for a Pharos timestamp.
+    Converts Pharos timestamp (EST) to UTC and looks up in cache.
+    Returns hub LMP or None if not found.
+    """
+    try:
+        # Pharos timestamps are like "2026-02-10T00:00:00.000-05:00"
+        # PJM timestamps are like "2026-02-10T05:00:00"
+        if not timestamp_str:
+            return None
+
+        # Parse Pharos timestamp
+        dt = datetime.fromisoformat(timestamp_str.replace(".000", ""))
+        # Convert to UTC
+        dt_utc = dt.astimezone(ZoneInfo("UTC"))
+        # Format for PJM lookup (they store as UTC without timezone)
+        pjm_time_key = dt_utc.strftime("%Y-%m-%dT%H:%M:%S")
+
+        return pjm_hub_price_cache.get(pjm_time_key)
+
+    except Exception as e:
+        return None
+
+def ensure_hub_prices_cached(start_date, end_date):
+    """
+    Ensure we have hub prices cached for the given date range.
+    Fetches missing dates from PJM API.
+    """
+    global pjm_hub_price_cache
+
+    # Load existing cache
+    if not pjm_hub_price_cache:
+        load_pjm_hub_cache()
+
+    # Get list of dates we need
+    start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+    end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+
+    dates_to_fetch = []
+    current = start_dt
+    while current <= end_dt:
+        date_str = current.strftime("%Y-%m-%d")
+        # Check if we have any prices for this date
+        date_prefix = f"{date_str}T"
+        has_data = any(k.startswith(date_prefix) for k in pjm_hub_price_cache.keys())
+        if not has_data:
+            dates_to_fetch.append(date_str)
+        current += timedelta(days=1)
+
+    if dates_to_fetch:
+        logger.info(f"Fetching hub prices for {len(dates_to_fetch)} missing dates...")
+        for date_str in dates_to_fetch:
+            prices = fetch_pjm_hub_prices_for_date(date_str)
+            pjm_hub_price_cache.update(prices)
+
+        # Save updated cache
+        save_pjm_hub_cache()
 
 # ============================================================================
 # TENASKA API FUNCTIONS
@@ -962,9 +1150,9 @@ def aggregate_excel_pnl(records, hub_prices=None):
             logger.info(f"Hub price sample: {key} = ${hub_price_lookup[key]:.2f}")
 
     # Total aggregations
-    daily = defaultdict(lambda: {"pnl": 0, "volume": 0, "count": 0, "records": []})
-    monthly = defaultdict(lambda: {"pnl": 0, "volume": 0, "count": 0})
-    annual = defaultdict(lambda: {"pnl": 0, "volume": 0, "count": 0})
+    daily = defaultdict(lambda: {"pnl": 0, "volume": 0, "count": 0, "records": [], "volume_basis_product": 0})
+    monthly = defaultdict(lambda: {"pnl": 0, "volume": 0, "count": 0, "volume_basis_product": 0})
+    annual = defaultdict(lambda: {"pnl": 0, "volume": 0, "count": 0, "volume_basis_product": 0})
 
     # Per-asset aggregations
     asset_daily = defaultdict(lambda: defaultdict(lambda: {"pnl": 0, "volume": 0, "count": 0}))
@@ -1074,6 +1262,8 @@ def aggregate_excel_pnl(records, hub_prices=None):
                 daily[day_key]["pnl"] += pnl
                 daily[day_key]["volume"] += volume
                 daily[day_key]["count"] += 1
+                if volume != 0:
+                    daily[day_key]["volume_basis_product"] += volume * basis
                 daily[day_key]["records"].append({
                     "time": dt.strftime("%H:%M"),
                     "pnl": round(pnl, 2),
@@ -1086,10 +1276,14 @@ def aggregate_excel_pnl(records, hub_prices=None):
                 monthly[month_key]["pnl"] += pnl
                 monthly[month_key]["volume"] += volume
                 monthly[month_key]["count"] += 1
+                if volume != 0:
+                    monthly[month_key]["volume_basis_product"] += volume * basis
 
                 annual[year_key]["pnl"] += pnl
                 annual[year_key]["volume"] += volume
                 annual[year_key]["count"] += 1
+                if volume != 0:
+                    annual[year_key]["volume_basis_product"] += volume * basis
 
             # Per-asset aggregations
             asset_daily[asset_key][day_key]["pnl"] += pnl
@@ -1142,20 +1336,35 @@ def aggregate_excel_pnl(records, hub_prices=None):
             logger.error(f"Error aggregating Excel PnL record: {e}")
             continue
 
-    # Round the aggregated values
+    # Round the aggregated values and calculate GWA basis
     for key, d in daily.items():
         d["pnl"] = round(d["pnl"], 2)
         d["volume"] = round(d["volume"], 4)
         d["avg_pnl_per_interval"] = round(d["pnl"] / d["count"], 2) if d["count"] > 0 else 0
+        # Calculate GWA basis = Sum(Volume × Basis) / Sum(Volume)
+        if d["volume"] > 0 and "volume_basis_product" in d:
+            d["gwa_basis"] = round(d["volume_basis_product"] / d["volume"], 2)
+        else:
+            d["gwa_basis"] = None
         d["records"] = d["records"][-20:]  # Keep last 20 records
 
     for d in monthly.values():
         d["pnl"] = round(d["pnl"], 2)
         d["volume"] = round(d["volume"], 4)
+        # Calculate GWA basis
+        if d["volume"] > 0 and "volume_basis_product" in d:
+            d["gwa_basis"] = round(d["volume_basis_product"] / d["volume"], 2)
+        else:
+            d["gwa_basis"] = None
 
     for d in annual.values():
         d["pnl"] = round(d["pnl"], 2)
         d["volume"] = round(d["volume"], 4)
+        # Calculate GWA basis
+        if d["volume"] > 0 and "volume_basis_product" in d:
+            d["gwa_basis"] = round(d["volume_basis_product"] / d["volume"], 2)
+        else:
+            d["gwa_basis"] = None
 
     # Helper function to calculate realized prices from tracking data
     def calc_realized_prices(asset_key, realized_data):
@@ -1285,6 +1494,601 @@ def aggregate_excel_pnl(records, hub_prices=None):
         "worst_basis_intervals": worst_intervals[:WORST_BASIS_DISPLAY_COUNT],  # Top 10 for display
         "all_worst_intervals": worst_intervals,  # Full list for API
     }
+
+# ============================================================================
+# PHAROS AMS API FUNCTIONS (for NWOH - PJM asset)
+# ============================================================================
+from requests.auth import HTTPBasicAuth
+
+def get_pharos_auth():
+    """Get HTTP Basic Auth for Pharos API (token as username, empty password)."""
+    return HTTPBasicAuth(PHAROS_API_TOKEN, '')
+
+def fetch_pharos_locations():
+    """Fetch asset locations from Pharos API."""
+    try:
+        url = f"{PHAROS_BASE_URL}/pjm/locations"
+        params = {"organization_key": PHAROS_ORGANIZATION_KEY}
+
+        response = requests.get(url, auth=get_pharos_auth(), params=params, timeout=30)
+
+        if response.status_code == 200:
+            data = response.json()
+            locations = data.get("locations", [])
+            logger.info(f"Fetched {len(locations)} locations from Pharos API")
+            return locations
+        else:
+            logger.error(f"Pharos locations API returned {response.status_code}: {response.text[:200]}")
+            return []
+    except Exception as e:
+        logger.error(f"Error fetching Pharos locations: {e}")
+        return []
+
+def fetch_pharos_da_awards(start_date=None, end_date=None):
+    """
+    Fetch Day-Ahead market results (awards) from Pharos API.
+    Returns hourly DA awards with energy_mw, energy_price, and price_capped status.
+
+    Args:
+        start_date: Start date string (YYYY-MM-DD) or None for PHAROS_FETCH_START_DATE
+        end_date: End date string (YYYY-MM-DD) or None for today
+    """
+    try:
+        url = f"{PHAROS_BASE_URL}/pjm/market_results/historic"
+
+        if start_date is None:
+            start_date = PHAROS_FETCH_START_DATE
+        if end_date is None:
+            end_date = datetime.now().strftime("%Y-%m-%d")
+
+        params = {
+            "organization_key": PHAROS_ORGANIZATION_KEY,
+            "start_date": start_date,
+            "end_date": end_date,
+        }
+
+        logger.info(f"Fetching Pharos DA awards from {start_date} to {end_date}")
+        response = requests.get(url, auth=get_pharos_auth(), params=params, timeout=120)
+
+        if response.status_code == 200:
+            data = response.json()
+            awards = data.get("market_results", [])
+            logger.info(f"Fetched {len(awards)} DA award records from Pharos API")
+
+            # Log sample for debugging
+            if awards:
+                sample = awards[0]
+                logger.info(f"Sample DA award: timestamp={sample.get('timestamp')}, energy_mw={sample.get('energy_mw')}, price={sample.get('energy_price')}, capped={sample.get('price_capped')}")
+
+            return awards
+        else:
+            logger.error(f"Pharos DA awards API returned {response.status_code}: {response.text[:200]}")
+            return []
+    except requests.Timeout:
+        logger.error("Pharos DA awards API request timed out")
+        return []
+    except Exception as e:
+        logger.error(f"Error fetching Pharos DA awards: {e}")
+        return []
+
+def aggregate_pharos_da_data(awards):
+    """
+    Aggregate Pharos DA awards data by daily, monthly, and annual periods.
+    Also tracks price-capped intervals.
+
+    Args:
+        awards: List of DA award records from Pharos API
+    """
+    est_tz = ZoneInfo("America/New_York")  # PJM uses Eastern time
+
+    daily = defaultdict(lambda: {
+        "da_mwh": 0, "da_revenue": 0, "count": 0,
+        "capped_count": 0, "avg_price": 0, "hours": []
+    })
+    monthly = defaultdict(lambda: {
+        "da_mwh": 0, "da_revenue": 0, "count": 0, "capped_count": 0, "avg_price": 0
+    })
+    annual = defaultdict(lambda: {
+        "da_mwh": 0, "da_revenue": 0, "count": 0, "capped_count": 0, "avg_price": 0
+    })
+
+    # Track capped intervals for alerting
+    capped_intervals = []
+
+    for award in awards:
+        try:
+            timestamp = award.get("timestamp", "")
+            energy_mw = float(award.get("energy_mw", 0) or 0)
+            energy_price = float(award.get("energy_price", 0) or 0)
+            price_capped = award.get("price_capped", False)
+
+            # Parse timestamp (format: "2026-02-04T00:00:00.000-05:00")
+            if "T" in timestamp:
+                dt = datetime.fromisoformat(timestamp.replace(".000", ""))
+            else:
+                continue
+
+            day_key = dt.strftime("%Y-%m-%d")
+            month_key = dt.strftime("%Y-%m")
+            year_key = dt.strftime("%Y")
+            hour = dt.strftime("%H:%M")
+
+            # DA awards are hourly MWh values
+            da_revenue = energy_mw * energy_price
+
+            # Daily aggregation
+            daily[day_key]["da_mwh"] += energy_mw
+            daily[day_key]["da_revenue"] += da_revenue
+            daily[day_key]["count"] += 1
+            if price_capped:
+                daily[day_key]["capped_count"] += 1
+                capped_intervals.append({
+                    "timestamp": timestamp,
+                    "hour": hour,
+                    "day": day_key,
+                    "energy_mw": energy_mw,
+                    "energy_price": energy_price,
+                })
+            daily[day_key]["hours"].append({
+                "hour": hour,
+                "mw": energy_mw,
+                "price": energy_price,
+                "capped": price_capped,
+            })
+
+            # Monthly aggregation
+            monthly[month_key]["da_mwh"] += energy_mw
+            monthly[month_key]["da_revenue"] += da_revenue
+            monthly[month_key]["count"] += 1
+            if price_capped:
+                monthly[month_key]["capped_count"] += 1
+
+            # Annual aggregation
+            annual[year_key]["da_mwh"] += energy_mw
+            annual[year_key]["da_revenue"] += da_revenue
+            annual[year_key]["count"] += 1
+            if price_capped:
+                annual[year_key]["capped_count"] += 1
+
+        except Exception as e:
+            logger.error(f"Error processing Pharos DA award: {e}")
+            continue
+
+    # Calculate average prices
+    for d in daily.values():
+        if d["da_mwh"] > 0:
+            d["avg_price"] = round(d["da_revenue"] / d["da_mwh"], 2)
+        d["da_mwh"] = round(d["da_mwh"], 2)
+        d["da_revenue"] = round(d["da_revenue"], 2)
+        # Keep only last 24 hours for detail display
+        d["hours"] = d["hours"][-24:]
+
+    for d in monthly.values():
+        if d["da_mwh"] > 0:
+            d["avg_price"] = round(d["da_revenue"] / d["da_mwh"], 2)
+        d["da_mwh"] = round(d["da_mwh"], 2)
+        d["da_revenue"] = round(d["da_revenue"], 2)
+
+    for d in annual.values():
+        if d["da_mwh"] > 0:
+            d["avg_price"] = round(d["da_revenue"] / d["da_mwh"], 2)
+        d["da_mwh"] = round(d["da_mwh"], 2)
+        d["da_revenue"] = round(d["da_revenue"], 2)
+
+    total_da_mwh = sum(d["da_mwh"] for d in daily.values())
+    total_da_revenue = sum(d["da_revenue"] for d in daily.values())
+    total_capped = sum(d["capped_count"] for d in daily.values())
+
+    logger.info(f"Pharos DA aggregation: {total_da_mwh:.2f} MWh, ${total_da_revenue:.2f}, {total_capped} capped intervals")
+
+    return {
+        "daily": dict(daily),
+        "monthly": dict(monthly),
+        "annual": dict(annual),
+        "total_da_mwh": round(total_da_mwh, 2),
+        "total_da_revenue": round(total_da_revenue, 2),
+        "total_capped_count": total_capped,
+        "capped_intervals": capped_intervals[-50:],  # Keep last 50 for display
+        "record_count": len(awards),
+    }
+
+def fetch_pharos_unit_operations(start_date=None, end_date=None):
+    """
+    Fetch unit operations data from Pharos API (v1 endpoint).
+    Fetches in 7-day chunks to avoid API timeouts on longer date ranges.
+    This provides combined DA and RT data for PnL calculation:
+    - da_award, da_lmp: Day-ahead awards and prices
+    - gen: Actual generation
+    - rt_lmp: Real-time prices
+    - deviation_mw: DA vs RT deviations
+    """
+    try:
+        url = f"{PHAROS_BASE_URL}/pjm/unit_operations/historic"
+
+        if start_date is None:
+            start_date = PHAROS_FETCH_START_DATE
+        if end_date is None:
+            end_date = datetime.now().strftime("%Y-%m-%d")
+
+        # Parse dates
+        start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+        end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+
+        # Fetch in 7-day chunks to avoid API timeouts
+        CHUNK_DAYS = 7
+        all_ops = []
+        current_start = start_dt
+
+        logger.info(f"Fetching Pharos unit operations from {start_date} to {end_date} in {CHUNK_DAYS}-day chunks")
+
+        while current_start < end_dt:
+            current_end = min(current_start + timedelta(days=CHUNK_DAYS), end_dt)
+
+            params = {
+                "organization_key": PHAROS_ORGANIZATION_KEY,
+                "start_date": current_start.strftime("%Y-%m-%d"),
+                "end_date": current_end.strftime("%Y-%m-%d"),
+            }
+
+            logger.info(f"  Fetching chunk: {params['start_date']} to {params['end_date']}")
+            response = requests.get(url, auth=get_pharos_auth(), params=params, timeout=120)
+
+            if response.status_code == 200:
+                data = response.json()
+                ops = data.get("unit_operations", [])
+                all_ops.extend(ops)
+                logger.info(f"    Got {len(ops)} records (total: {len(all_ops)})")
+            else:
+                logger.error(f"Pharos API returned {response.status_code} for {params['start_date']}-{params['end_date']}: {response.text[:100]}")
+
+            current_start = current_end
+
+        logger.info(f"Fetched {len(all_ops)} total unit operations records from Pharos API")
+        return all_ops
+
+    except requests.Timeout:
+        logger.error("Pharos unit operations API request timed out")
+        return []
+    except Exception as e:
+        logger.error(f"Error fetching Pharos unit operations: {e}")
+        return []
+
+def aggregate_pharos_unit_operations(ops):
+    """
+    Aggregate Pharos unit operations data by daily, monthly, and annual periods.
+    Calculates PnL from DA awards + RT deviations.
+
+    PnL Formula for PJM:
+    - DA Revenue = DA Award (MWh) × DA LMP
+    - RT Imbalance = RT Deviation (MWh) × RT LMP (negative deviation = under-gen = buy back)
+    - Total PnL = DA Revenue + RT Imbalance
+
+    Args:
+        ops: List of unit operation records from Pharos API
+    """
+    est_tz = ZoneInfo("America/New_York")
+
+    # Try to cache hub prices for basis calculation
+    if ops:
+        # Get date range from ops
+        dates = [op.get("timestamp", "")[:10] for op in ops if op.get("timestamp")]
+        if dates:
+            min_date = min(dates)
+            max_date = max(dates)
+            try:
+                ensure_hub_prices_cached(min_date, max_date)
+            except Exception as e:
+                logger.warning(f"Could not cache hub prices: {e}")
+
+    daily = defaultdict(lambda: {
+        "pnl": 0, "volume": 0, "count": 0,
+        "da_mwh": 0, "da_revenue": 0,
+        "da_lmp_product": 0,  # Sum of DA MWh × DA LMP for weighted avg
+        "rt_mwh": 0, "rt_imbalance": 0,
+        "rt_sales_mwh": 0, "rt_sales_revenue": 0,  # Over-generation sold at RT
+        "rt_purchase_mwh": 0, "rt_purchase_cost": 0,  # Under-generation bought at RT
+        "rt_lmp_product": 0,  # Sum of gen MWh × RT LMP for weighted avg
+        "volume_basis_product": 0,
+        "avg_da_price": 0, "avg_rt_price": 0,
+    })
+    monthly = defaultdict(lambda: {
+        "pnl": 0, "volume": 0, "count": 0,
+        "da_mwh": 0, "da_revenue": 0,
+        "da_lmp_product": 0,
+        "rt_mwh": 0, "rt_imbalance": 0,
+        "rt_sales_mwh": 0, "rt_sales_revenue": 0,
+        "rt_purchase_mwh": 0, "rt_purchase_cost": 0,
+        "rt_lmp_product": 0,
+        "volume_basis_product": 0,
+    })
+    annual = defaultdict(lambda: {
+        "pnl": 0, "volume": 0, "count": 0,
+        "da_mwh": 0, "da_revenue": 0,
+        "da_lmp_product": 0,
+        "rt_mwh": 0, "rt_imbalance": 0,
+        "rt_sales_mwh": 0, "rt_sales_revenue": 0,
+        "rt_purchase_mwh": 0, "rt_purchase_cost": 0,
+        "rt_lmp_product": 0,
+        "volume_basis_product": 0,
+    })
+
+    for op in ops:
+        try:
+            timestamp = op.get("timestamp", "")
+            if not timestamp:
+                continue
+
+            # Parse timestamp
+            if "T" in timestamp:
+                dt = datetime.fromisoformat(timestamp.replace(".000", ""))
+            else:
+                continue
+
+            day_key = dt.strftime("%Y-%m-%d")
+            month_key = dt.strftime("%Y-%m")
+            year_key = dt.strftime("%Y")
+
+            # Extract values (handle nulls) - support both v1 and v2 field names
+            # v1 uses: da_award, deviation_mw, gen
+            # v2 uses: dam_mw, rt_mw, meter_mw, gen
+            # NOTE: Data is 5-minute intervals, so values are in MW not MWh
+            # To convert to MWh: MW × (5/60) = MW / 12
+            INTERVAL_HOURS = 5 / 60  # 5-minute intervals = 1/12 hour
+
+            dam_mw = float(op.get("dam_mw") or op.get("da_award") or 0)
+            da_lmp = float(op.get("da_lmp", 0) or 0)
+            gen_mw = float(op.get("gen", 0) or 0)  # Actual generation in MW
+            meter_mw = float(op.get("meter_mw", 0) or 0)  # Metered MW (v2 only)
+            rt_lmp = float(op.get("rt_lmp", 0) or 0)
+            # v1 uses deviation_mw, v2 uses rt_mw
+            rt_mw = float(op.get("rt_mw") or op.get("deviation_mw") or 0)
+
+            # Use metered MW if available, otherwise use gen
+            actual_gen_mw = meter_mw if meter_mw else gen_mw
+
+            # Convert MW to MWh for the 5-minute interval
+            actual_gen_mwh = actual_gen_mw * INTERVAL_HOURS
+            dam_mwh = dam_mw * INTERVAL_HOURS
+            rt_mwh = rt_mw * INTERVAL_HOURS
+
+            # PnL calculation:
+            # DA Revenue = DA Award (MWh) × DA LMP ($/MWh)
+            da_revenue = dam_mwh * da_lmp
+
+            # RT Settlement: deviation determines if selling or buying
+            # Positive deviation = over-generation = sell at RT (revenue)
+            # Negative deviation = under-generation = buy at RT (cost)
+            rt_imbalance = rt_mwh * rt_lmp
+
+            # Separate RT sales (positive) and RT purchases (negative)
+            if rt_mwh > 0:
+                rt_sales_mwh = rt_mwh
+                rt_sales_rev = rt_mwh * rt_lmp
+                rt_purchase_mwh = 0
+                rt_purchase_cost = 0
+            else:
+                rt_sales_mwh = 0
+                rt_sales_rev = 0
+                rt_purchase_mwh = abs(rt_mwh)
+                rt_purchase_cost = abs(rt_mwh * rt_lmp)
+
+            # Total PnL = DA Revenue + RT Imbalance
+            interval_pnl = da_revenue + rt_imbalance
+
+            # Basis calculation (hub - node)
+            # Try to get hub price from PJM cache, fall back to DA/RT spread
+            hub_lmp = get_hub_price_for_timestamp(timestamp)
+            if hub_lmp is not None:
+                # Proper basis = Hub - Node (positive = hub higher than node)
+                basis = hub_lmp - rt_lmp
+            else:
+                # Fallback: use DA/RT spread as proxy
+                basis = da_lmp - rt_lmp if da_lmp else 0
+
+            # Daily aggregation
+            daily[day_key]["pnl"] += interval_pnl
+            daily[day_key]["volume"] += actual_gen_mwh
+            daily[day_key]["count"] += 1
+            daily[day_key]["da_mwh"] += dam_mwh
+            daily[day_key]["da_revenue"] += da_revenue
+            daily[day_key]["da_lmp_product"] += dam_mwh * da_lmp  # For weighted avg
+            daily[day_key]["rt_mwh"] += actual_gen_mwh
+            daily[day_key]["rt_imbalance"] += rt_imbalance
+            daily[day_key]["rt_sales_mwh"] += rt_sales_mwh
+            daily[day_key]["rt_sales_revenue"] += rt_sales_rev
+            daily[day_key]["rt_purchase_mwh"] += rt_purchase_mwh
+            daily[day_key]["rt_purchase_cost"] += rt_purchase_cost
+            daily[day_key]["rt_lmp_product"] += actual_gen_mwh * rt_lmp  # For weighted avg
+            if hub_lmp is not None:
+                daily[day_key]["hub_lmp_product"] = daily[day_key].get("hub_lmp_product", 0) + actual_gen_mwh * hub_lmp
+                daily[day_key]["hub_volume"] = daily[day_key].get("hub_volume", 0) + actual_gen_mwh
+            if actual_gen_mwh > 0:
+                daily[day_key]["volume_basis_product"] += actual_gen_mwh * basis
+
+            # Monthly aggregation
+            monthly[month_key]["pnl"] += interval_pnl
+            monthly[month_key]["volume"] += actual_gen_mwh
+            monthly[month_key]["count"] += 1
+            monthly[month_key]["da_mwh"] += dam_mwh
+            monthly[month_key]["da_revenue"] += da_revenue
+            monthly[month_key]["da_lmp_product"] += dam_mwh * da_lmp
+            monthly[month_key]["rt_mwh"] += actual_gen_mwh
+            monthly[month_key]["rt_imbalance"] += rt_imbalance
+            monthly[month_key]["rt_sales_mwh"] += rt_sales_mwh
+            monthly[month_key]["rt_sales_revenue"] += rt_sales_rev
+            monthly[month_key]["rt_purchase_mwh"] += rt_purchase_mwh
+            monthly[month_key]["rt_purchase_cost"] += rt_purchase_cost
+            monthly[month_key]["rt_lmp_product"] += actual_gen_mwh * rt_lmp
+            if hub_lmp is not None:
+                monthly[month_key]["hub_lmp_product"] = monthly[month_key].get("hub_lmp_product", 0) + actual_gen_mwh * hub_lmp
+                monthly[month_key]["hub_volume"] = monthly[month_key].get("hub_volume", 0) + actual_gen_mwh
+            if actual_gen_mwh > 0:
+                monthly[month_key]["volume_basis_product"] += actual_gen_mwh * basis
+
+            # Annual aggregation
+            annual[year_key]["pnl"] += interval_pnl
+            annual[year_key]["volume"] += actual_gen_mwh
+            annual[year_key]["count"] += 1
+            annual[year_key]["da_mwh"] += dam_mwh
+            annual[year_key]["da_revenue"] += da_revenue
+            annual[year_key]["da_lmp_product"] += dam_mwh * da_lmp
+            annual[year_key]["rt_mwh"] += actual_gen_mwh
+            annual[year_key]["rt_imbalance"] += rt_imbalance
+            annual[year_key]["rt_sales_mwh"] += rt_sales_mwh
+            annual[year_key]["rt_sales_revenue"] += rt_sales_rev
+            annual[year_key]["rt_purchase_mwh"] += rt_purchase_mwh
+            annual[year_key]["rt_purchase_cost"] += rt_purchase_cost
+            annual[year_key]["rt_lmp_product"] += actual_gen_mwh * rt_lmp
+            if hub_lmp is not None:
+                annual[year_key]["hub_lmp_product"] = annual[year_key].get("hub_lmp_product", 0) + actual_gen_mwh * hub_lmp
+                annual[year_key]["hub_volume"] = annual[year_key].get("hub_volume", 0) + actual_gen_mwh
+            if actual_gen_mwh > 0:
+                annual[year_key]["volume_basis_product"] += actual_gen_mwh * basis
+
+        except Exception as e:
+            logger.error(f"Error processing Pharos unit operation: {e}")
+            continue
+
+    # Round values and calculate averages
+    for d in daily.values():
+        d["pnl"] = round(d["pnl"], 2)
+        d["volume"] = round(d["volume"], 4)
+        d["da_mwh"] = round(d["da_mwh"], 2)
+        d["da_revenue"] = round(d["da_revenue"], 2)
+        d["rt_mwh"] = round(d["rt_mwh"], 4)
+        d["rt_imbalance"] = round(d["rt_imbalance"], 2)
+        d["rt_sales_mwh"] = round(d.get("rt_sales_mwh", 0), 4)
+        d["rt_sales_revenue"] = round(d.get("rt_sales_revenue", 0), 2)
+        d["rt_purchase_mwh"] = round(d.get("rt_purchase_mwh", 0), 4)
+        d["rt_purchase_cost"] = round(d.get("rt_purchase_cost", 0), 2)
+        # Weighted average prices
+        if d["da_mwh"] > 0:
+            d["avg_da_price"] = round(d["da_lmp_product"] / d["da_mwh"], 2)
+        else:
+            d["avg_da_price"] = None
+        if d["volume"] > 0:
+            d["avg_rt_price"] = round(d["rt_lmp_product"] / d["volume"], 2)
+            d["gwa_basis"] = round(d["volume_basis_product"] / d["volume"], 2)
+        else:
+            d["avg_rt_price"] = None
+            d["gwa_basis"] = None
+        # Hub price (if available)
+        hub_vol = d.get("hub_volume", 0)
+        if hub_vol > 0:
+            d["avg_hub_price"] = round(d.get("hub_lmp_product", 0) / hub_vol, 2)
+        else:
+            d["avg_hub_price"] = None
+
+    for d in monthly.values():
+        d["pnl"] = round(d["pnl"], 2)
+        d["volume"] = round(d["volume"], 4)
+        d["da_mwh"] = round(d["da_mwh"], 2)
+        d["da_revenue"] = round(d["da_revenue"], 2)
+        d["rt_mwh"] = round(d["rt_mwh"], 4)
+        d["rt_imbalance"] = round(d["rt_imbalance"], 2)
+        d["rt_sales_mwh"] = round(d.get("rt_sales_mwh", 0), 4)
+        d["rt_sales_revenue"] = round(d.get("rt_sales_revenue", 0), 2)
+        d["rt_purchase_mwh"] = round(d.get("rt_purchase_mwh", 0), 4)
+        d["rt_purchase_cost"] = round(d.get("rt_purchase_cost", 0), 2)
+        if d["da_mwh"] > 0:
+            d["avg_da_price"] = round(d["da_lmp_product"] / d["da_mwh"], 2)
+        else:
+            d["avg_da_price"] = None
+        if d["volume"] > 0:
+            d["avg_rt_price"] = round(d["rt_lmp_product"] / d["volume"], 2)
+            d["gwa_basis"] = round(d["volume_basis_product"] / d["volume"], 2)
+        else:
+            d["avg_rt_price"] = None
+            d["gwa_basis"] = None
+        hub_vol = d.get("hub_volume", 0)
+        if hub_vol > 0:
+            d["avg_hub_price"] = round(d.get("hub_lmp_product", 0) / hub_vol, 2)
+        else:
+            d["avg_hub_price"] = None
+
+    for d in annual.values():
+        d["pnl"] = round(d["pnl"], 2)
+        d["volume"] = round(d["volume"], 4)
+        d["da_mwh"] = round(d["da_mwh"], 2)
+        d["da_revenue"] = round(d["da_revenue"], 2)
+        d["rt_mwh"] = round(d["rt_mwh"], 4)
+        d["rt_imbalance"] = round(d["rt_imbalance"], 2)
+        d["rt_sales_mwh"] = round(d.get("rt_sales_mwh", 0), 4)
+        d["rt_sales_revenue"] = round(d.get("rt_sales_revenue", 0), 2)
+        d["rt_purchase_mwh"] = round(d.get("rt_purchase_mwh", 0), 4)
+        d["rt_purchase_cost"] = round(d.get("rt_purchase_cost", 0), 2)
+        if d["da_mwh"] > 0:
+            d["avg_da_price"] = round(d["da_lmp_product"] / d["da_mwh"], 2)
+        else:
+            d["avg_da_price"] = None
+        if d["volume"] > 0:
+            d["avg_rt_price"] = round(d["rt_lmp_product"] / d["volume"], 2)
+            d["gwa_basis"] = round(d["volume_basis_product"] / d["volume"], 2)
+        else:
+            d["avg_rt_price"] = None
+            d["gwa_basis"] = None
+        hub_vol = d.get("hub_volume", 0)
+        if hub_vol > 0:
+            d["avg_hub_price"] = round(d.get("hub_lmp_product", 0) / hub_vol, 2)
+        else:
+            d["avg_hub_price"] = None
+
+    total_pnl = sum(d["pnl"] for d in daily.values())
+    total_volume = sum(d["volume"] for d in daily.values())
+    total_da_mwh = sum(d["da_mwh"] for d in daily.values())
+
+    logger.info(f"Pharos unit ops aggregation: PnL=${total_pnl:.2f}, Volume={total_volume:.2f} MWh, DA={total_da_mwh:.2f} MWh")
+
+    return {
+        "daily": dict(daily),
+        "monthly": dict(monthly),
+        "annual": dict(annual),
+        "total_pnl": round(total_pnl, 2),
+        "total_volume": round(total_volume, 4),
+        "total_da_mwh": round(total_da_mwh, 2),
+        "record_count": len(ops),
+    }
+
+def save_pharos_data(data):
+    """Save Pharos/NWOH data to JSON file."""
+    try:
+        with open(PHAROS_HISTORY_FILE, 'w') as f:
+            json.dump(data, f, default=str)
+        logger.info(f"Saved Pharos data to {PHAROS_HISTORY_FILE}")
+    except Exception as e:
+        logger.error(f"Error saving Pharos data: {e}")
+
+def load_pharos_data():
+    """Load Pharos/NWOH data from JSON file."""
+    try:
+        if os.path.exists(PHAROS_HISTORY_FILE):
+            with open(PHAROS_HISTORY_FILE, 'r') as f:
+                data = json.load(f)
+            logger.info(f"Loaded Pharos data from {PHAROS_HISTORY_FILE}")
+            return data
+        return None
+    except Exception as e:
+        logger.error(f"Error loading Pharos data: {e}")
+        return None
+
+# Global storage for Pharos/NWOH data
+pharos_data = {
+    "da_awards": [],           # Raw DA awards from Pharos
+    "daily_da": {},            # Aggregated by day (DA only)
+    "monthly_da": {},          # Aggregated by month (DA only)
+    "annual_da": {},           # Aggregated by year (DA only)
+    "total_da_mwh": 0,
+    "total_da_revenue": 0,
+    "capped_intervals": [],    # Price-capped intervals for alerting
+    # Unit operations data (combined DA+RT for PnL)
+    "unit_ops": [],            # Raw unit operations from Pharos
+    "daily_pnl": {},           # PnL by day (includes DA rev + RT imbalance)
+    "monthly_pnl": {},         # PnL by month
+    "annual_pnl": {},          # PnL by year
+    "total_pnl": 0,
+    "total_volume": 0,
+    "last_pharos_update": None,
+}
 
 # ============================================================================
 # ERCOT Helper Functions
@@ -1480,25 +2284,74 @@ def background_data_fetch():
 
     logger.info("Loading initial PnL data...")
     try:
-        # Always fetch fresh data on startup to avoid stale cache issues
-        # (Render's ephemeral filesystem means cache is lost on redeploy anyway)
-        logger.info("Fetching fresh PnL data from Tenaska API on startup...")
-        if refresh_pnl_data(source="api"):
-            logger.info(f"Successfully loaded fresh PnL data: total_pnl=${pnl_data.get('total_pnl', 0)}")
+        # First try to load from cached JSON for quick startup
+        cached_pnl = load_pnl_data()
+        if cached_pnl:
+            with data_lock:
+                pnl_data.update(cached_pnl)
+            logger.info(f"Loaded cached PnL data: total_pnl=${pnl_data.get('total_pnl', 0)}")
+            # Skip initial API refresh for fast startup - the while loop will refresh periodically
+            # Set last_tenaska_fetch_time to None so the while loop refreshes on first iteration
+            last_tenaska_fetch_time = None
+            logger.info("Using cached data for fast startup. API refresh will happen in background loop.")
         else:
-            # API fetch failed, try loading from cache as fallback
-            logger.warning("API fetch failed on startup, trying cached data as fallback...")
-            cached_pnl = load_pnl_data()
-            if cached_pnl:
-                with data_lock:
-                    pnl_data.update(cached_pnl)
-                logger.info(f"Loaded cached PnL data as fallback: total_pnl=${pnl_data.get('total_pnl', 0)}")
-                # Set to None so the while loop retries the API refresh
-                last_tenaska_fetch_time = None
-            else:
-                logger.error("No cached PnL data available and API fetch failed")
+            # No cache, must load fresh data on first run
+            logger.info("No cached PnL data found. Fetching from API (first run)...")
+            refresh_pnl_data(source="auto")
     except Exception as e:
         logger.error(f"Error loading PnL data: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+
+    # Load Pharos/NWOH data
+    last_pharos_fetch_time = None
+    logger.info("Loading initial Pharos/NWOH data...")
+    try:
+        cached_pharos = load_pharos_data()
+        # Check if cache has actual data (not just empty structure)
+        cache_has_data = cached_pharos and cached_pharos.get("total_pnl", 0) != 0
+
+        if cache_has_data:
+            with data_lock:
+                pharos_data.update(cached_pharos)
+            logger.info(f"Loaded cached Pharos data: total_pnl=${pharos_data.get('total_pnl', 0):,.0f}, volume={pharos_data.get('total_volume', 0):,.0f} MWh")
+            last_pharos_fetch_time = datetime.now()  # Don't immediately re-fetch if cache is valid
+        else:
+            # Fetch fresh data on first run or if cache is empty
+            if PHAROS_AUTO_FETCH:
+                logger.info("No cached Pharos data found. Fetching from API (first run)...")
+                # Fetch DA awards
+                awards = fetch_pharos_da_awards(start_date=PHAROS_FETCH_START_DATE)
+                if awards:
+                    aggregated = aggregate_pharos_da_data(awards)
+                    with data_lock:
+                        pharos_data["da_awards"] = awards
+                        pharos_data["daily_da"] = aggregated["daily"]
+                        pharos_data["monthly_da"] = aggregated["monthly"]
+                        pharos_data["annual_da"] = aggregated["annual"]
+                        pharos_data["total_da_mwh"] = aggregated["total_da_mwh"]
+                        pharos_data["total_da_revenue"] = aggregated["total_da_revenue"]
+                        pharos_data["capped_intervals"] = aggregated["capped_intervals"]
+
+                # Fetch unit operations for PnL
+                logger.info("Fetching Pharos unit operations for PnL...")
+                unit_ops = fetch_pharos_unit_operations(start_date=PHAROS_FETCH_START_DATE)
+                if unit_ops:
+                    ops_aggregated = aggregate_pharos_unit_operations(unit_ops)
+                    with data_lock:
+                        pharos_data["unit_ops"] = unit_ops
+                        pharos_data["daily_pnl"] = ops_aggregated["daily"]
+                        pharos_data["monthly_pnl"] = ops_aggregated["monthly"]
+                        pharos_data["annual_pnl"] = ops_aggregated["annual"]
+                        pharos_data["total_pnl"] = ops_aggregated["total_pnl"]
+                        pharos_data["total_volume"] = ops_aggregated["total_volume"]
+
+                with data_lock:
+                    pharos_data["last_pharos_update"] = datetime.now(ZoneInfo("America/New_York")).isoformat()
+                save_pharos_data(pharos_data)
+                last_pharos_fetch_time = datetime.now()
+    except Exception as e:
+        logger.error(f"Error loading Pharos data: {e}")
         import traceback
         logger.error(traceback.format_exc())
 
@@ -1602,6 +2455,52 @@ def background_data_fetch():
                     except Exception as e:
                         logger.error(f"Error refreshing Tenaska PnL data: {e}")
 
+            # Periodic Pharos API refresh for NWOH DA data
+            if PHAROS_AUTO_FETCH:
+                should_refresh_pharos = False
+                if last_pharos_fetch_time is None:
+                    should_refresh_pharos = True
+                else:
+                    seconds_since_pharos = (datetime.now() - last_pharos_fetch_time).total_seconds()
+                    if seconds_since_pharos >= PHAROS_FETCH_INTERVAL:
+                        should_refresh_pharos = True
+
+                if should_refresh_pharos:
+                    logger.info("Refreshing Pharos/NWOH data...")
+                    try:
+                        # Fetch DA awards
+                        awards = fetch_pharos_da_awards(start_date=PHAROS_FETCH_START_DATE)
+                        if awards:
+                            aggregated = aggregate_pharos_da_data(awards)
+                            with data_lock:
+                                pharos_data["da_awards"] = awards
+                                pharos_data["daily_da"] = aggregated["daily"]
+                                pharos_data["monthly_da"] = aggregated["monthly"]
+                                pharos_data["annual_da"] = aggregated["annual"]
+                                pharos_data["total_da_mwh"] = aggregated["total_da_mwh"]
+                                pharos_data["total_da_revenue"] = aggregated["total_da_revenue"]
+                                pharos_data["capped_intervals"] = aggregated["capped_intervals"]
+
+                        # Fetch unit operations for PnL
+                        unit_ops = fetch_pharos_unit_operations(start_date=PHAROS_FETCH_START_DATE)
+                        if unit_ops:
+                            ops_aggregated = aggregate_pharos_unit_operations(unit_ops)
+                            with data_lock:
+                                pharos_data["unit_ops"] = unit_ops
+                                pharos_data["daily_pnl"] = ops_aggregated["daily"]
+                                pharos_data["monthly_pnl"] = ops_aggregated["monthly"]
+                                pharos_data["annual_pnl"] = ops_aggregated["annual"]
+                                pharos_data["total_pnl"] = ops_aggregated["total_pnl"]
+                                pharos_data["total_volume"] = ops_aggregated["total_volume"]
+
+                        with data_lock:
+                            pharos_data["last_pharos_update"] = datetime.now(ZoneInfo("America/New_York")).isoformat()
+                        save_pharos_data(pharos_data)
+                        last_pharos_fetch_time = datetime.now()
+                        logger.info(f"Pharos refresh complete: PnL=${pharos_data.get('total_pnl', 0)}, DA={pharos_data.get('total_da_mwh', 0)} MWh")
+                    except Exception as e:
+                        logger.error(f"Error refreshing Pharos data: {e}")
+
             time.sleep(120)
 
         except Exception as e:
@@ -1676,14 +2575,83 @@ def health():
 def get_pnl():
     """Get PnL summary and aggregated data including per-asset breakdown."""
     with data_lock:
+        # Merge Tenaska and Pharos assets
+        assets = dict(pnl_data.get("assets", {}))
+
+        # Add NWOH from Pharos data
+        if pharos_data.get("daily_pnl"):
+            assets["NWOH"] = {
+                "total_pnl": pharos_data.get("total_pnl", 0),
+                "total_volume": pharos_data.get("total_volume", 0),
+                "daily_pnl": pharos_data.get("daily_pnl", {}),
+                "monthly_pnl": pharos_data.get("monthly_pnl", {}),
+                "annual_pnl": pharos_data.get("annual_pnl", {}),
+                "gwa_basis": None,  # Will be calculated from daily data
+            }
+            # Calculate overall GWA basis for NWOH
+            total_vol = pharos_data.get("total_volume", 0)
+            if total_vol > 0:
+                total_vbp = sum(d.get("volume_basis_product", 0) for d in pharos_data.get("daily_pnl", {}).values())
+                assets["NWOH"]["gwa_basis"] = round(total_vbp / total_vol, 2)
+
+        # Calculate combined totals
+        combined_total_pnl = pnl_data.get("total_pnl", 0) + pharos_data.get("total_pnl", 0)
+        combined_total_volume = pnl_data.get("total_volume", 0) + pharos_data.get("total_volume", 0)
+
+        # Merge daily/monthly/annual aggregates
+        daily_pnl = dict(pnl_data.get("daily_pnl", {}))
+        monthly_pnl = dict(pnl_data.get("monthly_pnl", {}))
+        annual_pnl = dict(pnl_data.get("annual_pnl", {}))
+
+        # Add Pharos daily data to combined totals
+        for day, data in pharos_data.get("daily_pnl", {}).items():
+            if day in daily_pnl:
+                daily_pnl[day]["pnl"] = daily_pnl[day].get("pnl", 0) + data.get("pnl", 0)
+                daily_pnl[day]["volume"] = daily_pnl[day].get("volume", 0) + data.get("volume", 0)
+                daily_pnl[day]["count"] = daily_pnl[day].get("count", 0) + data.get("count", 0)
+                daily_pnl[day]["volume_basis_product"] = daily_pnl[day].get("volume_basis_product", 0) + data.get("volume_basis_product", 0)
+            else:
+                daily_pnl[day] = dict(data)
+
+        # Add Pharos monthly data
+        for month, data in pharos_data.get("monthly_pnl", {}).items():
+            if month in monthly_pnl:
+                monthly_pnl[month]["pnl"] = monthly_pnl[month].get("pnl", 0) + data.get("pnl", 0)
+                monthly_pnl[month]["volume"] = monthly_pnl[month].get("volume", 0) + data.get("volume", 0)
+                monthly_pnl[month]["count"] = monthly_pnl[month].get("count", 0) + data.get("count", 0)
+                monthly_pnl[month]["volume_basis_product"] = monthly_pnl[month].get("volume_basis_product", 0) + data.get("volume_basis_product", 0)
+            else:
+                monthly_pnl[month] = dict(data)
+
+        # Add Pharos annual data
+        for year, data in pharos_data.get("annual_pnl", {}).items():
+            if year in annual_pnl:
+                annual_pnl[year]["pnl"] = annual_pnl[year].get("pnl", 0) + data.get("pnl", 0)
+                annual_pnl[year]["volume"] = annual_pnl[year].get("volume", 0) + data.get("volume", 0)
+                annual_pnl[year]["count"] = annual_pnl[year].get("count", 0) + data.get("count", 0)
+                annual_pnl[year]["volume_basis_product"] = annual_pnl[year].get("volume_basis_product", 0) + data.get("volume_basis_product", 0)
+            else:
+                annual_pnl[year] = dict(data)
+
+        # Recalculate GWA basis for combined data
+        for d in daily_pnl.values():
+            if d.get("volume", 0) > 0 and "volume_basis_product" in d:
+                d["gwa_basis"] = round(d["volume_basis_product"] / d["volume"], 2)
+        for d in monthly_pnl.values():
+            if d.get("volume", 0) > 0 and "volume_basis_product" in d:
+                d["gwa_basis"] = round(d["volume_basis_product"] / d["volume"], 2)
+        for d in annual_pnl.values():
+            if d.get("volume", 0) > 0 and "volume_basis_product" in d:
+                d["gwa_basis"] = round(d["volume_basis_product"] / d["volume"], 2)
+
         return jsonify({
-            "total_pnl": pnl_data.get("total_pnl", 0),
-            "total_volume": pnl_data.get("total_volume", 0),
+            "total_pnl": combined_total_pnl,
+            "total_volume": combined_total_volume,
             "record_count": pnl_data.get("record_count", 0),
-            "daily_pnl": pnl_data.get("daily_pnl", {}),
-            "monthly_pnl": pnl_data.get("monthly_pnl", {}),
-            "annual_pnl": pnl_data.get("annual_pnl", {}),
-            "assets": pnl_data.get("assets", {}),
+            "daily_pnl": daily_pnl,
+            "monthly_pnl": monthly_pnl,
+            "annual_pnl": annual_pnl,
+            "assets": assets,
             "worst_basis_intervals": pnl_data.get("worst_basis_intervals", []),
             "last_update": pnl_data.get("last_tenaska_update"),
         })
@@ -1720,7 +2688,18 @@ def get_asset_pnl():
     asset_filter = request.args.get('asset')  # Optional: filter by specific asset
 
     with data_lock:
-        assets = pnl_data.get("assets", {})
+        # Merge Tenaska and Pharos assets
+        assets = dict(pnl_data.get("assets", {}))
+
+        # Add NWOH from Pharos data
+        if pharos_data.get("daily_pnl"):
+            assets["NWOH"] = {
+                "total_pnl": pharos_data.get("total_pnl", 0),
+                "total_volume": pharos_data.get("total_volume", 0),
+                "daily_pnl": pharos_data.get("daily_pnl", {}),
+                "monthly_pnl": pharos_data.get("monthly_pnl", {}),
+                "annual_pnl": pharos_data.get("annual_pnl", {}),
+            }
 
         if asset_filter and asset_filter in assets:
             return jsonify({
@@ -1902,6 +2881,215 @@ def reload_pnl():
 
     except Exception as e:
         logger.error(f"Error reloading PnL data: {e}")
+        return jsonify({
+            "success": False,
+            "message": str(e)
+        }), 500
+
+# ============================================================================
+# PHAROS API ENDPOINTS (NWOH - PJM DA/RT Data)
+# ============================================================================
+@app.route('/api/pharos/da', methods=['GET'])
+@login_required
+def get_pharos_da():
+    """Get NWOH Day-Ahead awards data."""
+    with data_lock:
+        return jsonify({
+            "daily_da": pharos_data.get("daily_da", {}),
+            "monthly_da": pharos_data.get("monthly_da", {}),
+            "annual_da": pharos_data.get("annual_da", {}),
+            "total_da_mwh": pharos_data.get("total_da_mwh", 0),
+            "total_da_revenue": pharos_data.get("total_da_revenue", 0),
+            "capped_intervals": pharos_data.get("capped_intervals", []),
+            "last_update": pharos_data.get("last_pharos_update"),
+        })
+
+@app.route('/api/pharos/da/daily', methods=['GET'])
+@login_required
+def get_pharos_da_daily():
+    """Get NWOH daily DA data with optional date filtering."""
+    start_date = request.args.get('start')
+    end_date = request.args.get('end')
+
+    with data_lock:
+        daily = pharos_data.get("daily_da", {})
+
+        if start_date or end_date:
+            filtered = {}
+            for date_key, data in daily.items():
+                if start_date and date_key < start_date:
+                    continue
+                if end_date and date_key > end_date:
+                    continue
+                filtered[date_key] = data
+            daily = filtered
+
+        sorted_daily = dict(sorted(daily.items(), reverse=True))
+
+        return jsonify({
+            "daily_da": sorted_daily,
+            "total_da_mwh": sum(d.get("da_mwh", 0) for d in sorted_daily.values()),
+            "total_da_revenue": sum(d.get("da_revenue", 0) for d in sorted_daily.values()),
+            "count": len(sorted_daily)
+        })
+
+@app.route('/api/pharos/da/capped', methods=['GET'])
+@login_required
+def get_pharos_capped_intervals():
+    """Get price-capped intervals for NWOH DA risk management."""
+    with data_lock:
+        capped = pharos_data.get("capped_intervals", [])
+        daily = pharos_data.get("daily_da", {})
+
+        # Calculate summary stats
+        total_capped = sum(d.get("capped_count", 0) for d in daily.values())
+        total_intervals = sum(d.get("count", 0) for d in daily.values())
+
+        return jsonify({
+            "capped_intervals": capped,
+            "total_capped_count": total_capped,
+            "total_intervals": total_intervals,
+            "capped_percentage": round(total_capped / total_intervals * 100, 2) if total_intervals > 0 else 0,
+        })
+
+@app.route('/api/pharos/pnl', methods=['GET'])
+@login_required
+def get_pharos_pnl():
+    """Get NWOH PnL data from unit operations (DA + RT combined)."""
+    with data_lock:
+        return jsonify({
+            "daily_pnl": pharos_data.get("daily_pnl", {}),
+            "monthly_pnl": pharos_data.get("monthly_pnl", {}),
+            "annual_pnl": pharos_data.get("annual_pnl", {}),
+            "total_pnl": pharos_data.get("total_pnl", 0),
+            "total_volume": pharos_data.get("total_volume", 0),
+            "last_update": pharos_data.get("last_pharos_update"),
+        })
+
+@app.route('/api/pharos/pnl/daily', methods=['GET'])
+@login_required
+def get_pharos_pnl_daily():
+    """Get NWOH daily PnL data with optional date filtering."""
+    start_date = request.args.get('start')
+    end_date = request.args.get('end')
+
+    with data_lock:
+        daily = pharos_data.get("daily_pnl", {})
+
+        if start_date or end_date:
+            filtered = {}
+            for date_key, data in daily.items():
+                if start_date and date_key < start_date:
+                    continue
+                if end_date and date_key > end_date:
+                    continue
+                filtered[date_key] = data
+            daily = filtered
+
+        sorted_daily = dict(sorted(daily.items(), reverse=True))
+
+        return jsonify({
+            "daily_pnl": sorted_daily,
+            "total_pnl": sum(d.get("pnl", 0) for d in sorted_daily.values()),
+            "total_volume": sum(d.get("volume", 0) for d in sorted_daily.values()),
+            "count": len(sorted_daily)
+        })
+
+@app.route('/api/pharos/status', methods=['GET'])
+@login_required
+def get_pharos_status():
+    """Get Pharos API status and data summary."""
+    with data_lock:
+        daily_days = len(pharos_data.get("daily_pnl", {}))
+        monthly_months = len(pharos_data.get("monthly_pnl", {}))
+
+        # Get date range
+        daily_dates = list(pharos_data.get("daily_pnl", {}).keys())
+        date_range = f"{min(daily_dates)} to {max(daily_dates)}" if daily_dates else "No data"
+
+        return jsonify({
+            "pharos_auto_fetch": PHAROS_AUTO_FETCH,
+            "pharos_fetch_interval_seconds": PHAROS_FETCH_INTERVAL,
+            "pharos_fetch_start_date": PHAROS_FETCH_START_DATE,
+            "data_loaded": daily_days > 0,
+            "total_pnl": pharos_data.get("total_pnl", 0),
+            "total_volume": pharos_data.get("total_volume", 0),
+            "total_da_mwh": pharos_data.get("total_da_mwh", 0),
+            "daily_records": daily_days,
+            "monthly_records": monthly_months,
+            "unit_ops_count": len(pharos_data.get("unit_ops", [])),
+            "da_awards_count": len(pharos_data.get("da_awards", [])),
+            "date_range": date_range,
+            "last_update": pharos_data.get("last_pharos_update"),
+            "capped_intervals": len(pharos_data.get("capped_intervals", [])),
+        })
+
+@app.route('/api/pharos/reload', methods=['POST'])
+@login_required
+def reload_pharos():
+    """Force reload Pharos/NWOH data from API (both DA awards and unit operations)."""
+    global pharos_data
+
+    start_date = request.args.get('start_date', PHAROS_FETCH_START_DATE)
+
+    try:
+        if not PHAROS_AUTO_FETCH:
+            return jsonify({
+                "success": False,
+                "message": "Pharos auto-fetch is disabled"
+            }), 400
+
+        # Fetch DA awards
+        logger.info(f"Reloading Pharos DA data (start_date={start_date})...")
+        awards = fetch_pharos_da_awards(start_date=start_date)
+
+        if awards:
+            aggregated = aggregate_pharos_da_data(awards)
+            with data_lock:
+                pharos_data["da_awards"] = awards
+                pharos_data["daily_da"] = aggregated["daily"]
+                pharos_data["monthly_da"] = aggregated["monthly"]
+                pharos_data["annual_da"] = aggregated["annual"]
+                pharos_data["total_da_mwh"] = aggregated["total_da_mwh"]
+                pharos_data["total_da_revenue"] = aggregated["total_da_revenue"]
+                pharos_data["capped_intervals"] = aggregated["capped_intervals"]
+
+        # Fetch unit operations for PnL
+        logger.info(f"Reloading Pharos unit operations (start_date={start_date})...")
+        unit_ops = fetch_pharos_unit_operations(start_date=start_date)
+
+        if unit_ops:
+            ops_aggregated = aggregate_pharos_unit_operations(unit_ops)
+            with data_lock:
+                pharos_data["unit_ops"] = unit_ops
+                pharos_data["daily_pnl"] = ops_aggregated["daily"]
+                pharos_data["monthly_pnl"] = ops_aggregated["monthly"]
+                pharos_data["annual_pnl"] = ops_aggregated["annual"]
+                pharos_data["total_pnl"] = ops_aggregated["total_pnl"]
+                pharos_data["total_volume"] = ops_aggregated["total_volume"]
+
+        with data_lock:
+            pharos_data["last_pharos_update"] = datetime.now(ZoneInfo("America/New_York")).isoformat()
+
+        save_pharos_data(pharos_data)
+
+        if awards or unit_ops:
+            return jsonify({
+                "success": True,
+                "message": f"Loaded {len(awards or [])} DA awards and {len(unit_ops or [])} unit ops from Pharos",
+                "total_da_mwh": pharos_data.get("total_da_mwh", 0),
+                "total_pnl": pharos_data.get("total_pnl", 0),
+                "total_volume": pharos_data.get("total_volume", 0),
+                "total_capped": len(pharos_data.get("capped_intervals", [])),
+            })
+        else:
+            return jsonify({
+                "success": False,
+                "message": "No data found from Pharos API"
+            }), 400
+
+    except Exception as e:
+        logger.error(f"Error reloading Pharos data: {e}")
         return jsonify({
             "success": False,
             "message": str(e)
@@ -2125,6 +3313,7 @@ def dashboard():
                             <button id="asset-BKI" onclick="setAssetFilter('BKI')" class="px-3 py-1 text-xs font-semibold asset-btn" style="background-color: white; color: var(--skyvest-navy);">BKI</button>
                             <button id="asset-BKII" onclick="setAssetFilter('BKII')" class="px-3 py-1 text-xs font-semibold asset-btn" style="background-color: white; color: var(--skyvest-navy);">BKII</button>
                             <button id="asset-HOLSTEIN" onclick="setAssetFilter('HOLSTEIN')" class="px-3 py-1 text-xs font-semibold asset-btn" style="background-color: white; color: var(--skyvest-navy);">Holstein</button>
+                            <button id="asset-NWOH" onclick="setAssetFilter('NWOH')" class="px-3 py-1 text-xs font-semibold asset-btn" style="background-color: white; color: var(--skyvest-navy);">NWOH</button>
                         </div>
                     </div>
                 </div>
@@ -2193,6 +3382,104 @@ def dashboard():
                         <p class="text-xs" style="color: #666;">PPA: <span id="asset-realized-ppa-HOLSTEIN" class="font-semibold" style="color: var(--skyvest-navy);">--</span> <span style="color: #999;">(87.5%)</span></p>
                         <p class="text-xs" style="color: #666;">Merchant: <span id="asset-realized-merchant-HOLSTEIN" class="font-semibold" style="color: var(--skyvest-navy);">--</span> <span style="color: #999;">(12.5%)</span></p>
                         <p class="text-xs" style="color: #999;">GWA Basis: <span id="asset-basis-HOLSTEIN">--</span> (100%)</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- NWOH Detailed Card (PJM market settlement view) -->
+            <div id="nwoh-detail-card" class="card rounded-sm p-4 mb-3" style="display: none; border-left: 4px solid var(--skyvest-blue);">
+                <div class="flex justify-between items-start mb-3">
+                    <div>
+                        <p class="text-lg font-semibold" style="color: var(--skyvest-navy);">Northwest Ohio Wind</p>
+                        <p class="text-xs" style="color: #999;">PJM DA/RT Market | 100% PPA @ $33.31/MWh with GM</p>
+                    </div>
+                    <span class="text-xs px-2 py-1 rounded" style="background-color: #e8f4f8; color: var(--skyvest-navy);">105 MW</span>
+                </div>
+
+                <!-- PJM Market Revenue Section -->
+                <div class="mb-4">
+                    <p class="text-xs font-semibold mb-2" style="color: #666; border-bottom: 1px solid #eee; padding-bottom: 4px;">PJM Market Settlement</p>
+                    <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+                        <div>
+                            <p class="text-xs" style="color: #999;">DA Energy Revenue</p>
+                            <p id="nwoh-da-revenue" class="text-lg font-bold" style="color: var(--skyvest-navy);">$0</p>
+                            <p class="text-xs" style="color: #999;">Avg: <span id="nwoh-avg-da-lmp">--</span>/MWh</p>
+                        </div>
+                        <div>
+                            <p class="text-xs" style="color: #999;">RT Sales Revenue</p>
+                            <p id="nwoh-rt-sales" class="text-lg font-bold" style="color: #22c55e;">$0</p>
+                            <p class="text-xs" style="color: #999;"><span id="nwoh-rt-sales-mwh">0</span> MWh sold</p>
+                        </div>
+                        <div>
+                            <p class="text-xs" style="color: #999;">RT Purchase Cost</p>
+                            <p id="nwoh-rt-purchase" class="text-lg font-bold" style="color: #ef4444;">$0</p>
+                            <p class="text-xs" style="color: #999;"><span id="nwoh-rt-purchase-mwh">0</span> MWh bought</p>
+                        </div>
+                        <div>
+                            <p class="text-xs" style="color: #999;">Total PJM Revenue</p>
+                            <p id="nwoh-total-pjm" class="text-lg font-bold" style="color: var(--skyvest-blue);">$0</p>
+                            <p class="text-xs" style="color: #999;">Avg RT: <span id="nwoh-avg-rt-lmp">--</span>/MWh</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Generation & Pricing Section -->
+                <div class="mb-4">
+                    <p class="text-xs font-semibold mb-2" style="color: #666; border-bottom: 1px solid #eee; padding-bottom: 4px;">Generation & Pricing</p>
+                    <div class="grid grid-cols-2 md:grid-cols-6 gap-3">
+                        <div>
+                            <p class="text-xs" style="color: #999;">Generation</p>
+                            <p id="nwoh-gen-mwh" class="text-lg font-bold" style="color: var(--skyvest-navy);">0 MWh</p>
+                        </div>
+                        <div>
+                            <p class="text-xs" style="color: #999;">DA Awarded</p>
+                            <p id="nwoh-da-mwh" class="text-lg font-bold" style="color: var(--skyvest-navy);">0 MWh</p>
+                        </div>
+                        <div>
+                            <p class="text-xs" style="color: #999;">Avg Node LMP</p>
+                            <p id="nwoh-avg-node" class="text-lg font-bold" style="color: var(--skyvest-navy);">--</p>
+                        </div>
+                        <div>
+                            <p class="text-xs" style="color: #999;">Avg Hub LMP</p>
+                            <p id="nwoh-avg-hub" class="text-lg font-bold" style="color: var(--skyvest-navy);">--</p>
+                        </div>
+                        <div>
+                            <p class="text-xs" style="color: #999;">GWA Basis</p>
+                            <p id="nwoh-gwa-basis" class="text-lg font-bold" style="color: var(--skyvest-navy);">--</p>
+                            <p class="text-xs" style="color: #999;">Hub - Node</p>
+                        </div>
+                        <div>
+                            <p class="text-xs" style="color: #999;">Realized Price</p>
+                            <p id="nwoh-realized-price" class="text-lg font-bold" style="color: var(--skyvest-blue);">--</p>
+                            <p class="text-xs" style="color: #999;">All-in $/MWh</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- PPA Settlement Section -->
+                <div>
+                    <p class="text-xs font-semibold mb-2" style="color: #666; border-bottom: 1px solid #eee; padding-bottom: 4px;">PPA Settlement (GM)</p>
+                    <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+                        <div>
+                            <p class="text-xs" style="color: #999;">Fixed PPA Price</p>
+                            <p class="text-lg font-bold" style="color: var(--skyvest-navy);">$33.31</p>
+                            <p class="text-xs" style="color: #999;">Per MWh</p>
+                        </div>
+                        <div>
+                            <p class="text-xs" style="color: #999;">Fixed Payment (from GM)</p>
+                            <p id="nwoh-fixed-payment" class="text-lg font-bold" style="color: #22c55e;">$0</p>
+                            <p class="text-xs" style="color: #999;">Gen × $33.31</p>
+                        </div>
+                        <div>
+                            <p class="text-xs" style="color: #999;">Floating Payment (to GM)</p>
+                            <p id="nwoh-floating-payment" class="text-lg font-bold" style="color: #ef4444;">$0</p>
+                            <p class="text-xs" style="color: #999;">Gen × Hub LMP</p>
+                        </div>
+                        <div>
+                            <p class="text-xs" style="color: #999;">Net PPA Settlement</p>
+                            <p id="nwoh-net-ppa" class="text-lg font-bold" style="color: var(--skyvest-blue);">$0</p>
+                            <p class="text-xs" style="color: #999;">Fixed - Floating</p>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -2276,6 +3563,7 @@ def dashboard():
                             <option value="BKII">McCrae (BKII)</option>
                             <option value="BKI">Bearkat I</option>
                             <option value="HOLSTEIN">Holstein</option>
+                            <option value="NWOH">NW Ohio Wind</option>
                         </select>
                         <button id="btn-daily" onclick="setPnlView('daily')" class="px-3 py-1 text-xs font-semibold rounded" style="background-color: var(--skyvest-blue); color: white;">Daily</button>
                         <button id="btn-monthly" onclick="setPnlView('monthly')" class="px-3 py-1 text-xs font-semibold rounded" style="background-color: #e5e5e5; color: var(--skyvest-navy);">Monthly</button>
@@ -2289,6 +3577,7 @@ def dashboard():
                             <tr style="border-bottom: 2px solid var(--skyvest-navy);">
                                 <th class="text-left py-2 px-2" style="color: var(--skyvest-navy);">Period</th>
                                 <th class="text-right py-2 px-2" style="color: var(--skyvest-navy);">PnL</th>
+                                <th class="text-right py-2 px-2" style="color: var(--skyvest-navy);">GWA Basis</th>
                                 <th class="text-right py-2 px-2" style="color: var(--skyvest-navy);">Volume (MWh)</th>
                                 <th class="text-right py-2 px-2" style="color: var(--skyvest-navy);">Intervals</th>
                             </tr>
@@ -2326,6 +3615,11 @@ def dashboard():
                     <span class="w-2 h-2 rounded-full bg-yellow-500"></span>
                     <span style="color: #666;"><strong>Tenaska API:</strong> 30min</span>
                     <span id="tenaska-last-update" style="color: #999;"></span>
+                </div>
+                <div class="flex items-center gap-2">
+                    <span class="w-2 h-2 rounded-full bg-purple-500"></span>
+                    <span style="color: #666;"><strong>Pharos API:</strong> 30min</span>
+                    <span id="pharos-last-update" style="color: #999;"></span>
                 </div>
             </div>
             <div style="color: #999;">
@@ -2848,36 +4142,158 @@ def dashboard():
 
             updateFilteredDisplay();
             updateAssetCards();  // Update asset cards to reflect selected period
+            if (currentAssetFilter === 'NWOH') {
+                updateNwohDetailCard();  // Update NWOH detail card if visible
+            }
         }
 
         function setAssetFilter(asset) {
             currentAssetFilter = asset;
 
             // Update button styles
-            ['all', 'BKI', 'BKII', 'HOLSTEIN'].forEach(a => {
+            ['all', 'BKI', 'BKII', 'HOLSTEIN', 'NWOH'].forEach(a => {
                 const btn = document.getElementById('asset-' + a);
-                if (a === asset) {
-                    btn.style.backgroundColor = 'var(--skyvest-navy)';
-                    btn.style.color = 'white';
-                } else {
-                    btn.style.backgroundColor = 'white';
-                    btn.style.color = 'var(--skyvest-navy)';
+                if (btn) {
+                    if (a === asset) {
+                        btn.style.backgroundColor = 'var(--skyvest-navy)';
+                        btn.style.color = 'white';
+                    } else {
+                        btn.style.backgroundColor = 'white';
+                        btn.style.color = 'var(--skyvest-navy)';
+                    }
                 }
             });
 
-            // Show/hide asset cards vs single asset detail
+            // Show/hide asset cards vs single asset detail vs NWOH detail
             const assetCardsContainer = document.getElementById('asset-cards-container');
             const singleAssetDetail = document.getElementById('single-asset-detail');
+            const nwohDetailCard = document.getElementById('nwoh-detail-card');
 
             if (asset === 'all') {
                 assetCardsContainer.style.display = '';
                 singleAssetDetail.style.display = 'none';
+                nwohDetailCard.style.display = 'none';
+            } else if (asset === 'NWOH') {
+                assetCardsContainer.style.display = 'none';
+                singleAssetDetail.style.display = 'none';
+                nwohDetailCard.style.display = '';
+                updateNwohDetailCard();
             } else {
                 assetCardsContainer.style.display = 'none';
                 singleAssetDetail.style.display = '';
+                nwohDetailCard.style.display = 'none';
             }
 
             updateFilteredDisplay();
+        }
+
+        // Update NWOH detailed card with invoice-style metrics
+        function updateNwohDetailCard() {
+            if (!pnlData || !pnlData.assets?.NWOH) return;
+
+            const nwoh = pnlData.assets.NWOH;
+            let data = {};
+
+            // Get data based on current period
+            if (currentPeriod === 'daily') {
+                // Get most recent day
+                const days = Object.keys(nwoh.daily_pnl || {}).sort();
+                const latestDay = days[days.length - 1];
+                data = nwoh.daily_pnl?.[latestDay] || {};
+            } else if (currentPeriod === 'mtd') {
+                const currentMonth = new Date().getFullYear() + '-' + String(new Date().getMonth() + 1).padStart(2, '0');
+                data = nwoh.monthly_pnl?.[currentMonth] || {};
+            } else {
+                // YTD - sum all monthly data or use annual
+                const currentYear = new Date().getFullYear().toString();
+                data = nwoh.annual_pnl?.[currentYear] || {};
+                // If no annual, aggregate monthly
+                if (!data.volume && nwoh.monthly_pnl) {
+                    data = {pnl: 0, volume: 0, da_revenue: 0, da_mwh: 0, rt_sales_revenue: 0, rt_sales_mwh: 0,
+                            rt_purchase_cost: 0, rt_purchase_mwh: 0, avg_da_price: 0, avg_rt_price: 0,
+                            avg_hub_price: 0, gwa_basis: 0, da_lmp_product: 0, rt_lmp_product: 0, hub_lmp_product: 0, hub_volume: 0};
+                    Object.values(nwoh.monthly_pnl).forEach(m => {
+                        data.pnl += m.pnl || 0;
+                        data.volume += m.volume || 0;
+                        data.da_revenue += m.da_revenue || 0;
+                        data.da_mwh += m.da_mwh || 0;
+                        data.rt_sales_revenue += m.rt_sales_revenue || 0;
+                        data.rt_sales_mwh += m.rt_sales_mwh || 0;
+                        data.rt_purchase_cost += m.rt_purchase_cost || 0;
+                        data.rt_purchase_mwh += m.rt_purchase_mwh || 0;
+                        data.da_lmp_product += m.da_lmp_product || 0;
+                        data.rt_lmp_product += m.rt_lmp_product || 0;
+                        data.hub_lmp_product += m.hub_lmp_product || 0;
+                        data.hub_volume += m.hub_volume || 0;
+                    });
+                    // Calculate weighted averages
+                    if (data.da_mwh > 0) data.avg_da_price = data.da_lmp_product / data.da_mwh;
+                    if (data.volume > 0) data.avg_rt_price = data.rt_lmp_product / data.volume;
+                    if (data.hub_volume > 0) data.avg_hub_price = data.hub_lmp_product / data.hub_volume;
+                    if (data.volume > 0) data.gwa_basis = (data.hub_lmp_product - data.rt_lmp_product) / data.volume;
+                }
+            }
+
+            const formatCurrency = (val) => {
+                if (val === null || val === undefined) return '--';
+                return '$' + Math.abs(val).toLocaleString('en-US', {minimumFractionDigits: 0, maximumFractionDigits: 0});
+            };
+
+            const formatNumber = (val, decimals = 2) => {
+                if (val === null || val === undefined) return '--';
+                return val.toLocaleString('en-US', {minimumFractionDigits: decimals, maximumFractionDigits: decimals});
+            };
+
+            // PJM Market Settlement
+            const daRevenue = data.da_revenue || 0;
+            const rtSalesRev = data.rt_sales_revenue || 0;
+            const rtPurchaseCost = data.rt_purchase_cost || 0;
+            const totalPjmRevenue = daRevenue + rtSalesRev - rtPurchaseCost;
+
+            document.getElementById('nwoh-da-revenue').textContent = formatCurrency(daRevenue);
+            document.getElementById('nwoh-avg-da-lmp').textContent = '$' + formatNumber(data.avg_da_price);
+            document.getElementById('nwoh-rt-sales').textContent = formatCurrency(rtSalesRev);
+            document.getElementById('nwoh-rt-sales-mwh').textContent = formatNumber(data.rt_sales_mwh || 0);
+            document.getElementById('nwoh-rt-purchase').textContent = '(' + formatCurrency(rtPurchaseCost) + ')';
+            document.getElementById('nwoh-rt-purchase-mwh').textContent = formatNumber(data.rt_purchase_mwh || 0);
+            document.getElementById('nwoh-total-pjm').textContent = formatCurrency(totalPjmRevenue);
+            document.getElementById('nwoh-avg-rt-lmp').textContent = '$' + formatNumber(data.avg_rt_price);
+
+            // Generation & Pricing
+            const genMwh = data.volume || 0;
+            const daMwh = data.da_mwh || 0;
+            const avgNodeLmp = data.avg_rt_price || 0;
+            const avgHubLmp = data.avg_hub_price || avgNodeLmp;  // Fallback to node if no hub
+            const gwaBasis = data.gwa_basis || (avgHubLmp - avgNodeLmp);
+
+            document.getElementById('nwoh-gen-mwh').textContent = formatNumber(genMwh) + ' MWh';
+            document.getElementById('nwoh-da-mwh').textContent = formatNumber(daMwh) + ' MWh';
+            document.getElementById('nwoh-avg-node').textContent = '$' + formatNumber(avgNodeLmp);
+            document.getElementById('nwoh-avg-hub').textContent = '$' + formatNumber(avgHubLmp);
+            const basisEl = document.getElementById('nwoh-gwa-basis');
+            basisEl.textContent = '$' + formatNumber(gwaBasis);
+            basisEl.style.color = gwaBasis >= 0 ? '#22c55e' : '#ef4444';
+
+            // PPA Settlement
+            // Fixed: GM pays us $33.31/MWh (revenue)
+            // Floating: We pay GM Hub LMP (cost)
+            // Net = Fixed - Floating (positive when hub < $33.31)
+            const ppaPrice = 33.31;
+            const fixedPayment = genMwh * ppaPrice;  // Revenue from GM
+            const floatingPayment = genMwh * avgHubLmp;  // Cost to GM
+            const netPpaSettlement = fixedPayment - floatingPayment;
+
+            document.getElementById('nwoh-fixed-payment').textContent = formatCurrency(fixedPayment);
+            document.getElementById('nwoh-floating-payment').textContent = '(' + formatCurrency(floatingPayment) + ')';
+            const netEl = document.getElementById('nwoh-net-ppa');
+            netEl.textContent = (netPpaSettlement >= 0 ? '' : '(') + formatCurrency(Math.abs(netPpaSettlement)) + (netPpaSettlement >= 0 ? '' : ')');
+            netEl.style.color = netPpaSettlement >= 0 ? '#22c55e' : '#ef4444';
+
+            // Realized Price = (Total PJM Revenue + Net PPA Settlement) / Generation
+            // This is the all-in blended price per MWh
+            const totalRevenue = totalPjmRevenue + netPpaSettlement;
+            const realizedPrice = genMwh > 0 ? totalRevenue / genMwh : 0;
+            document.getElementById('nwoh-realized-price').textContent = '$' + formatNumber(realizedPrice);
         }
 
         function updateFilteredDisplay() {
@@ -3018,6 +4434,37 @@ def dashboard():
                 }
             }
 
+            // For NWOH, calculate blended realized price: (PJM Revenue + Net PPA) / Generation
+            if (currentAssetFilter === 'NWOH') {
+                const nwohData = pnlData.assets?.NWOH;
+                if (nwohData) {
+                    let periodData = {};
+                    if (currentPeriod === 'daily') {
+                        const days = Object.keys(nwohData.daily_pnl || {}).sort();
+                        periodData = nwohData.daily_pnl?.[days[days.length - 1]] || {};
+                    } else if (currentPeriod === 'mtd') {
+                        periodData = nwohData.monthly_pnl?.[currentMonth] || {};
+                    } else {
+                        periodData = nwohData.annual_pnl?.[currentYear] || {};
+                    }
+
+                    const daRev = periodData.da_revenue || 0;
+                    const rtSales = periodData.rt_sales_revenue || 0;
+                    const rtPurchase = periodData.rt_purchase_cost || 0;
+                    const totalPjm = daRev + rtSales - rtPurchase;
+                    const genMwh = periodData.volume || 0;
+                    const avgHub = periodData.avg_hub_price || periodData.avg_rt_price || 0;
+
+                    const fixedPmt = genMwh * 33.31;
+                    const floatingPmt = genMwh * avgHub;
+                    const netPpa = fixedPmt - floatingPmt;
+
+                    if (genMwh > 0) {
+                        realizedPrice = Math.round((totalPjm + netPpa) / genMwh * 100) / 100;
+                    }
+                }
+            }
+
             // Update summary cards - show realized price for all views
             document.getElementById('filtered-realized').textContent = realizedPrice !== null && realizedPrice !== undefined ? formatCurrency(realizedPrice) + '/MWh' : '--';
             document.getElementById('filtered-basis').textContent = gwaBasis !== null && gwaBasis !== undefined ? formatCurrency(gwaBasis) : '--';
@@ -3047,12 +4494,14 @@ def dashboard():
             const assetNames = {
                 'BKI': 'Bearkat I',
                 'BKII': 'McCrae (BKII)',
-                'HOLSTEIN': 'Holstein'
+                'HOLSTEIN': 'Holstein',
+                'NWOH': 'Northwest Ohio Wind'
             };
             const assetTypes = {
                 'BKI': '100% Merchant',
                 'BKII': '100% PPA @ $34 (50% Basis Exposure)',
-                'HOLSTEIN': '87.5% PPA @ $35 / 12.5% Merchant (100% Basis)'
+                'HOLSTEIN': '87.5% PPA @ $35 / 12.5% Merchant (100% Basis)',
+                'NWOH': 'PJM DA/RT Market (100% PPA)'
             };
 
             document.getElementById('single-asset-name').textContent = assetNames[assetKey] || assetKey;
@@ -3151,7 +4600,7 @@ def dashboard():
                 }
             }
 
-            ['BKII', 'BKI', 'HOLSTEIN'].forEach(assetKey => {
+            ['BKII', 'BKI', 'HOLSTEIN', 'NWOH'].forEach(assetKey => {
                 const assetData = assets[assetKey];
                 const pnlEl = document.getElementById('asset-pnl-' + assetKey);
                 const volEl = document.getElementById('asset-volume-' + assetKey);
@@ -3321,7 +4770,7 @@ def dashboard():
             const sortedEntries = Object.entries(data).sort((a, b) => b[0].localeCompare(a[0]));
 
             if (sortedEntries.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="4" class="text-center py-4" style="color: #999;">No PnL data available for ' + (assetFilter === 'all' ? 'all assets' : assetFilter) + '</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="5" class="text-center py-4" style="color: #999;">No PnL data available for ' + (assetFilter === 'all' ? 'all assets' : assetFilter) + '</td></tr>';
                 return;
             }
 
@@ -3329,12 +4778,16 @@ def dashboard():
                 const pnl = values.pnl || 0;
                 const volume = values.volume || 0;
                 const count = values.count || 0;
+                const gwaBasis = values.gwa_basis;
                 const pnlColor = pnl >= 0 ? 'var(--skyvest-blue)' : '#ef4444';
+                const basisColor = gwaBasis !== null && gwaBasis !== undefined ? (gwaBasis < 0 ? '#ef4444' : '#22c55e') : '#999';
+                const basisDisplay = gwaBasis !== null && gwaBasis !== undefined ? formatCurrency(gwaBasis) : '--';
 
                 return `
                     <tr style="border-bottom: 1px solid #f0f0f0;">
                         <td class="py-2 px-2 font-medium" style="color: var(--skyvest-navy);">${period}</td>
                         <td class="py-2 px-2 text-right font-bold" style="color: ${pnlColor};">${formatCurrency(pnl)}</td>
+                        <td class="py-2 px-2 text-right" style="color: ${basisColor};">${basisDisplay}</td>
                         <td class="py-2 px-2 text-right" style="color: #666;">${formatNumber(volume)}</td>
                         <td class="py-2 px-2 text-right" style="color: #999;">${count}</td>
                     </tr>
@@ -3555,6 +5008,34 @@ def dashboard():
             }
         }
 
+        // Update Pharos timestamp and status
+        function updatePharosTimestamp() {
+            fetch('/api/pharos/status')
+                .then(r => r.json())
+                .then(data => {
+                    const el = document.getElementById('pharos-last-update');
+                    const dot = el?.previousElementSibling?.previousElementSibling;
+
+                    if (el) {
+                        if (data.data_loaded) {
+                            const lastUpdated = data.last_update ? new Date(data.last_update) : null;
+                            const timeStr = lastUpdated ? formatTimeEST(lastUpdated) + ' ET' : '';
+                            const vol = (data.total_volume / 1000).toFixed(1);
+                            el.textContent = `(${vol}k MWh, ${data.daily_records} days${timeStr ? ', ' + timeStr : ''})`;
+                            if (dot) dot.className = 'w-2 h-2 rounded-full bg-purple-500';
+                        } else {
+                            el.textContent = '(No data - check logs)';
+                            if (dot) dot.className = 'w-2 h-2 rounded-full bg-red-500';
+                        }
+                    }
+                })
+                .catch(err => {
+                    console.log('Pharos status fetch error:', err);
+                    const el = document.getElementById('pharos-last-update');
+                    if (el) el.textContent = '(Error fetching status)';
+                });
+        }
+
         // Wrap original fetch functions to update timestamps
         const originalFetchData = fetchData;
         fetchData = async function() {
@@ -3571,8 +5052,10 @@ def dashboard():
         // Initialize both basis and PnL data
         fetchData();
         fetchPnlData();
+        updatePharosTimestamp();
         setInterval(fetchData, 30000);
         setInterval(fetchPnlData, 2100000);  // Refresh PnL every 35 minutes (Tenaska updates every 15 mins)
+        setInterval(updatePharosTimestamp, 1800000);  // Refresh Pharos timestamp every 30 minutes
         setInterval(updateCurrentTime, 1000);  // Update clock every second
         updateCurrentTime();
     </script>
