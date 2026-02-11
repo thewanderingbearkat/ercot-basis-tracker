@@ -2583,7 +2583,45 @@ def background_data_fetch():
                     last_pjm_time = latest_pjm_time
                     logger.info(f"PJM update: {PJM_NODE}=${latest_pjm_point['node_price']}, {PJM_HUB}=${latest_pjm_point['hub_price']}, Basis=${latest_pjm_point['basis']}")
             else:
-                logger.warning("No PJM data available")
+                # Fallback: Try to get latest data from Pharos unit_operations
+                logger.warning("No PJM API data available, trying Pharos fallback...")
+                try:
+                    today = datetime.now().strftime("%Y-%m-%d")
+                    url = f"{PHAROS_BASE_URL}/pjm/unit_operations/historic"
+                    params = {
+                        "organization_key": PHAROS_ORGANIZATION_KEY,
+                        "start_date": today,
+                        "end_date": today,
+                    }
+                    pharos_resp = requests.get(url, auth=get_pharos_auth(), params=params, timeout=30)
+                    if pharos_resp.status_code == 200:
+                        pharos_data = pharos_resp.json()
+                        ops = pharos_data.get("unit_operations", pharos_data) if isinstance(pharos_data, dict) else pharos_data
+                        if ops:
+                            # Get most recent record
+                            latest_op = ops[-1]
+                            rt_lmp = float(latest_op.get("rt_lmp", 0) or 0)
+                            timestamp = latest_op.get("timestamp", "")
+
+                            # Try to get hub price from cache
+                            hub_lmp = get_hub_price_for_timestamp(timestamp)
+                            if hub_lmp is None:
+                                # Use most recent hub price from cache
+                                if pjm_hub_price_cache:
+                                    hub_lmp = list(pjm_hub_price_cache.values())[-1]
+
+                            if hub_lmp:
+                                basis = hub_lmp - rt_lmp
+                                status = "safe" if basis > 0 else ("caution" if basis >= -30 else "alert")
+                                with data_lock:
+                                    latest_data["pjm_node_price"] = round(rt_lmp, 2)
+                                    latest_data["pjm_hub_price"] = round(hub_lmp, 2)
+                                    latest_data["pjm_basis"] = round(basis, 2)
+                                    latest_data["pjm_status"] = status
+                                    latest_data["last_update"] = datetime.now().isoformat()
+                                logger.info(f"PJM Pharos fallback: node=${rt_lmp:.2f}, hub=${hub_lmp:.2f}, basis=${basis:.2f}")
+                except Exception as e:
+                    logger.error(f"Pharos fallback failed: {e}")
 
             # Periodic Tenaska API refresh for PnL data
             if TENASKA_AUTO_FETCH:
