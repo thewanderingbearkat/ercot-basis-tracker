@@ -2459,8 +2459,10 @@ def load_pharos_data():
         if os.path.exists(PHAROS_HISTORY_FILE):
             with open(PHAROS_HISTORY_FILE, 'r') as f:
                 data = json.load(f)
-            logger.info(f"Loaded Pharos data from {PHAROS_HISTORY_FILE}")
+            logger.info(f"Loaded Pharos data from {PHAROS_HISTORY_FILE}: {len(data.get('daily_pnl', {}))} daily records, PnL=${data.get('total_pnl', 0):,.0f}")
             return data
+        else:
+            logger.info(f"Pharos cache file {PHAROS_HISTORY_FILE} does not exist")
         return None
     except Exception as e:
         logger.error(f"Error loading Pharos data: {e}")
