@@ -1874,6 +1874,76 @@ def fetch_pharos_next_day_awards():
         logger.error(f"Error fetching next-day DA awards: {e}")
         return {"date": None, "total_da_mwh": 0, "hourly": [], "error": str(e)}
 
+def fetch_pharos_today_da_awards():
+    """
+    Fetch today's DA awards from Pharos market_results.
+    This gives the full 24-hour commitment (what we were awarded yesterday for today).
+    """
+    try:
+        today = datetime.now().strftime("%Y-%m-%d")
+        url = f"{PHAROS_BASE_URL}/pjm/market_results/historic"
+        params = {
+            "organization_key": PHAROS_ORGANIZATION_KEY,
+            "start_date": today,
+            "end_date": today,
+        }
+
+        response = requests.get(url, auth=get_pharos_auth(), params=params, timeout=60)
+
+        if response.status_code == 200:
+            data = response.json()
+            results = data.get("market_results", data) if isinstance(data, dict) else data
+
+            hourly_awards = []
+            total_da_mwh = 0
+            total_da_revenue = 0
+
+            for r in results:
+                energy_mw = float(r.get("energy_mw", 0) or 0)
+                energy_price = float(r.get("energy_price", 0) or 0)
+                timestamp = r.get("timestamp", "")
+                is_capped = r.get("price_capped", False)
+
+                # Extract hour ending from timestamp
+                hour_ending = None
+                if "T" in timestamp:
+                    hour = int(timestamp.split("T")[1].split(":")[0])
+                    hour_ending = hour + 1 if hour < 23 else 24
+                elif " " in timestamp:
+                    hour = int(timestamp.split(" ")[1].split(":")[0])
+                    hour_ending = hour + 1 if hour < 23 else 24
+
+                da_revenue = energy_mw * energy_price
+                hourly_awards.append({
+                    "hour_ending": hour_ending,
+                    "timestamp": timestamp,
+                    "da_award_mw": energy_mw,
+                    "da_lmp": energy_price,
+                    "da_revenue": da_revenue,
+                    "price_capped": is_capped,
+                })
+                total_da_mwh += energy_mw
+                total_da_revenue += da_revenue
+
+            avg_da_price = total_da_revenue / total_da_mwh if total_da_mwh > 0 else 0
+
+            return {
+                "date": today,
+                "total_da_mwh": round(total_da_mwh, 2),
+                "total_da_revenue": round(total_da_revenue, 2),
+                "avg_da_price": round(avg_da_price, 2),
+                "hourly": sorted(hourly_awards, key=lambda x: x["hour_ending"] or 0),
+                "hours_with_awards": len([h for h in hourly_awards if h["da_award_mw"] > 0]),
+                "fetched_at": datetime.now().isoformat(),
+            }
+        else:
+            logger.warning(f"Could not fetch today's DA awards: {response.status_code}")
+            return {"date": today, "total_da_mwh": 0, "hourly": [], "hours_with_awards": 0}
+
+    except Exception as e:
+        logger.error(f"Error fetching today's DA awards: {e}")
+        return {"date": None, "total_da_mwh": 0, "hourly": [], "error": str(e)}
+
 def fetch_pharos_current_dispatch():
     """
     Fetch current dispatch status from Pharos to show real-time performance.
@@ -3321,19 +3391,23 @@ def get_nwoh_status():
         # Fetch next-day DA awards
         next_day = fetch_pharos_next_day_awards()
 
+        # Fetch today's DA awards from market_results (full 24-hour commitment)
+        today_da = fetch_pharos_today_da_awards()
+
         # Fetch current dispatch
         current_dispatch = fetch_pharos_current_dispatch()
 
-        # Get today's DA commitment from unit_operations
+        # Get today's actual generation from unit_operations
         today = datetime.now().strftime("%Y-%m-%d")
-        today_da_commitment = 0
         today_actual_gen = 0
 
         with data_lock:
             daily_pnl = pharos_data.get("daily_pnl", {})
             today_data = daily_pnl.get(today, {})
-            today_da_commitment = today_data.get("da_mwh", 0)
             today_actual_gen = today_data.get("volume", 0)
+
+        # Use DA commitment from market_results (full day), not unit_operations (partial)
+        today_da_commitment = today_da.get("total_da_mwh", 0)
 
         return jsonify({
             "price_caps": price_caps,
@@ -3345,6 +3419,8 @@ def get_nwoh_status():
                 "actual_gen_mwh": round(today_actual_gen, 2),
                 "deviation_mwh": round(today_actual_gen - today_da_commitment, 2),
                 "performance_pct": round((today_actual_gen / today_da_commitment * 100), 1) if today_da_commitment > 0 else 0,
+                "hourly_awards": today_da.get("hourly", []),
+                "hours_with_awards": today_da.get("hours_with_awards", 0),
             },
             "fetched_at": datetime.now().isoformat(),
         })
@@ -3686,17 +3762,22 @@ def dashboard():
                 <div class="mb-5 p-3 rounded" style="background-color: #f8fafc; border: 1px solid #e2e8f0;">
                     <div class="flex justify-between items-center mb-3">
                         <p class="text-sm font-semibold" style="color: var(--skyvest-navy);">Today's Performance</p>
-                        <span id="nwoh-today-date" class="text-xs px-2 py-0.5 rounded" style="background-color: #e2e8f0; color: #64748b;">--</span>
+                        <div class="flex items-center gap-2">
+                            <span id="nwoh-current-hour" class="text-xs px-2 py-0.5 rounded" style="background-color: var(--skyvest-blue); color: white;">HE --</span>
+                            <span id="nwoh-today-date" class="text-xs px-2 py-0.5 rounded" style="background-color: #e2e8f0; color: #64748b;">--</span>
+                        </div>
                     </div>
 
-                    <!-- Progress Bar: DA Commitment vs Actual -->
+                    <!-- Hourly Progress: Show progress through the day -->
                     <div class="mb-3">
                         <div class="flex justify-between text-xs mb-1">
-                            <span style="color: #64748b;">DA Commitment: <strong id="nwoh-today-da-commitment" style="color: var(--skyvest-navy);">-- MWh</strong></span>
+                            <span style="color: #64748b;">Day Total DA: <strong id="nwoh-today-da-commitment" style="color: var(--skyvest-navy);">-- MWh</strong> <span id="nwoh-hours-with-awards" style="color: #999;">-- hrs awarded</span></span>
                             <span style="color: #64748b;">Actual Gen: <strong id="nwoh-today-actual-gen" style="color: var(--skyvest-navy);">-- MWh</strong></span>
                         </div>
                         <div style="height: 24px; background: #e2e8f0; border-radius: 4px; overflow: hidden; position: relative;">
-                            <!-- DA commitment bar (base) -->
+                            <!-- Time elapsed bar (shows how far through the day we are) -->
+                            <div id="nwoh-time-bar" style="position: absolute; height: 100%; background: #f1f5f9; width: 0%; transition: width 0.5s; border-right: 2px dashed #94a3b8;"></div>
+                            <!-- DA commitment bar for elapsed hours -->
                             <div id="nwoh-da-bar" style="position: absolute; height: 100%; background: #cbd5e1; width: 0%; transition: width 0.5s;"></div>
                             <!-- Actual generation bar (overlay) -->
                             <div id="nwoh-gen-bar" style="position: absolute; height: 100%; background: var(--skyvest-blue); width: 0%; transition: width 0.5s;"></div>
@@ -4744,17 +4825,25 @@ def dashboard():
             const actualGen = today.actual_gen_mwh || 0;
             const deviation = today.deviation_mwh || 0;
             const perfPct = today.performance_pct || 0;
+            const hoursWithAwards = today.hours_with_awards || 0;
 
-            // Update today's date label
+            // Update today's date label and current hour
             const todayDate = new Date();
+            const currentHourEnding = todayDate.getHours() + 1;  // Hour ending (1-24)
             document.getElementById('nwoh-today-date').textContent = todayDate.toLocaleDateString('en-US', {month: 'short', day: 'numeric'});
+            document.getElementById('nwoh-current-hour').textContent = 'HE ' + currentHourEnding;
+            document.getElementById('nwoh-hours-with-awards').textContent = '(' + hoursWithAwards + ' hrs awarded)';
 
-            // Update progress bar
-            const maxMwh = Math.max(daCommitment, actualGen, 1);  // Avoid division by zero
-            const daBarPct = Math.min((daCommitment / maxMwh) * 100, 100);
+            // Calculate time-based progress (what % of day has elapsed)
+            const timeElapsedPct = (currentHourEnding / 24) * 100;
+
+            // Update progress bars
+            // Show DA commitment and actual gen as % of full day commitment
+            const maxMwh = Math.max(daCommitment, 1);  // Use full day DA as reference
             const genBarPct = Math.min((actualGen / maxMwh) * 100, 100);
 
-            document.getElementById('nwoh-da-bar').style.width = daBarPct + '%';
+            document.getElementById('nwoh-time-bar').style.width = timeElapsedPct + '%';
+            document.getElementById('nwoh-da-bar').style.width = '100%';  // Full bar shows total DA commitment
             document.getElementById('nwoh-gen-bar').style.width = genBarPct + '%';
             document.getElementById('nwoh-performance-pct').textContent = perfPct.toFixed(0) + '%';
 
