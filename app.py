@@ -1753,6 +1753,132 @@ def fetch_pharos_unit_operations(start_date=None, end_date=None):
         logger.error(f"Error fetching Pharos unit operations: {e}")
         return []
 
+def fetch_pharos_combined_pnl_data(start_date=None, end_date=None):
+    """
+    Fetch and combine data from multiple Pharos endpoints for PnL calculation.
+    This is used as a fallback when unit_operations/historic returns empty.
+
+    Combines:
+    - DA awards from market_results/historic (energy_mw, energy_price)
+    - Actual generation from power_meter/submissions (hourly MWh)
+    - RT LMP from lmp/historic (rt_lmp)
+
+    Returns list of hourly records matching the format expected by aggregate_pharos_unit_operations.
+    """
+    try:
+        if start_date is None:
+            start_date = PHAROS_FETCH_START_DATE
+        if end_date is None:
+            end_date = datetime.now().strftime("%Y-%m-%d")
+
+        logger.info(f"Fetching combined Pharos PnL data from {start_date} to {end_date}")
+
+        # Parse date range
+        start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+        end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+
+        all_records = []
+        current_date = start_dt
+
+        while current_date <= end_dt:
+            date_str = current_date.strftime("%Y-%m-%d")
+
+            # 1. Fetch DA awards from market_results
+            da_url = f"{PHAROS_BASE_URL}/pjm/market_results/historic"
+            da_params = {
+                "organization_key": PHAROS_ORGANIZATION_KEY,
+                "start_date": date_str,
+                "end_date": date_str,
+            }
+            da_response = requests.get(da_url, auth=get_pharos_auth(), params=da_params, timeout=60)
+
+            da_by_hour = {}
+            if da_response.status_code == 200:
+                da_data = da_response.json()
+                da_results = da_data.get("market_results", da_data) if isinstance(da_data, dict) else da_data
+                for r in da_results:
+                    ts = r.get("timestamp", "")
+                    if " " in ts:
+                        hour = int(ts.split(" ")[1].split(":")[0])
+                    elif "T" in ts:
+                        hour = int(ts.split("T")[1].split(":")[0])
+                    else:
+                        continue
+                    da_by_hour[hour] = {
+                        "da_mw": r.get("energy_mw", 0) or 0,
+                        "da_lmp": r.get("energy_price", 0) or 0,
+                        "price_capped": r.get("price_capped", False),
+                    }
+
+            # 2. Fetch actual generation from power_meter/submissions
+            meter_url = f"{PHAROS_BASE_URL}/pjm/power_meter/submissions"
+            meter_params = {
+                "organization_key": PHAROS_ORGANIZATION_KEY,
+                "start_date": date_str,
+                "end_date": date_str,
+            }
+            meter_response = requests.get(meter_url, auth=get_pharos_auth(), params=meter_params, timeout=60)
+
+            gen_by_hour = {}
+            if meter_response.status_code == 200:
+                meter_data = meter_response.json()
+                submissions = meter_data.get("submissions", [])
+                if submissions:
+                    for i, mv in enumerate(submissions[0].get("meter_values", [])):
+                        gen_by_hour[i] = mv.get("mw", 0) or 0  # Hour beginning (0-23)
+
+            # 3. Fetch RT LMP from lmp/historic
+            lmp_url = f"{PHAROS_BASE_URL}/pjm/lmp/historic"
+            lmp_params = {
+                "organization_key": PHAROS_ORGANIZATION_KEY,
+                "start_date": date_str,
+                "end_date": date_str,
+            }
+            lmp_response = requests.get(lmp_url, auth=get_pharos_auth(), params=lmp_params, timeout=60)
+
+            rt_lmp_by_hour = {}
+            if lmp_response.status_code == 200:
+                lmp_data = lmp_response.json()
+                lmps = lmp_data.get("lmp", [])
+                for l in lmps:
+                    hour = l.get("hour_beginning", 0)
+                    rt_lmp_by_hour[hour] = l.get("rt_lmp", 0) or 0
+
+            # 4. Combine into hourly records (mimicking unit_operations format)
+            for hour in range(24):
+                da_data = da_by_hour.get(hour, {})
+                da_mw = da_data.get("da_mw", 0)
+                da_lmp = da_data.get("da_lmp", 0)
+                gen_mwh = gen_by_hour.get(hour, 0)  # Already in MWh
+                rt_lmp = rt_lmp_by_hour.get(hour, 0)
+
+                # Skip hours with no data
+                if da_mw == 0 and gen_mwh == 0:
+                    continue
+
+                # Create hourly record (in MWh, not MW)
+                # Note: Since this is hourly data, MW = MWh for the hour
+                record = {
+                    "timestamp": f"{date_str}T{hour:02d}:00:00",
+                    "dam_mw": da_mw,  # DA award in MWh (hourly)
+                    "da_lmp": da_lmp,
+                    "gen": gen_mwh,  # Actual generation in MWh (hourly)
+                    "rt_lmp": rt_lmp,
+                    "price_capped": da_data.get("price_capped", False),
+                    "is_hourly": True,  # Flag to indicate this is hourly data, not 5-min
+                }
+                all_records.append(record)
+
+            current_date += timedelta(days=1)
+
+        logger.info(f"Fetched {len(all_records)} combined hourly records from Pharos API")
+        return all_records
+
+    except Exception as e:
+        logger.error(f"Error fetching combined Pharos PnL data: {e}")
+        return []
+
+
 def fetch_pharos_price_caps():
     """
     Fetch current price cap status from Pharos market_results.
@@ -2068,9 +2194,12 @@ def aggregate_pharos_unit_operations(ops):
             # Extract values (handle nulls) - support both v1 and v2 field names
             # v1 uses: da_award, deviation_mw, gen
             # v2 uses: dam_mw, rt_mw, meter_mw, gen
-            # NOTE: Data is 5-minute intervals, so values are in MW not MWh
+            # Combined hourly data (from fetch_pharos_combined_pnl_data) has is_hourly=True
+            # NOTE: Data is 5-minute intervals by default, so values are in MW not MWh
             # To convert to MWh: MW × (5/60) = MW / 12
-            INTERVAL_HOURS = 5 / 60  # 5-minute intervals = 1/12 hour
+            # For hourly data, MW = MWh (1 hour)
+            is_hourly = op.get("is_hourly", False)
+            INTERVAL_HOURS = 1.0 if is_hourly else (5 / 60)  # Hourly vs 5-minute intervals
 
             dam_mw = float(op.get("dam_mw") or op.get("da_award") or 0)
             da_lmp = float(op.get("da_lmp", 0) or 0)
@@ -2577,6 +2706,12 @@ def background_data_fetch():
                 # Fetch unit operations for PnL
                 logger.info("Fetching Pharos unit operations for PnL...")
                 unit_ops = fetch_pharos_unit_operations(start_date=PHAROS_FETCH_START_DATE)
+
+                # Fallback to combined endpoint if unit_operations returns empty
+                if not unit_ops:
+                    logger.info("unit_operations returned empty, using combined endpoint fallback...")
+                    unit_ops = fetch_pharos_combined_pnl_data(start_date=PHAROS_FETCH_START_DATE)
+
                 if unit_ops:
                     ops_aggregated = aggregate_pharos_unit_operations(unit_ops)
                     with data_lock:
@@ -2762,6 +2897,12 @@ def background_data_fetch():
 
                         # Fetch unit operations for PnL
                         unit_ops = fetch_pharos_unit_operations(start_date=PHAROS_FETCH_START_DATE)
+
+                        # Fallback to combined endpoint if unit_operations returns empty
+                        if not unit_ops:
+                            logger.info("unit_operations returned empty, using combined endpoint fallback...")
+                            unit_ops = fetch_pharos_combined_pnl_data(start_date=PHAROS_FETCH_START_DATE)
+
                         if unit_ops:
                             ops_aggregated = aggregate_pharos_unit_operations(unit_ops)
                             with data_lock:
@@ -3336,6 +3477,11 @@ def reload_pharos():
         # Fetch unit operations for PnL
         logger.info(f"Reloading Pharos unit operations (start_date={start_date})...")
         unit_ops = fetch_pharos_unit_operations(start_date=start_date)
+
+        # Fallback to combined endpoint if unit_operations returns empty
+        if not unit_ops:
+            logger.info("unit_operations returned empty, using combined endpoint fallback...")
+            unit_ops = fetch_pharos_combined_pnl_data(start_date=start_date)
 
         if unit_ops:
             ops_aggregated = aggregate_pharos_unit_operations(unit_ops)
