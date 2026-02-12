@@ -1824,8 +1824,24 @@ def fetch_pharos_combined_pnl_data(start_date=None, end_date=None):
                 meter_data = meter_response.json()
                 submissions = meter_data.get("submissions", [])
                 if submissions:
-                    for i, mv in enumerate(submissions[0].get("meter_values", [])):
-                        gen_by_hour[i] = mv.get("mw", 0) or 0  # Hour beginning (0-23)
+                    meter_values = submissions[0].get("meter_values", [])
+                    for i, mv in enumerate(meter_values):
+                        # Try to get hour from the data itself, fall back to index
+                        # Check for both hour_beginning (0-23) and hour_ending (1-24)
+                        hour = mv.get("hour_beginning")
+                        if hour is None:
+                            hour = mv.get("hour_ending")
+                            if hour is not None:
+                                hour = hour - 1  # Convert hour ending (1-24) to hour beginning (0-23)
+                        if hour is None:
+                            hour = mv.get("hour")
+                        if hour is None:
+                            hour = i  # Fall back to array index
+
+                        mw_val = mv.get("mw", 0) or mv.get("mwh", 0) or mv.get("meter_mw", 0) or 0
+                        gen_by_hour[hour] = mw_val
+
+                    logger.debug(f"Meter values for {date_str}: {len(meter_values)} entries, hours: {sorted(gen_by_hour.keys())}")
 
             # 3. Fetch RT LMP from lmp/historic
             lmp_url = f"{PHAROS_BASE_URL}/pjm/lmp/historic"
@@ -1845,11 +1861,15 @@ def fetch_pharos_combined_pnl_data(start_date=None, end_date=None):
                     rt_lmp_by_hour[hour] = l.get("rt_lmp", 0) or 0
 
             # 4. Combine into hourly records (mimicking unit_operations format)
+            # Log data counts for debugging
+            if da_by_hour or gen_by_hour or rt_lmp_by_hour:
+                logger.debug(f"Data for {date_str}: DA hours={len(da_by_hour)}, Meter hours={len(gen_by_hour)}, LMP hours={len(rt_lmp_by_hour)}")
+
             for hour in range(24):
                 da_data = da_by_hour.get(hour, {})
                 da_mw = da_data.get("da_mw", 0)
                 da_lmp = da_data.get("da_lmp", 0)
-                gen_mwh = gen_by_hour.get(hour, 0)  # Already in MWh
+                gen_mwh = gen_by_hour.get(hour, 0)  # Meter reading (MWh for the hour)
                 rt_lmp = rt_lmp_by_hour.get(hour, 0)
 
                 # Skip hours with no data
@@ -3519,6 +3539,79 @@ def reload_pharos():
             "success": False,
             "message": str(e)
         }), 500
+
+@app.route('/api/pharos/debug/<date>', methods=['GET'])
+@login_required
+def debug_pharos_date(date):
+    """Debug endpoint to fetch raw Pharos data for a specific date."""
+    try:
+        # Fetch raw data for the specified date
+        da_url = f"{PHAROS_BASE_URL}/pjm/market_results/historic"
+        da_params = {
+            "organization_key": PHAROS_ORGANIZATION_KEY,
+            "start_date": date,
+            "end_date": date,
+        }
+        da_response = requests.get(da_url, auth=get_pharos_auth(), params=da_params, timeout=60)
+
+        meter_url = f"{PHAROS_BASE_URL}/pjm/power_meter/submissions"
+        meter_params = {
+            "organization_key": PHAROS_ORGANIZATION_KEY,
+            "start_date": date,
+            "end_date": date,
+        }
+        meter_response = requests.get(meter_url, auth=get_pharos_auth(), params=meter_params, timeout=60)
+
+        lmp_url = f"{PHAROS_BASE_URL}/pjm/lmp/historic"
+        lmp_params = {
+            "organization_key": PHAROS_ORGANIZATION_KEY,
+            "start_date": date,
+            "end_date": date,
+        }
+        lmp_response = requests.get(lmp_url, auth=get_pharos_auth(), params=lmp_params, timeout=60)
+
+        # Parse and summarize
+        da_data = da_response.json() if da_response.status_code == 200 else {"error": da_response.status_code}
+        meter_data = meter_response.json() if meter_response.status_code == 200 else {"error": meter_response.status_code}
+        lmp_data = lmp_response.json() if lmp_response.status_code == 200 else {"error": lmp_response.status_code}
+
+        # Calculate totals from DA
+        da_results = da_data.get("market_results", da_data) if isinstance(da_data, dict) else da_data
+        da_total_mwh = sum(float(r.get("energy_mw", 0) or 0) for r in da_results) if isinstance(da_results, list) else 0
+        da_total_rev = sum(float(r.get("energy_mw", 0) or 0) * float(r.get("energy_price", 0) or 0) for r in da_results) if isinstance(da_results, list) else 0
+
+        # Calculate totals from meter
+        submissions = meter_data.get("submissions", []) if isinstance(meter_data, dict) else []
+        meter_values = submissions[0].get("meter_values", []) if submissions else []
+        meter_total_mwh = sum(float(mv.get("mw", 0) or mv.get("mwh", 0) or 0) for mv in meter_values) if meter_values else 0
+
+        # Get sample meter value structure
+        sample_meter = meter_values[0] if meter_values else {}
+
+        return jsonify({
+            "date": date,
+            "da": {
+                "count": len(da_results) if isinstance(da_results, list) else 0,
+                "total_mwh": da_total_mwh,
+                "total_revenue": da_total_rev,
+                "sample": da_results[0] if isinstance(da_results, list) and da_results else None,
+            },
+            "meter": {
+                "count": len(meter_values),
+                "total_mwh": meter_total_mwh,
+                "sample_structure": list(sample_meter.keys()) if sample_meter else [],
+                "sample": sample_meter,
+            },
+            "lmp": {
+                "count": len(lmp_data.get("lmp", [])) if isinstance(lmp_data, dict) else 0,
+                "sample": lmp_data.get("lmp", [{}])[0] if isinstance(lmp_data, dict) and lmp_data.get("lmp") else None,
+            },
+            "expected_rt_revenue": meter_total_mwh - da_total_mwh,  # Deviation in MWh
+        })
+    except Exception as e:
+        logger.error(f"Error in debug endpoint: {e}")
+        return jsonify({"error": str(e)}), 500
+
 
 @app.route('/api/nwoh/status', methods=['GET'])
 @login_required
