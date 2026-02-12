@@ -3650,6 +3650,16 @@ def dashboard():
                             <button id="asset-NWOH" onclick="setAssetFilter('NWOH')" class="px-3 py-1 text-xs font-semibold asset-btn" style="background-color: white; color: var(--skyvest-navy);">NWOH</button>
                         </div>
                     </div>
+                    <!-- Date Picker (for Daily view) -->
+                    <div class="flex items-center gap-2">
+                        <span class="text-xs font-semibold" style="color: #666;">Date:</span>
+                        <input type="date" id="date-picker" onchange="setSelectedDate(this.value)"
+                               class="px-2 py-1 text-xs border rounded"
+                               style="border-color: var(--skyvest-navy); color: var(--skyvest-navy);">
+                        <button onclick="resetToToday()" class="px-2 py-1 text-xs font-semibold rounded border"
+                                style="border-color: var(--skyvest-navy); background-color: white; color: var(--skyvest-navy);"
+                                title="Reset to today">Today</button>
+                    </div>
                 </div>
             </div>
 
@@ -3755,7 +3765,10 @@ def dashboard():
                         <p class="text-lg font-semibold" style="color: var(--skyvest-navy);">Northwest Ohio Wind</p>
                         <p class="text-xs" style="color: #999;">PJM DA/RT Market | 100% PPA @ $33.31/MWh with GM</p>
                     </div>
-                    <span class="text-xs px-2 py-1 rounded" style="background-color: #e8f4f8; color: var(--skyvest-navy);">105 MW</span>
+                    <div class="flex items-center gap-2">
+                        <span id="nwoh-viewing-date" class="text-xs px-2 py-1 rounded" style="display: none; background-color: var(--skyvest-blue); color: white;"></span>
+                        <span class="text-xs px-2 py-1 rounded" style="background-color: #e8f4f8; color: var(--skyvest-navy);">105 MW</span>
+                    </div>
                 </div>
 
                 <!-- ══════════ SECTION 1: TODAY'S PERFORMANCE ══════════ -->
@@ -4602,6 +4615,45 @@ def dashboard():
         // Toggle state variables
         let currentPeriod = 'ytd';  // 'daily', 'mtd', 'ytd'
         let currentAssetFilter = 'all';  // 'all', 'BKI', 'BKII', 'HOLSTEIN'
+        let selectedDate = null;  // Selected date for Daily view (YYYY-MM-DD format)
+
+        // Initialize date picker with today's date
+        function initDatePicker() {
+            const today = new Date().toISOString().split('T')[0];
+            const datePicker = document.getElementById('date-picker');
+            datePicker.value = today;
+            datePicker.max = today;  // Can't select future dates
+            selectedDate = today;
+        }
+
+        function setSelectedDate(date) {
+            selectedDate = date;
+            // Auto-switch to Daily view when a date is selected
+            if (currentPeriod !== 'daily') {
+                setPeriod('daily');
+            } else {
+                // If already on daily, just refresh the display
+                updateFilteredDisplay();
+                updateAssetCards();
+                if (currentAssetFilter === 'NWOH') {
+                    updateNwohDetailCard();
+                }
+            }
+        }
+
+        function resetToToday() {
+            const today = new Date().toISOString().split('T')[0];
+            document.getElementById('date-picker').value = today;
+            selectedDate = today;
+            // Refresh if on daily view
+            if (currentPeriod === 'daily') {
+                updateFilteredDisplay();
+                updateAssetCards();
+                if (currentAssetFilter === 'NWOH') {
+                    updateNwohDetailCard();
+                }
+            }
+        }
 
         function setPeriod(period) {
             currentPeriod = period;
@@ -4678,17 +4730,32 @@ def dashboard():
             const nwoh = pnlData.assets.NWOH;
             let data = {};
 
+            // Update viewing date indicator
+            const viewingDateEl = document.getElementById('nwoh-viewing-date');
+            const today = new Date().toISOString().split('T')[0];
+
             // Get data based on current period
             if (currentPeriod === 'daily') {
-                // Get most recent day
+                // Use selected date, or fall back to most recent day
                 const days = Object.keys(nwoh.daily_pnl || {}).sort();
-                const latestDay = days[days.length - 1];
-                data = nwoh.daily_pnl?.[latestDay] || {};
+                const targetDay = selectedDate || days[days.length - 1];
+                data = nwoh.daily_pnl?.[targetDay] || {};
+
+                // Show viewing date if not today
+                if (targetDay && targetDay !== today) {
+                    const dateObj = new Date(targetDay + 'T12:00:00');
+                    viewingDateEl.textContent = 'Viewing: ' + dateObj.toLocaleDateString('en-US', {month: 'short', day: 'numeric', year: 'numeric'});
+                    viewingDateEl.style.display = '';
+                } else {
+                    viewingDateEl.style.display = 'none';
+                }
             } else if (currentPeriod === 'mtd') {
+                viewingDateEl.style.display = 'none';
                 const currentMonth = new Date().getFullYear() + '-' + String(new Date().getMonth() + 1).padStart(2, '0');
                 data = nwoh.monthly_pnl?.[currentMonth] || {};
             } else {
                 // YTD - aggregate all daily data to ensure we have complete totals
+                viewingDateEl.style.display = 'none';
                 // This is more reliable than using annual_pnl which might not be populated
                 data = {pnl: 0, volume: 0, da_revenue: 0, da_mwh: 0, rt_sales_revenue: 0, rt_sales_mwh: 0,
                         rt_purchase_cost: 0, rt_purchase_mwh: 0, avg_da_price: 0, avg_rt_price: 0,
@@ -4908,7 +4975,12 @@ def dashboard():
             const currentMonth = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0');
             const currentYear = now.getFullYear().toString();
 
-            // If today's data doesn't exist, find the most recent available date
+            // Use selected date for daily view if available
+            if (currentPeriod === 'daily' && selectedDate) {
+                today = selectedDate;
+            }
+
+            // If selected/today's data doesn't exist, find the most recent available date
             if (currentPeriod === 'daily' && pnlData.daily_pnl && !pnlData.daily_pnl[today]) {
                 const availableDates = Object.keys(pnlData.daily_pnl).sort();
                 if (availableDates.length > 0) {
@@ -5231,7 +5303,12 @@ def dashboard():
             const currentMonth = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0');
             const currentYear = now.getFullYear().toString();
 
-            // If today's data doesn't exist for daily period, use most recent available date
+            // Use selected date for daily view if available
+            if (currentPeriod === 'daily' && selectedDate) {
+                today = selectedDate;
+            }
+
+            // If selected/today's data doesn't exist for daily period, use most recent available date
             if (currentPeriod === 'daily' && pnlData.daily_pnl && !pnlData.daily_pnl[today]) {
                 const availableDates = Object.keys(pnlData.daily_pnl).sort();
                 if (availableDates.length > 0) {
@@ -5719,6 +5796,7 @@ def dashboard():
         };
 
         // Initialize both basis and PnL data
+        initDatePicker();
         fetchData();
         fetchPnlData();
         updatePharosTimestamp();
