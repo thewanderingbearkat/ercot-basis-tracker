@@ -3770,7 +3770,10 @@ def dashboard():
 
             <!-- PnL Section -->
             <div class="mb-2 mt-4">
-                <h2 class="text-lg font-bold mb-2" style="color: var(--skyvest-navy); border-left: 3px solid var(--skyvest-blue); padding-left: 8px;">Energy Imbalance PnL</h2>
+                <div class="flex justify-between items-center">
+                    <h2 class="text-lg font-bold" style="color: var(--skyvest-navy); border-left: 3px solid var(--skyvest-blue); padding-left: 8px;">Energy Imbalance PnL</h2>
+                    <button onclick="reloadPnlData()" class="px-3 py-1 text-xs font-semibold rounded" style="background-color: var(--skyvest-gold); color: var(--skyvest-navy);">Reload Data</button>
+                </div>
             </div>
 
             <!-- Toggle Controls -->
@@ -4201,17 +4204,9 @@ def dashboard():
                 <div class="flex justify-between items-center mb-3">
                     <h3 class="text-sm font-semibold" style="color: var(--skyvest-navy);">PnL by Period</h3>
                     <div class="flex gap-2 flex-wrap">
-                        <select id="asset-filter" onchange="updatePnlTable()" class="px-2 py-1 text-xs rounded" style="border: 1px solid #e5e5e5;">
-                            <option value="all">All Assets</option>
-                            <option value="BKII">McCrae (BKII)</option>
-                            <option value="BKI">Bearkat I</option>
-                            <option value="HOLSTEIN">Holstein</option>
-                            <option value="NWOH">NW Ohio Wind</option>
-                        </select>
                         <button id="btn-daily" onclick="setPnlView('daily')" class="px-3 py-1 text-xs font-semibold rounded" style="background-color: var(--skyvest-blue); color: white;">Daily</button>
                         <button id="btn-monthly" onclick="setPnlView('monthly')" class="px-3 py-1 text-xs font-semibold rounded" style="background-color: #e5e5e5; color: var(--skyvest-navy);">Monthly</button>
                         <button id="btn-annual" onclick="setPnlView('annual')" class="px-3 py-1 text-xs font-semibold rounded" style="background-color: #e5e5e5; color: var(--skyvest-navy);">Annual</button>
-                        <button onclick="reloadPnlData()" class="px-3 py-1 text-xs font-semibold rounded" style="background-color: var(--skyvest-gold); color: var(--skyvest-navy);">Reload</button>
                     </div>
                 </div>
                 <div id="pnl-table-container" style="max-height: 400px; overflow-y: auto;">
@@ -4867,6 +4862,7 @@ def dashboard():
             }
 
             updateFilteredDisplay();
+            updatePnlTable();  // Keep PnL table in sync with asset filter
         }
 
         // Update NWOH detailed card with invoice-style metrics
@@ -5630,7 +5626,7 @@ def dashboard():
             if (!pnlData) return;
 
             const tbody = document.getElementById('pnl-table-body');
-            const assetFilter = document.getElementById('asset-filter')?.value || 'all';
+            const assetFilter = currentAssetFilter;  // Sync with main asset filter buttons
 
             let data = {};
 
@@ -5833,10 +5829,24 @@ def dashboard():
 
         async function reloadPnlData() {
             try {
+                // Helper to safely fetch and parse JSON
+                async function safeFetch(url) {
+                    const response = await fetch(url, { method: 'POST' });
+                    if (!response.ok) {
+                        return { success: false, message: 'HTTP ' + response.status };
+                    }
+                    const text = await response.text();
+                    try {
+                        return JSON.parse(text);
+                    } catch (e) {
+                        return { success: false, message: 'Invalid response (may need to refresh page)' };
+                    }
+                }
+
                 // Reload both Tenaska and Pharos data
                 const [tenaskaResult, pharosResult] = await Promise.all([
-                    fetch(PNL_API_URL + '/reload', { method: 'POST' }).then(r => r.json()),
-                    fetch('/api/pharos/reload', { method: 'POST' }).then(r => r.json())
+                    safeFetch(PNL_API_URL + '/reload'),
+                    safeFetch('/api/pharos/reload')
                 ]);
 
                 await fetchPnlData();
@@ -5844,9 +5854,11 @@ def dashboard():
 
                 const messages = [];
                 if (tenaskaResult.success) messages.push('Tenaska: ' + tenaskaResult.message);
+                else messages.push('Tenaska: ' + (tenaskaResult.message || 'Failed'));
                 if (pharosResult.success) messages.push('Pharos: ' + pharosResult.message);
+                else messages.push('Pharos: ' + (pharosResult.message || 'Failed'));
 
-                alert('Data reloaded:\\n' + messages.join('\\n'));
+                alert('Data reload results:\\n' + messages.join('\\n'));
             } catch (error) {
                 console.error('Error reloading data:', error);
                 alert('Error reloading data: ' + error.message);
