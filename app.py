@@ -2323,7 +2323,7 @@ def get_historical_prices(hours_back=4):
         return []
 
 def background_data_fetch():
-    global last_basis_time, last_pjm_time, latest_data
+    global last_basis_time, last_pjm_time, latest_data, pharos_data
 
     # Fetch initial ERCOT data
     logger.info("Fetching initial ERCOT historical data...")
