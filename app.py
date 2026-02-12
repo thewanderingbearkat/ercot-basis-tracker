@@ -2627,7 +2627,62 @@ def background_data_fetch():
 
     logger.info(f"Loaded {len(initial_history)} ERCOT + {len(initial_pjm_history)} PJM historical data points")
 
-    # Load PnL data - try API first if enabled, then Excel as fallback
+    # Load Pharos/NWOH data FIRST (before heavy Tenaska load)
+    # This ensures NWOH is available quickly even if Tenaska times out
+    last_pharos_fetch_time = None
+    logger.info("Loading initial Pharos/NWOH data...")
+    try:
+        cached_pharos = load_pharos_data()
+        # Check if cache has actual data (not just empty structure)
+        cache_has_data = cached_pharos and cached_pharos.get("total_pnl", 0) != 0
+
+        if cache_has_data:
+            with data_lock:
+                pharos_data.update(cached_pharos)
+            logger.info(f"Loaded cached Pharos data: total_pnl=${pharos_data.get('total_pnl', 0):,.0f}, volume={pharos_data.get('total_volume', 0):,.0f} MWh")
+            last_pharos_fetch_time = datetime.now()  # Don't immediately re-fetch if cache is valid
+        else:
+            # Fetch fresh data on first run or if cache is empty
+            if PHAROS_AUTO_FETCH:
+                logger.info("No cached Pharos data found. Fetching from API (first run)...")
+                # Fetch DA awards
+                awards = fetch_pharos_da_awards(start_date=PHAROS_FETCH_START_DATE)
+                if awards:
+                    aggregated = aggregate_pharos_da_data(awards)
+                    with data_lock:
+                        pharos_data["da_awards"] = awards
+                        pharos_data["daily_da"] = aggregated["daily"]
+                        pharos_data["monthly_da"] = aggregated["monthly"]
+                        pharos_data["annual_da"] = aggregated["annual"]
+                        pharos_data["total_da_mwh"] = aggregated["total_da_mwh"]
+                        pharos_data["total_da_revenue"] = aggregated["total_da_revenue"]
+                        pharos_data["capped_intervals"] = aggregated["capped_intervals"]
+
+                # Fetch PnL data using combined endpoint (market_results + power_meter + lmp)
+                logger.info("Fetching Pharos combined PnL data...")
+                unit_ops = fetch_pharos_combined_pnl_data(start_date=PHAROS_FETCH_START_DATE)
+
+                if unit_ops:
+                    ops_aggregated = aggregate_pharos_unit_operations(unit_ops)
+                    with data_lock:
+                        pharos_data["unit_ops"] = unit_ops
+                        pharos_data["daily_pnl"] = ops_aggregated["daily"]
+                        pharos_data["monthly_pnl"] = ops_aggregated["monthly"]
+                        pharos_data["annual_pnl"] = ops_aggregated["annual"]
+                        pharos_data["total_pnl"] = ops_aggregated["total_pnl"]
+                        pharos_data["total_volume"] = ops_aggregated["total_volume"]
+                    logger.info(f"Pharos PnL loaded: ${ops_aggregated['total_pnl']:,.0f}, {ops_aggregated['total_volume']:,.0f} MWh")
+
+                with data_lock:
+                    pharos_data["last_pharos_update"] = datetime.now(ZoneInfo("America/New_York")).isoformat()
+                save_pharos_data(pharos_data)
+                last_pharos_fetch_time = datetime.now()
+    except Exception as e:
+        logger.error(f"Error loading Pharos data: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+
+    # Load PnL data (ERCOT/Tenaska) - this is slower, happens after Pharos
     last_tenaska_fetch_time = None
 
     def refresh_pnl_data(source="auto"):
@@ -2697,59 +2752,6 @@ def background_data_fetch():
             refresh_pnl_data(source="auto")
     except Exception as e:
         logger.error(f"Error loading PnL data: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-
-    # Load Pharos/NWOH data
-    last_pharos_fetch_time = None
-    logger.info("Loading initial Pharos/NWOH data...")
-    try:
-        cached_pharos = load_pharos_data()
-        # Check if cache has actual data (not just empty structure)
-        cache_has_data = cached_pharos and cached_pharos.get("total_pnl", 0) != 0
-
-        if cache_has_data:
-            with data_lock:
-                pharos_data.update(cached_pharos)
-            logger.info(f"Loaded cached Pharos data: total_pnl=${pharos_data.get('total_pnl', 0):,.0f}, volume={pharos_data.get('total_volume', 0):,.0f} MWh")
-            last_pharos_fetch_time = datetime.now()  # Don't immediately re-fetch if cache is valid
-        else:
-            # Fetch fresh data on first run or if cache is empty
-            if PHAROS_AUTO_FETCH:
-                logger.info("No cached Pharos data found. Fetching from API (first run)...")
-                # Fetch DA awards
-                awards = fetch_pharos_da_awards(start_date=PHAROS_FETCH_START_DATE)
-                if awards:
-                    aggregated = aggregate_pharos_da_data(awards)
-                    with data_lock:
-                        pharos_data["da_awards"] = awards
-                        pharos_data["daily_da"] = aggregated["daily"]
-                        pharos_data["monthly_da"] = aggregated["monthly"]
-                        pharos_data["annual_da"] = aggregated["annual"]
-                        pharos_data["total_da_mwh"] = aggregated["total_da_mwh"]
-                        pharos_data["total_da_revenue"] = aggregated["total_da_revenue"]
-                        pharos_data["capped_intervals"] = aggregated["capped_intervals"]
-
-                # Fetch PnL data using combined endpoint (market_results + power_meter + lmp)
-                logger.info("Fetching Pharos combined PnL data...")
-                unit_ops = fetch_pharos_combined_pnl_data(start_date=PHAROS_FETCH_START_DATE)
-
-                if unit_ops:
-                    ops_aggregated = aggregate_pharos_unit_operations(unit_ops)
-                    with data_lock:
-                        pharos_data["unit_ops"] = unit_ops
-                        pharos_data["daily_pnl"] = ops_aggregated["daily"]
-                        pharos_data["monthly_pnl"] = ops_aggregated["monthly"]
-                        pharos_data["annual_pnl"] = ops_aggregated["annual"]
-                        pharos_data["total_pnl"] = ops_aggregated["total_pnl"]
-                        pharos_data["total_volume"] = ops_aggregated["total_volume"]
-
-                with data_lock:
-                    pharos_data["last_pharos_update"] = datetime.now(ZoneInfo("America/New_York")).isoformat()
-                save_pharos_data(pharos_data)
-                last_pharos_fetch_time = datetime.now()
-    except Exception as e:
-        logger.error(f"Error loading Pharos data: {e}")
         import traceback
         logger.error(traceback.format_exc())
 
