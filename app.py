@@ -3758,10 +3758,10 @@ def dashboard():
                     <p class="text-sm font-semibold mb-3" style="color: var(--skyvest-navy);">Settlement Flow <span class="text-xs font-normal" style="color: #999;">(selected period)</span></p>
 
                     <!-- Visual Flow: PJM Market → PPA Swap → Net Result -->
-                    <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <div class="flex flex-col md:flex-row md:items-stretch gap-2">
 
                         <!-- Step 1: PJM Market Revenue -->
-                        <div class="p-3 rounded" style="background: linear-gradient(135deg, #f1f5f9 0%, #e2e8f0 100%); border: 1px solid #cbd5e1;">
+                        <div class="flex-1 p-3 rounded" style="background: linear-gradient(135deg, #f1f5f9 0%, #e2e8f0 100%); border: 1px solid #cbd5e1;">
                             <div class="flex items-center gap-2 mb-2">
                                 <span class="text-xs font-bold px-1.5 py-0.5 rounded" style="background: var(--skyvest-navy); color: white;">1</span>
                                 <p class="text-xs font-semibold" style="color: var(--skyvest-navy);">PJM Market</p>
@@ -3789,15 +3789,15 @@ def dashboard():
                             </div>
                         </div>
 
-                        <!-- Arrow -->
-                        <div class="hidden md:flex items-center justify-center" style="color: #94a3b8;">
-                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <!-- Arrow 1 -->
+                        <div class="hidden md:flex items-center justify-center px-1" style="color: #94a3b8;">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <path d="M5 12h14M12 5l7 7-7 7"/>
                             </svg>
                         </div>
 
                         <!-- Step 2: PPA Swap Settlement -->
-                        <div class="p-3 rounded" style="background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%); border: 1px solid #fbbf24;">
+                        <div class="flex-1 p-3 rounded" style="background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%); border: 1px solid #fbbf24;">
                             <div class="flex items-center gap-2 mb-2">
                                 <span class="text-xs font-bold px-1.5 py-0.5 rounded" style="background: #92400e; color: white;">2</span>
                                 <p class="text-xs font-semibold" style="color: #92400e;">PPA Swap (GM)</p>
@@ -3821,15 +3821,15 @@ def dashboard():
                             </div>
                         </div>
 
-                        <!-- Arrow -->
-                        <div class="hidden md:flex items-center justify-center" style="color: #94a3b8;">
-                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <!-- Arrow 2 -->
+                        <div class="hidden md:flex items-center justify-center px-1" style="color: #94a3b8;">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <path d="M5 12h14M12 5l7 7-7 7"/>
                             </svg>
                         </div>
 
                         <!-- Step 3: Net Result -->
-                        <div class="p-3 rounded" style="background: linear-gradient(135deg, #ecfdf5 0%, #d1fae5 100%); border: 1px solid #34d399;">
+                        <div class="flex-1 p-3 rounded" style="background: linear-gradient(135deg, #ecfdf5 0%, #d1fae5 100%); border: 1px solid #34d399;">
                             <div class="flex items-center gap-2 mb-2">
                                 <span class="text-xs font-bold px-1.5 py-0.5 rounded" style="background: #059669; color: white;">3</span>
                                 <p class="text-xs font-semibold" style="color: #059669;">Net Result</p>
