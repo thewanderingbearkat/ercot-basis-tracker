@@ -5833,17 +5833,23 @@ def dashboard():
 
         async function reloadPnlData() {
             try {
-                const response = await fetch(PNL_API_URL + '/reload', { method: 'POST' });
-                const result = await response.json();
-                if (result.success) {
-                    await fetchPnlData();
-                    alert('PnL data reloaded: ' + result.message);
-                } else {
-                    alert('Failed to reload: ' + result.message);
-                }
+                // Reload both Tenaska and Pharos data
+                const [tenaskaResult, pharosResult] = await Promise.all([
+                    fetch(PNL_API_URL + '/reload', { method: 'POST' }).then(r => r.json()),
+                    fetch('/api/pharos/reload', { method: 'POST' }).then(r => r.json())
+                ]);
+
+                await fetchPnlData();
+                fetchNwohStatus();
+
+                const messages = [];
+                if (tenaskaResult.success) messages.push('Tenaska: ' + tenaskaResult.message);
+                if (pharosResult.success) messages.push('Pharos: ' + pharosResult.message);
+
+                alert('Data reloaded:\\n' + messages.join('\\n'));
             } catch (error) {
-                console.error('Error reloading PnL data:', error);
-                alert('Error reloading PnL data');
+                console.error('Error reloading data:', error);
+                alert('Error reloading data: ' + error.message);
             }
         }
 
