@@ -2728,14 +2728,9 @@ def background_data_fetch():
                         pharos_data["total_da_revenue"] = aggregated["total_da_revenue"]
                         pharos_data["capped_intervals"] = aggregated["capped_intervals"]
 
-                # Fetch unit operations for PnL
-                logger.info("Fetching Pharos unit operations for PnL...")
-                unit_ops = fetch_pharos_unit_operations(start_date=PHAROS_FETCH_START_DATE)
-
-                # Fallback to combined endpoint if unit_operations returns empty
-                if not unit_ops:
-                    logger.info("unit_operations returned empty, using combined endpoint fallback...")
-                    unit_ops = fetch_pharos_combined_pnl_data(start_date=PHAROS_FETCH_START_DATE)
+                # Fetch PnL data using combined endpoint (market_results + power_meter + lmp)
+                logger.info("Fetching Pharos combined PnL data...")
+                unit_ops = fetch_pharos_combined_pnl_data(start_date=PHAROS_FETCH_START_DATE)
 
                 if unit_ops:
                     ops_aggregated = aggregate_pharos_unit_operations(unit_ops)
@@ -2920,13 +2915,8 @@ def background_data_fetch():
                                 pharos_data["total_da_revenue"] = aggregated["total_da_revenue"]
                                 pharos_data["capped_intervals"] = aggregated["capped_intervals"]
 
-                        # Fetch unit operations for PnL
-                        unit_ops = fetch_pharos_unit_operations(start_date=PHAROS_FETCH_START_DATE)
-
-                        # Fallback to combined endpoint if unit_operations returns empty
-                        if not unit_ops:
-                            logger.info("unit_operations returned empty, using combined endpoint fallback...")
-                            unit_ops = fetch_pharos_combined_pnl_data(start_date=PHAROS_FETCH_START_DATE)
+                        # Fetch PnL data using combined endpoint (market_results + power_meter + lmp)
+                        unit_ops = fetch_pharos_combined_pnl_data(start_date=PHAROS_FETCH_START_DATE)
 
                         if unit_ops:
                             ops_aggregated = aggregate_pharos_unit_operations(unit_ops)
@@ -3499,14 +3489,11 @@ def reload_pharos():
                 pharos_data["total_da_revenue"] = aggregated["total_da_revenue"]
                 pharos_data["capped_intervals"] = aggregated["capped_intervals"]
 
-        # Fetch unit operations for PnL
-        logger.info(f"Reloading Pharos unit operations (start_date={start_date})...")
-        unit_ops = fetch_pharos_unit_operations(start_date=start_date)
-
-        # Fallback to combined endpoint if unit_operations returns empty
-        if not unit_ops:
-            logger.info("unit_operations returned empty, using combined endpoint fallback...")
-            unit_ops = fetch_pharos_combined_pnl_data(start_date=start_date)
+        # Fetch PnL data using combined endpoint (market_results + power_meter + lmp)
+        # NOTE: Always use combined endpoint because unit_operations/historic gen field
+        # may not match official power_meter/submissions values for NWOH.
+        logger.info(f"Fetching Pharos combined PnL data (start_date={start_date})...")
+        unit_ops = fetch_pharos_combined_pnl_data(start_date=start_date)
 
         if unit_ops:
             ops_aggregated = aggregate_pharos_unit_operations(unit_ops)
