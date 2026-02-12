@@ -2007,16 +2007,20 @@ def aggregate_pharos_unit_operations(ops):
             gen_mw = float(op.get("gen", 0) or 0)  # Actual generation in MW
             meter_mw = float(op.get("meter_mw", 0) or 0)  # Metered MW (v2 only)
             rt_lmp = float(op.get("rt_lmp", 0) or 0)
-            # v1 uses deviation_mw, v2 uses rt_mw
-            rt_mw = float(op.get("rt_mw") or op.get("deviation_mw") or 0)
 
             # Use metered MW if available, otherwise use gen
             actual_gen_mw = meter_mw if meter_mw else gen_mw
 
+            # Calculate RT deviation ourselves (gen - da_award)
+            # IMPORTANT: Do NOT use API's deviation_mw - it has opposite sign!
+            # Positive deviation = over-generation = sell at RT (revenue)
+            # Negative deviation = under-generation = buy at RT (cost)
+            rt_deviation_mw = actual_gen_mw - dam_mw
+
             # Convert MW to MWh for the 5-minute interval
             actual_gen_mwh = actual_gen_mw * INTERVAL_HOURS
             dam_mwh = dam_mw * INTERVAL_HOURS
-            rt_mwh = rt_mw * INTERVAL_HOURS
+            rt_mwh = rt_deviation_mw * INTERVAL_HOURS
 
             # PnL calculation:
             # DA Revenue = DA Award (MWh) × DA LMP ($/MWh)
