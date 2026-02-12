@@ -75,10 +75,11 @@ PHAROS_HISTORY_FILE = 'pharos_nwoh_history.json'
 ASSET_CONFIG = {
     "BKII": {
         "display_name": "McCrae (BKII)",
-        # Match elements for BKII/McCrae - API may return different suffixes
+        # Match generation elements for BKII/McCrae
+        # API returns: "Bearkat Wind Energy II, LLC - Gen" for generation data
+        # Note: "McCrae Wind Energy II - Main" has netting data (buy+sell), not generation
         "element_patterns": [
-            "Bearkat Wind Energy II, LLC",  # Base name matches all variants
-            "McCrae Wind Energy II",  # Alternate name used in some API responses
+            "Bearkat Wind Energy II, LLC - Gen",
         ],
         "settlement_point": "NBOHR_RN",
         "ppa_percent": 100,
@@ -89,9 +90,10 @@ ASSET_CONFIG = {
     },
     "BKI": {
         "display_name": "Bearkat I",
-        # Match elements for BKI - API may return different suffixes
+        # Match generation elements for BKI
+        # API returns: "Bearkat Wind Energy I, LLC - Gen"
         "element_patterns": [
-            "Bearkat Wind Energy I, LLC",  # Base name matches all variants
+            "Bearkat Wind Energy I, LLC - Gen",
         ],
         "settlement_point": "NBOHR_RN",
         "ppa_percent": 0,
@@ -102,10 +104,10 @@ ASSET_CONFIG = {
     },
     "HOLSTEIN": {
         "display_name": "Holstein",
-        # Match elements for Holstein - API may return different suffixes
+        # Match generation elements for Holstein
+        # API returns: "Holstein Solar - Generation"
         "element_patterns": [
-            "Holstein Solar",  # Base name matches all variants
-            "226HC 8me LLC",  # ERCOT QSE identifier for Holstein Solar
+            "Holstein Solar - Generation",
         ],
         "settlement_point": "HOLSTEIN_ALL",
         "ppa_percent": 87.5,
@@ -1051,23 +1053,19 @@ def identify_asset(element_name):
     Returns the asset key (e.g., 'BKII', 'BKI', 'HOLSTEIN') or 'UNKNOWN'.
 
     The API returns data at multiple hierarchy levels (Main, Hedge/Gen, Gen).
-    We accept both "- Gen" and "- Main" elements for matching.
+    We ONLY use "- Gen" elements to avoid double-counting the same generation data.
+    - BKI: "Bearkat Wind Energy I, LLC - Gen"
+    - BKII: "Bearkat Wind Energy II, LLC - Gen"
+    - Holstein: "Holstein Solar - Generation"
     """
     element_lower = element_name.lower() if element_name else ""
 
-    # Accept generation data elements - the API may return different suffixes
-    # depending on the data type and asset configuration
+    # Only process "- Gen" or "- Generation" elements to avoid double-counting
+    # The API reports same data at Main, Hedge/Gen, and Gen levels - we only want Gen
     is_generation = "- generation" in element_lower
-    is_gen = element_lower.endswith("- gen")
-    is_main = element_lower.endswith("- main")
+    is_gen = element_lower.endswith("- gen")  # Exact match to avoid matching "hedge/gen"
 
-    # If none of these, check if it matches any pattern directly
-    if not is_generation and not is_gen and not is_main:
-        # Still try to match patterns in case the element name format changed
-        for asset_key, config in ASSET_CONFIG.items():
-            for pattern in config.get("element_patterns", []):
-                if pattern.lower() in element_lower:
-                    return asset_key
+    if not is_generation and not is_gen:
         return "UNKNOWN"
 
     for asset_key, config in ASSET_CONFIG.items():
