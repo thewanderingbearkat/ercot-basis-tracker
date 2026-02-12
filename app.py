@@ -3645,7 +3645,7 @@ def dashboard():
                 <div class="card rounded-sm p-3" id="asset-card-NWOH" style="border-left: 3px solid var(--skyvest-blue);">
                     <div class="flex justify-between items-start mb-1">
                         <p class="metric-label" style="color: #666;">NW Ohio Wind</p>
-                        <span class="text-xs px-2 py-0.5 rounded" style="background-color: var(--skyvest-light-blue); color: var(--skyvest-navy);">PJM</span>
+                        <span class="text-xs px-2 py-0.5 rounded" style="background-color: var(--skyvest-light-blue); color: var(--skyvest-navy);">100% PPA @ $33.31</span>
                     </div>
                     <span id="asset-pnl-NWOH" class="text-xl font-bold" style="color: var(--skyvest-navy);">$0.00</span>
                     <p class="text-xs mt-1" style="color: #999;"><span id="asset-volume-NWOH">0</span> MWh</p>
@@ -5012,10 +5012,10 @@ def dashboard():
                 'NWOH': 'Northwest Ohio Wind'
             };
             const assetTypes = {
-                'BKI': '100% Merchant',
-                'BKII': '100% PPA @ $34 (50% Basis Exposure)',
-                'HOLSTEIN': '87.5% PPA @ $35 / 12.5% Merchant (100% Basis)',
-                'NWOH': 'PJM DA/RT Market (100% PPA)'
+                'BKI': '100% Merchant | 197 MW',
+                'BKII': '100% PPA @ $34 (50% Basis) | 162.5 MW',
+                'HOLSTEIN': '87.5% PPA @ $35 / 12.5% Merchant (100% Basis) | 200 MW',
+                'NWOH': '100% PPA @ $33.31 | 105 MW'
             };
 
             document.getElementById('single-asset-name').textContent = assetNames[assetKey] || assetKey;
