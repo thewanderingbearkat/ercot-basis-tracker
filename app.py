@@ -1826,22 +1826,27 @@ def fetch_pharos_combined_pnl_data(start_date=None, end_date=None):
                 if submissions:
                     meter_values = submissions[0].get("meter_values", [])
                     for i, mv in enumerate(meter_values):
-                        # Try to get hour from the data itself, fall back to index
-                        # Check for both hour_beginning (0-23) and hour_ending (1-24)
-                        hour = mv.get("hour_beginning")
+                        # Parse hour from start_date field (e.g., "2026-02-10T00:00:00.000-05:00")
+                        hour = None
+                        start_date_str = mv.get("start_date", "")
+                        if start_date_str:
+                            if "T" in start_date_str:
+                                hour = int(start_date_str.split("T")[1].split(":")[0])
+                            elif " " in start_date_str:
+                                hour = int(start_date_str.split(" ")[1].split(":")[0])
+
+                        # Fall back to other hour fields if start_date parsing failed
                         if hour is None:
-                            hour = mv.get("hour_ending")
-                            if hour is not None:
-                                hour = hour - 1  # Convert hour ending (1-24) to hour beginning (0-23)
+                            hour = mv.get("hour_beginning")
                         if hour is None:
                             hour = mv.get("hour")
                         if hour is None:
-                            hour = i  # Fall back to array index
+                            hour = i  # Last resort: array index
 
-                        mw_val = mv.get("mw", 0) or mv.get("mwh", 0) or mv.get("meter_mw", 0) or 0
+                        mw_val = float(mv.get("mw", 0) or 0)
                         gen_by_hour[hour] = mw_val
 
-                    logger.debug(f"Meter values for {date_str}: {len(meter_values)} entries, hours: {sorted(gen_by_hour.keys())}")
+                    logger.debug(f"Meter values for {date_str}: {len(meter_values)} entries, hours: {sorted(gen_by_hour.keys())}, total: {sum(gen_by_hour.values())}")
 
             # 3. Fetch RT LMP from lmp/historic
             lmp_url = f"{PHAROS_BASE_URL}/pjm/lmp/historic"
