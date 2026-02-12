@@ -1831,6 +1831,7 @@ def fetch_pharos_next_day_awards():
             # Extract hourly DA awards for tomorrow
             hourly_awards = []
             total_da_mwh = 0
+            total_da_revenue = 0
             capped_hours = 0
 
             for r in results:
@@ -1839,20 +1840,27 @@ def fetch_pharos_next_day_awards():
                 timestamp = r.get("timestamp", "")
                 is_capped = r.get("price_capped", False)
 
+                da_revenue = energy_mw * energy_price
                 hourly_awards.append({
                     "timestamp": timestamp,
                     "da_award_mw": energy_mw,
                     "da_lmp": energy_price,
-                    "da_revenue": energy_mw * energy_price,
+                    "da_revenue": da_revenue,
                     "price_capped": is_capped,
                 })
                 total_da_mwh += energy_mw
+                total_da_revenue += da_revenue
                 if is_capped:
                     capped_hours += 1
+
+            # Calculate volume-weighted average DA price
+            avg_da_price = total_da_revenue / total_da_mwh if total_da_mwh > 0 else 0
 
             return {
                 "date": tomorrow,
                 "total_da_mwh": round(total_da_mwh, 2),
+                "total_da_revenue": round(total_da_revenue, 2),
+                "avg_da_price": round(avg_da_price, 2),
                 "hourly": hourly_awards,
                 "hours_awarded": len([h for h in hourly_awards if h["da_award_mw"] > 0]),
                 "capped_hours": capped_hours,
@@ -3661,7 +3669,8 @@ def dashboard():
                     </div>
                 </div>
 
-                <div class="flex justify-between items-start mb-3">
+                <!-- Header -->
+                <div class="flex justify-between items-start mb-4">
                     <div>
                         <p class="text-lg font-semibold" style="color: var(--skyvest-navy);">Northwest Ohio Wind</p>
                         <p class="text-xs" style="color: #999;">PJM DA/RT Market | 100% PPA @ $33.31/MWh with GM</p>
@@ -3669,116 +3678,206 @@ def dashboard():
                     <span class="text-xs px-2 py-1 rounded" style="background-color: #e8f4f8; color: var(--skyvest-navy);">105 MW</span>
                 </div>
 
-                <!-- DA Performance & Awards Section -->
-                <div class="mb-4">
-                    <p class="text-xs font-semibold mb-2" style="color: #666; border-bottom: 1px solid #eee; padding-bottom: 4px;">Day-Ahead Awards & Performance</p>
-                    <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
-                        <div>
-                            <p class="text-xs" style="color: #999;">Today's DA Commitment</p>
-                            <p id="nwoh-today-da-commitment" class="text-lg font-bold" style="color: var(--skyvest-navy);">-- MWh</p>
-                            <p class="text-xs" style="color: #999;">Awarded yesterday</p>
+                <!-- ══════════ SECTION 1: TODAY'S PERFORMANCE ══════════ -->
+                <div class="mb-5 p-3 rounded" style="background-color: #f8fafc; border: 1px solid #e2e8f0;">
+                    <div class="flex justify-between items-center mb-3">
+                        <p class="text-sm font-semibold" style="color: var(--skyvest-navy);">Today's Performance</p>
+                        <span id="nwoh-today-date" class="text-xs px-2 py-0.5 rounded" style="background-color: #e2e8f0; color: #64748b;">--</span>
+                    </div>
+
+                    <!-- Progress Bar: DA Commitment vs Actual -->
+                    <div class="mb-3">
+                        <div class="flex justify-between text-xs mb-1">
+                            <span style="color: #64748b;">DA Commitment: <strong id="nwoh-today-da-commitment" style="color: var(--skyvest-navy);">-- MWh</strong></span>
+                            <span style="color: #64748b;">Actual Gen: <strong id="nwoh-today-actual-gen" style="color: var(--skyvest-navy);">-- MWh</strong></span>
                         </div>
-                        <div>
-                            <p class="text-xs" style="color: #999;">Today's Actual Gen</p>
-                            <p id="nwoh-today-actual-gen" class="text-lg font-bold" style="color: var(--skyvest-navy);">-- MWh</p>
-                            <p id="nwoh-da-performance" class="text-xs" style="color: #999;">-- vs commitment</p>
+                        <div style="height: 24px; background: #e2e8f0; border-radius: 4px; overflow: hidden; position: relative;">
+                            <!-- DA commitment bar (base) -->
+                            <div id="nwoh-da-bar" style="position: absolute; height: 100%; background: #cbd5e1; width: 0%; transition: width 0.5s;"></div>
+                            <!-- Actual generation bar (overlay) -->
+                            <div id="nwoh-gen-bar" style="position: absolute; height: 100%; background: var(--skyvest-blue); width: 0%; transition: width 0.5s;"></div>
+                            <!-- Percentage label -->
+                            <div style="position: absolute; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;">
+                                <span id="nwoh-performance-pct" class="text-xs font-bold" style="color: white; text-shadow: 0 1px 2px rgba(0,0,0,0.3);">--%</span>
+                            </div>
                         </div>
-                        <div>
-                            <p class="text-xs" style="color: #999;">Tomorrow's DA Awards</p>
-                            <p id="nwoh-tomorrow-da-total" class="text-lg font-bold" style="color: var(--skyvest-blue);">-- MWh</p>
-                            <p id="nwoh-tomorrow-da-hours" class="text-xs" style="color: #999;">-- hours awarded</p>
+                        <div class="flex justify-between text-xs mt-1">
+                            <span id="nwoh-deviation-text" style="color: #64748b;">RT Deviation: <strong>-- MWh</strong></span>
+                            <span id="nwoh-deviation-status" style="color: #64748b;"></span>
                         </div>
-                        <div>
-                            <p class="text-xs" style="color: #999;">RT Deviation (Today)</p>
-                            <p id="nwoh-rt-deviation" class="text-lg font-bold" style="color: var(--skyvest-navy);">-- MWh</p>
-                            <p class="text-xs" style="color: #999;">Actual - DA</p>
+                    </div>
+
+                    <!-- Today's Revenue Summary -->
+                    <div class="grid grid-cols-3 gap-2 pt-2" style="border-top: 1px dashed #cbd5e1;">
+                        <div class="text-center">
+                            <p class="text-xs" style="color: #64748b;">DA Revenue</p>
+                            <p id="nwoh-today-da-rev" class="font-bold" style="color: var(--skyvest-navy);">$--</p>
+                        </div>
+                        <div class="text-center">
+                            <p class="text-xs" style="color: #64748b;">RT Settlement</p>
+                            <p id="nwoh-today-rt-net" class="font-bold" style="color: var(--skyvest-navy);">$--</p>
+                        </div>
+                        <div class="text-center">
+                            <p class="text-xs" style="color: #64748b;">PJM Total</p>
+                            <p id="nwoh-today-pjm-total" class="font-bold" style="color: var(--skyvest-blue);">$--</p>
                         </div>
                     </div>
                 </div>
 
-                <!-- PJM Market Revenue Section -->
+                <!-- ══════════ SECTION 2: TOMORROW'S DA AWARDS ══════════ -->
+                <div class="mb-5 p-3 rounded" style="background-color: #f0f9ff; border: 1px solid #bae6fd;">
+                    <div class="flex justify-between items-center mb-2">
+                        <p class="text-sm font-semibold" style="color: var(--skyvest-navy);">Tomorrow's DA Awards</p>
+                        <span id="nwoh-tomorrow-date" class="text-xs px-2 py-0.5 rounded" style="background-color: #bae6fd; color: #0369a1;">--</span>
+                    </div>
+                    <div class="grid grid-cols-3 gap-3">
+                        <div>
+                            <p class="text-xs" style="color: #64748b;">Total Awarded</p>
+                            <p id="nwoh-tomorrow-da-total" class="text-xl font-bold" style="color: var(--skyvest-blue);">-- MWh</p>
+                        </div>
+                        <div>
+                            <p class="text-xs" style="color: #64748b;">Hours Awarded</p>
+                            <p id="nwoh-tomorrow-da-hours" class="text-xl font-bold" style="color: var(--skyvest-navy);">--</p>
+                        </div>
+                        <div>
+                            <p class="text-xs" style="color: #64748b;">Avg DA Price</p>
+                            <p id="nwoh-tomorrow-da-price" class="text-xl font-bold" style="color: var(--skyvest-navy);">$--</p>
+                        </div>
+                    </div>
+                    <div class="mt-2 pt-2" style="border-top: 1px dashed #bae6fd;">
+                        <p class="text-xs" style="color: #64748b;">Expected DA Revenue: <strong id="nwoh-tomorrow-da-rev" style="color: var(--skyvest-blue);">$--</strong></p>
+                    </div>
+                </div>
+
+                <!-- ══════════ SECTION 3: SETTLEMENT FLOW ══════════ -->
                 <div class="mb-4">
-                    <p class="text-xs font-semibold mb-2" style="color: #666; border-bottom: 1px solid #eee; padding-bottom: 4px;">PJM Market Settlement</p>
-                    <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
-                        <div>
-                            <p class="text-xs" style="color: #999;">DA Energy Revenue</p>
-                            <p id="nwoh-da-revenue" class="text-lg font-bold" style="color: var(--skyvest-navy);">$0</p>
-                            <p class="text-xs" style="color: #999;">Avg: <span id="nwoh-avg-da-lmp">--</span>/MWh</p>
+                    <p class="text-sm font-semibold mb-3" style="color: var(--skyvest-navy);">Settlement Flow <span class="text-xs font-normal" style="color: #999;">(selected period)</span></p>
+
+                    <!-- Visual Flow: PJM Market → PPA Swap → Net Result -->
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+
+                        <!-- Step 1: PJM Market Revenue -->
+                        <div class="p-3 rounded" style="background: linear-gradient(135deg, #f1f5f9 0%, #e2e8f0 100%); border: 1px solid #cbd5e1;">
+                            <div class="flex items-center gap-2 mb-2">
+                                <span class="text-xs font-bold px-1.5 py-0.5 rounded" style="background: var(--skyvest-navy); color: white;">1</span>
+                                <p class="text-xs font-semibold" style="color: var(--skyvest-navy);">PJM Market</p>
+                            </div>
+                            <div class="space-y-1">
+                                <div class="flex justify-between text-xs">
+                                    <span style="color: #64748b;">DA Energy</span>
+                                    <span id="nwoh-da-revenue" style="color: var(--skyvest-navy);">$0</span>
+                                </div>
+                                <div class="flex justify-between text-xs">
+                                    <span style="color: #64748b;">RT Sales</span>
+                                    <span id="nwoh-rt-sales" style="color: #22c55e;">+$0</span>
+                                </div>
+                                <div class="flex justify-between text-xs">
+                                    <span style="color: #64748b;">RT Purchase</span>
+                                    <span id="nwoh-rt-purchase" style="color: #ef4444;">-$0</span>
+                                </div>
+                                <div class="flex justify-between text-xs pt-1 mt-1" style="border-top: 1px solid #cbd5e1;">
+                                    <span class="font-semibold" style="color: var(--skyvest-navy);">PJM Total</span>
+                                    <span id="nwoh-total-pjm" class="font-bold" style="color: var(--skyvest-blue);">$0</span>
+                                </div>
+                            </div>
+                            <div class="mt-2 pt-2 text-xs" style="border-top: 1px dashed #cbd5e1; color: #64748b;">
+                                <span id="nwoh-gen-mwh">0</span> MWh @ <span id="nwoh-avg-rt-lmp">--</span>/MWh avg
+                            </div>
                         </div>
-                        <div>
-                            <p class="text-xs" style="color: #999;">RT Sales Revenue</p>
-                            <p id="nwoh-rt-sales" class="text-lg font-bold" style="color: #22c55e;">$0</p>
-                            <p class="text-xs" style="color: #999;"><span id="nwoh-rt-sales-mwh">0</span> MWh sold</p>
+
+                        <!-- Arrow -->
+                        <div class="hidden md:flex items-center justify-center" style="color: #94a3b8;">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M5 12h14M12 5l7 7-7 7"/>
+                            </svg>
                         </div>
-                        <div>
-                            <p class="text-xs" style="color: #999;">RT Purchase Cost</p>
-                            <p id="nwoh-rt-purchase" class="text-lg font-bold" style="color: #ef4444;">$0</p>
-                            <p class="text-xs" style="color: #999;"><span id="nwoh-rt-purchase-mwh">0</span> MWh bought</p>
+
+                        <!-- Step 2: PPA Swap Settlement -->
+                        <div class="p-3 rounded" style="background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%); border: 1px solid #fbbf24;">
+                            <div class="flex items-center gap-2 mb-2">
+                                <span class="text-xs font-bold px-1.5 py-0.5 rounded" style="background: #92400e; color: white;">2</span>
+                                <p class="text-xs font-semibold" style="color: #92400e;">PPA Swap (GM)</p>
+                            </div>
+                            <div class="space-y-1">
+                                <div class="flex justify-between text-xs">
+                                    <span style="color: #78350f;">Fixed @ $33.31</span>
+                                    <span id="nwoh-fixed-payment" style="color: #22c55e;">+$0</span>
+                                </div>
+                                <div class="flex justify-between text-xs">
+                                    <span style="color: #78350f;">Floating @ Hub</span>
+                                    <span id="nwoh-floating-payment" style="color: #ef4444;">-$0</span>
+                                </div>
+                                <div class="flex justify-between text-xs pt-1 mt-1" style="border-top: 1px solid #fbbf24;">
+                                    <span class="font-semibold" style="color: #92400e;">Net PPA</span>
+                                    <span id="nwoh-net-ppa" class="font-bold" style="color: #92400e;">$0</span>
+                                </div>
+                            </div>
+                            <div class="mt-2 pt-2 text-xs" style="border-top: 1px dashed #fbbf24; color: #78350f;">
+                                Hub: <span id="nwoh-avg-hub">--</span>/MWh | Basis: <span id="nwoh-gwa-basis">--</span>
+                            </div>
                         </div>
-                        <div>
-                            <p class="text-xs" style="color: #999;">Total PJM Revenue</p>
-                            <p id="nwoh-total-pjm" class="text-lg font-bold" style="color: var(--skyvest-blue);">$0</p>
-                            <p class="text-xs" style="color: #999;">Avg RT: <span id="nwoh-avg-rt-lmp">--</span>/MWh</p>
+
+                        <!-- Arrow -->
+                        <div class="hidden md:flex items-center justify-center" style="color: #94a3b8;">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M5 12h14M12 5l7 7-7 7"/>
+                            </svg>
+                        </div>
+
+                        <!-- Step 3: Net Result -->
+                        <div class="p-3 rounded" style="background: linear-gradient(135deg, #ecfdf5 0%, #d1fae5 100%); border: 1px solid #34d399;">
+                            <div class="flex items-center gap-2 mb-2">
+                                <span class="text-xs font-bold px-1.5 py-0.5 rounded" style="background: #059669; color: white;">3</span>
+                                <p class="text-xs font-semibold" style="color: #059669;">Net Result</p>
+                            </div>
+                            <div class="space-y-1">
+                                <div class="flex justify-between text-xs">
+                                    <span style="color: #047857;">PJM Revenue</span>
+                                    <span id="nwoh-result-pjm" style="color: var(--skyvest-navy);">$0</span>
+                                </div>
+                                <div class="flex justify-between text-xs">
+                                    <span style="color: #047857;">PPA Settlement</span>
+                                    <span id="nwoh-result-ppa" style="color: var(--skyvest-navy);">$0</span>
+                                </div>
+                                <div class="flex justify-between pt-1 mt-1" style="border-top: 1px solid #34d399;">
+                                    <span class="font-semibold" style="color: #059669;">Total PnL</span>
+                                    <span id="nwoh-total-pnl" class="text-lg font-bold" style="color: #059669;">$0</span>
+                                </div>
+                            </div>
+                            <div class="mt-2 pt-2 text-xs" style="border-top: 1px dashed #34d399; color: #047857;">
+                                Realized: <span id="nwoh-realized-price" class="font-bold">--</span>/MWh all-in
+                            </div>
                         </div>
                     </div>
                 </div>
 
-                <!-- Generation & Pricing Section -->
-                <div class="mb-4">
-                    <p class="text-xs font-semibold mb-2" style="color: #666; border-bottom: 1px solid #eee; padding-bottom: 4px;">Generation & Pricing</p>
-                    <div class="grid grid-cols-2 md:grid-cols-6 gap-3">
+                <!-- ══════════ SECTION 4: DETAIL METRICS ══════════ -->
+                <div class="p-3 rounded" style="background-color: #fafafa; border: 1px solid #e5e5e5;">
+                    <p class="text-xs font-semibold mb-2" style="color: #666;">Period Details</p>
+                    <div class="grid grid-cols-2 md:grid-cols-6 gap-3 text-center">
                         <div>
                             <p class="text-xs" style="color: #999;">Generation</p>
-                            <p id="nwoh-gen-mwh" class="text-lg font-bold" style="color: var(--skyvest-navy);">0 MWh</p>
+                            <p id="nwoh-detail-gen" class="font-bold" style="color: var(--skyvest-navy);">-- MWh</p>
                         </div>
                         <div>
                             <p class="text-xs" style="color: #999;">DA Awarded</p>
-                            <p id="nwoh-da-mwh" class="text-lg font-bold" style="color: var(--skyvest-navy);">0 MWh</p>
+                            <p id="nwoh-da-mwh" class="font-bold" style="color: var(--skyvest-navy);">-- MWh</p>
+                        </div>
+                        <div>
+                            <p class="text-xs" style="color: #999;">Avg DA LMP</p>
+                            <p id="nwoh-avg-da-lmp" class="font-bold" style="color: var(--skyvest-navy);">$--</p>
                         </div>
                         <div>
                             <p class="text-xs" style="color: #999;">Avg Node LMP</p>
-                            <p id="nwoh-avg-node" class="text-lg font-bold" style="color: var(--skyvest-navy);">--</p>
+                            <p id="nwoh-avg-node" class="font-bold" style="color: var(--skyvest-navy);">$--</p>
                         </div>
                         <div>
-                            <p class="text-xs" style="color: #999;">Avg Hub LMP</p>
-                            <p id="nwoh-avg-hub" class="text-lg font-bold" style="color: var(--skyvest-navy);">--</p>
+                            <p class="text-xs" style="color: #999;">RT Sales</p>
+                            <p id="nwoh-rt-sales-mwh" class="font-bold" style="color: #22c55e;">-- MWh</p>
                         </div>
                         <div>
-                            <p class="text-xs" style="color: #999;">GWA Basis</p>
-                            <p id="nwoh-gwa-basis" class="text-lg font-bold" style="color: var(--skyvest-navy);">--</p>
-                            <p class="text-xs" style="color: #999;">Hub - Node</p>
-                        </div>
-                        <div>
-                            <p class="text-xs" style="color: #999;">Realized Price</p>
-                            <p id="nwoh-realized-price" class="text-lg font-bold" style="color: var(--skyvest-blue);">--</p>
-                            <p class="text-xs" style="color: #999;">All-in $/MWh</p>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- PPA Settlement Section -->
-                <div>
-                    <p class="text-xs font-semibold mb-2" style="color: #666; border-bottom: 1px solid #eee; padding-bottom: 4px;">PPA Settlement (GM)</p>
-                    <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
-                        <div>
-                            <p class="text-xs" style="color: #999;">Fixed PPA Price</p>
-                            <p class="text-lg font-bold" style="color: var(--skyvest-navy);">$33.31</p>
-                            <p class="text-xs" style="color: #999;">Per MWh</p>
-                        </div>
-                        <div>
-                            <p class="text-xs" style="color: #999;">Fixed Payment (from GM)</p>
-                            <p id="nwoh-fixed-payment" class="text-lg font-bold" style="color: #22c55e;">$0</p>
-                            <p class="text-xs" style="color: #999;">Gen × $33.31</p>
-                        </div>
-                        <div>
-                            <p class="text-xs" style="color: #999;">Floating Payment (to GM)</p>
-                            <p id="nwoh-floating-payment" class="text-lg font-bold" style="color: #ef4444;">$0</p>
-                            <p class="text-xs" style="color: #999;">Gen × Hub LMP</p>
-                        </div>
-                        <div>
-                            <p class="text-xs" style="color: #999;">Net PPA Settlement</p>
-                            <p id="nwoh-net-ppa" class="text-lg font-bold" style="color: var(--skyvest-blue);">$0</p>
-                            <p class="text-xs" style="color: #999;">Fixed - Floating</p>
+                            <p class="text-xs" style="color: #999;">RT Purchases</p>
+                            <p id="nwoh-rt-purchase-mwh" class="font-bold" style="color: #ef4444;">-- MWh</p>
                         </div>
                     </div>
                 </div>
@@ -4556,10 +4655,10 @@ def dashboard():
 
             document.getElementById('nwoh-da-revenue').textContent = formatCurrency(daRevenue);
             document.getElementById('nwoh-avg-da-lmp').textContent = '$' + formatNumber(data.avg_da_price);
-            document.getElementById('nwoh-rt-sales').textContent = formatCurrency(rtSalesRev);
-            document.getElementById('nwoh-rt-sales-mwh').textContent = formatNumber(data.rt_sales_mwh || 0);
-            document.getElementById('nwoh-rt-purchase').textContent = '(' + formatCurrency(rtPurchaseCost) + ')';
-            document.getElementById('nwoh-rt-purchase-mwh').textContent = formatNumber(data.rt_purchase_mwh || 0);
+            document.getElementById('nwoh-rt-sales').textContent = '+' + formatCurrency(rtSalesRev);
+            document.getElementById('nwoh-rt-sales-mwh').textContent = formatNumber(data.rt_sales_mwh || 0) + ' MWh';
+            document.getElementById('nwoh-rt-purchase').textContent = '-' + formatCurrency(rtPurchaseCost);
+            document.getElementById('nwoh-rt-purchase-mwh').textContent = formatNumber(data.rt_purchase_mwh || 0) + ' MWh';
             document.getElementById('nwoh-total-pjm').textContent = formatCurrency(totalPjmRevenue);
             document.getElementById('nwoh-avg-rt-lmp').textContent = '$' + formatNumber(data.avg_rt_price);
 
@@ -4570,12 +4669,13 @@ def dashboard():
             const avgHubLmp = data.avg_hub_price || avgNodeLmp;  // Fallback to node if no hub
             const gwaBasis = data.gwa_basis || (avgHubLmp - avgNodeLmp);
 
-            document.getElementById('nwoh-gen-mwh').textContent = formatNumber(genMwh) + ' MWh';
+            document.getElementById('nwoh-gen-mwh').textContent = formatNumber(genMwh);
+            document.getElementById('nwoh-detail-gen').textContent = formatNumber(genMwh) + ' MWh';
             document.getElementById('nwoh-da-mwh').textContent = formatNumber(daMwh) + ' MWh';
             document.getElementById('nwoh-avg-node').textContent = '$' + formatNumber(avgNodeLmp);
             document.getElementById('nwoh-avg-hub').textContent = '$' + formatNumber(avgHubLmp);
             const basisEl = document.getElementById('nwoh-gwa-basis');
-            basisEl.textContent = '$' + formatNumber(gwaBasis);
+            basisEl.textContent = (gwaBasis >= 0 ? '+' : '') + '$' + formatNumber(gwaBasis);
             basisEl.style.color = gwaBasis >= 0 ? '#22c55e' : '#ef4444';
 
             // PPA Settlement
@@ -4587,10 +4687,10 @@ def dashboard():
             const floatingPayment = genMwh * avgHubLmp;  // Cost to GM
             const netPpaSettlement = fixedPayment - floatingPayment;
 
-            document.getElementById('nwoh-fixed-payment').textContent = formatCurrency(fixedPayment);
-            document.getElementById('nwoh-floating-payment').textContent = '(' + formatCurrency(floatingPayment) + ')';
+            document.getElementById('nwoh-fixed-payment').textContent = '+' + formatCurrency(fixedPayment);
+            document.getElementById('nwoh-floating-payment').textContent = '-' + formatCurrency(floatingPayment);
             const netEl = document.getElementById('nwoh-net-ppa');
-            netEl.textContent = (netPpaSettlement >= 0 ? '' : '(') + formatCurrency(Math.abs(netPpaSettlement)) + (netPpaSettlement >= 0 ? '' : ')');
+            netEl.textContent = (netPpaSettlement >= 0 ? '+' : '-') + formatCurrency(Math.abs(netPpaSettlement));
             netEl.style.color = netPpaSettlement >= 0 ? '#22c55e' : '#ef4444';
 
             // Realized Price = (Total PJM Revenue + Net PPA Settlement) / Generation
@@ -4599,6 +4699,13 @@ def dashboard():
             const realizedPrice = genMwh > 0 ? totalRevenue / genMwh : 0;
             document.getElementById('nwoh-realized-price').textContent = '$' + formatNumber(realizedPrice);
 
+            // Update Settlement Flow result section
+            document.getElementById('nwoh-result-pjm').textContent = formatCurrency(totalPjmRevenue);
+            document.getElementById('nwoh-result-ppa').textContent = (netPpaSettlement >= 0 ? '+' : '-') + formatCurrency(Math.abs(netPpaSettlement));
+            const totalPnlEl = document.getElementById('nwoh-total-pnl');
+            totalPnlEl.textContent = (totalRevenue >= 0 ? '' : '-') + formatCurrency(Math.abs(totalRevenue));
+            totalPnlEl.style.color = totalRevenue >= 0 ? '#059669' : '#ef4444';
+
             // Update DA Performance & Awards section from nwohStatus
             updateNwohDaSection();
         }
@@ -4606,36 +4713,97 @@ def dashboard():
         function updateNwohDaSection() {
             if (!nwohStatus) return;
 
+            const formatNumber = (val, decimals = 1) => {
+                if (val === null || val === undefined) return '--';
+                return val.toLocaleString('en-US', {minimumFractionDigits: decimals, maximumFractionDigits: decimals});
+            };
+
+            const formatCurrency = (val) => {
+                if (val === null || val === undefined) return '$--';
+                return '$' + Math.abs(val).toLocaleString('en-US', {minimumFractionDigits: 0, maximumFractionDigits: 0});
+            };
+
             // Update price cap warning in detail card
             const detailWarning = document.getElementById('nwoh-detail-cap-warning');
             const detailCapInfo = document.getElementById('nwoh-detail-cap-info');
             if (nwohStatus.price_caps?.is_capped) {
                 detailWarning.style.display = 'block';
-                const capList = nwohStatus.price_caps.caps.map(c => `HE${c.hour_ending}: $${c.cap_price}`).join(', ');
+                const capList = nwohStatus.price_caps.caps.map(c => 'HE' + c.hour_ending + ': $' + c.cap_price).join(', ');
                 detailCapInfo.textContent = 'Capped hours: ' + capList;
             } else {
                 detailWarning.style.display = 'none';
             }
 
-            // Update today's DA commitment and actual generation
+            // Get today's data
             const today = nwohStatus.today || {};
-            document.getElementById('nwoh-today-da-commitment').textContent = formatNumber(today.da_commitment_mwh || 0) + ' MWh';
-            document.getElementById('nwoh-today-actual-gen').textContent = formatNumber(today.actual_gen_mwh || 0) + ' MWh';
-
+            const daCommitment = today.da_commitment_mwh || 0;
+            const actualGen = today.actual_gen_mwh || 0;
             const deviation = today.deviation_mwh || 0;
-            const deviationEl = document.getElementById('nwoh-rt-deviation');
-            deviationEl.textContent = (deviation >= 0 ? '+' : '') + formatNumber(deviation) + ' MWh';
-            deviationEl.style.color = deviation >= 0 ? '#22c55e' : '#ef4444';
-
             const perfPct = today.performance_pct || 0;
-            const perfEl = document.getElementById('nwoh-da-performance');
-            perfEl.textContent = perfPct.toFixed(1) + '% of DA';
-            perfEl.style.color = perfPct >= 80 ? '#22c55e' : '#f59e0b';
+
+            // Update today's date label
+            const todayDate = new Date();
+            document.getElementById('nwoh-today-date').textContent = todayDate.toLocaleDateString('en-US', {month: 'short', day: 'numeric'});
+
+            // Update progress bar
+            const maxMwh = Math.max(daCommitment, actualGen, 1);  // Avoid division by zero
+            const daBarPct = Math.min((daCommitment / maxMwh) * 100, 100);
+            const genBarPct = Math.min((actualGen / maxMwh) * 100, 100);
+
+            document.getElementById('nwoh-da-bar').style.width = daBarPct + '%';
+            document.getElementById('nwoh-gen-bar').style.width = genBarPct + '%';
+            document.getElementById('nwoh-performance-pct').textContent = perfPct.toFixed(0) + '%';
+
+            // Update text fields
+            document.getElementById('nwoh-today-da-commitment').textContent = formatNumber(daCommitment) + ' MWh';
+            document.getElementById('nwoh-today-actual-gen').textContent = formatNumber(actualGen) + ' MWh';
+
+            // Deviation text with status
+            const deviationText = document.getElementById('nwoh-deviation-text');
+            deviationText.innerHTML = 'RT Deviation: <strong style=\"color: ' + (deviation >= 0 ? '#22c55e' : '#ef4444') + '\">' + (deviation >= 0 ? '+' : '') + formatNumber(deviation) + ' MWh</strong>';
+
+            const deviationStatus = document.getElementById('nwoh-deviation-status');
+            if (deviation > 0) {
+                deviationStatus.innerHTML = '<span style=\"color: #22c55e;\">Over-generated (RT sales)</span>';
+            } else if (deviation < 0) {
+                deviationStatus.innerHTML = '<span style=\"color: #ef4444;\">Under-generated (RT purchase)</span>';
+            } else {
+                deviationStatus.textContent = 'Matched DA';
+            }
+
+            // Today's revenue summary (from today's daily_pnl if available)
+            const todayPnl = pnlData?.assets?.NWOH?.daily_pnl;
+            const todayStr = todayDate.getFullYear() + '-' + String(todayDate.getMonth() + 1).padStart(2, '0') + '-' + String(todayDate.getDate()).padStart(2, '0');
+            const todayData = todayPnl?.[todayStr] || {};
+
+            const todayDaRev = todayData.da_revenue || 0;
+            const todayRtSales = todayData.rt_sales_revenue || 0;
+            const todayRtPurchase = todayData.rt_purchase_cost || 0;
+            const todayRtNet = todayRtSales - todayRtPurchase;
+            const todayPjmTotal = todayDaRev + todayRtNet;
+
+            document.getElementById('nwoh-today-da-rev').textContent = formatCurrency(todayDaRev);
+            const rtNetEl = document.getElementById('nwoh-today-rt-net');
+            rtNetEl.textContent = (todayRtNet >= 0 ? '+' : '-') + formatCurrency(Math.abs(todayRtNet));
+            rtNetEl.style.color = todayRtNet >= 0 ? '#22c55e' : '#ef4444';
+            document.getElementById('nwoh-today-pjm-total').textContent = formatCurrency(todayPjmTotal);
 
             // Update tomorrow's DA awards
             const nextDay = nwohStatus.next_day_awards || {};
-            document.getElementById('nwoh-tomorrow-da-total').textContent = formatNumber(nextDay.total_da_mwh || 0) + ' MWh';
-            document.getElementById('nwoh-tomorrow-da-hours').textContent = (nextDay.hours_awarded || 0) + ' hours awarded';
+            const tomorrowMwh = nextDay.total_da_mwh || 0;
+            const tomorrowHours = nextDay.hours_awarded || 0;
+            const tomorrowAvgPrice = nextDay.avg_da_price || 0;
+            const tomorrowExpectedRev = tomorrowMwh * tomorrowAvgPrice;
+
+            // Tomorrow's date label
+            const tomorrow = new Date(todayDate);
+            tomorrow.setDate(tomorrow.getDate() + 1);
+            document.getElementById('nwoh-tomorrow-date').textContent = tomorrow.toLocaleDateString('en-US', {month: 'short', day: 'numeric'});
+
+            document.getElementById('nwoh-tomorrow-da-total').textContent = formatNumber(tomorrowMwh) + ' MWh';
+            document.getElementById('nwoh-tomorrow-da-hours').textContent = tomorrowHours + ' / 24';
+            document.getElementById('nwoh-tomorrow-da-price').textContent = '$' + formatNumber(tomorrowAvgPrice, 2);
+            document.getElementById('nwoh-tomorrow-da-rev').textContent = formatCurrency(tomorrowExpectedRev);
         }
 
         function updateFilteredDisplay() {
