@@ -5441,59 +5441,71 @@ def dashboard():
             const viewingDateEl = document.getElementById('nwoh-viewing-date');
             const today = new Date().toISOString().split('T')[0];
 
+            // Helper to aggregate NWOH daily data across a date filter
+            function aggregateNwohDays(dailyPnl, filterFn) {
+                const agg = {pnl: 0, volume: 0, da_revenue: 0, da_mwh: 0, rt_sales_revenue: 0, rt_sales_mwh: 0,
+                    rt_purchase_cost: 0, rt_purchase_mwh: 0, da_lmp_product: 0, rt_lmp_product: 0,
+                    hub_lmp_product: 0, hub_volume: 0, ppa_fixed_payment: 0, ppa_floating_payment: 0, ppa_net_settlement: 0};
+                Object.entries(dailyPnl || {}).forEach(([day, d]) => {
+                    if (filterFn(day)) {
+                        agg.pnl += d.pnl || 0;
+                        agg.volume += d.volume || 0;
+                        agg.da_revenue += d.da_revenue || 0;
+                        agg.da_mwh += d.da_mwh || 0;
+                        agg.rt_sales_revenue += d.rt_sales_revenue || 0;
+                        agg.rt_sales_mwh += d.rt_sales_mwh || 0;
+                        agg.rt_purchase_cost += d.rt_purchase_cost || 0;
+                        agg.rt_purchase_mwh += d.rt_purchase_mwh || 0;
+                        agg.da_lmp_product += d.da_lmp_product || 0;
+                        agg.rt_lmp_product += d.rt_lmp_product || 0;
+                        agg.hub_lmp_product += d.hub_lmp_product || 0;
+                        agg.hub_volume += d.hub_volume || 0;
+                        agg.ppa_fixed_payment += d.ppa_fixed_payment || 0;
+                        agg.ppa_floating_payment += d.ppa_floating_payment || 0;
+                        agg.ppa_net_settlement += d.ppa_net_settlement || 0;
+                    }
+                });
+                if (agg.da_mwh > 0) agg.avg_da_price = agg.da_lmp_product / agg.da_mwh;
+                if (agg.volume > 0) agg.avg_rt_price = agg.rt_lmp_product / agg.volume;
+                if (agg.hub_volume > 0) agg.avg_hub_price = agg.hub_lmp_product / agg.hub_volume;
+                if (agg.volume > 0) agg.gwa_basis = (agg.hub_lmp_product - agg.rt_lmp_product) / agg.volume;
+                return agg;
+            }
+
             // Get data based on current period
             if (currentPeriod === 'daily') {
-                // Use selected date, or fall back to most recent day
-                const days = Object.keys(nwoh.daily_pnl || {}).sort();
-                const targetDay = selectedDate || days[days.length - 1];
-                data = nwoh.daily_pnl?.[targetDay] || {};
+                const startDate = selectedDate || today;
+                const endDate = selectedEndDate || today;
+                const isDateRange = startDate !== endDate;
 
-                // Show viewing date if not today
-                if (targetDay && targetDay !== today) {
-                    const dateObj = new Date(targetDay + 'T12:00:00');
-                    viewingDateEl.textContent = 'Viewing: ' + dateObj.toLocaleDateString('en-US', {month: 'short', day: 'numeric', year: 'numeric'});
+                if (isDateRange) {
+                    // Aggregate across date range
+                    data = aggregateNwohDays(nwoh.daily_pnl, day => day >= startDate && day <= endDate);
+                    viewingDateEl.textContent = 'Viewing: ' + startDate + ' to ' + endDate;
                     viewingDateEl.style.display = '';
                 } else {
-                    viewingDateEl.style.display = 'none';
+                    // Single day
+                    const days = Object.keys(nwoh.daily_pnl || {}).sort();
+                    const targetDay = startDate;
+                    data = nwoh.daily_pnl?.[targetDay] || {};
+
+                    if (targetDay && targetDay !== today) {
+                        const dateObj = new Date(targetDay + 'T12:00:00');
+                        viewingDateEl.textContent = 'Viewing: ' + dateObj.toLocaleDateString('en-US', {month: 'short', day: 'numeric', year: 'numeric'});
+                        viewingDateEl.style.display = '';
+                    } else {
+                        viewingDateEl.style.display = 'none';
+                    }
                 }
             } else if (currentPeriod === 'mtd') {
                 viewingDateEl.style.display = 'none';
                 const currentMonth = new Date().getFullYear() + '-' + String(new Date().getMonth() + 1).padStart(2, '0');
                 data = nwoh.monthly_pnl?.[currentMonth] || {};
             } else {
-                // YTD - aggregate all daily data to ensure we have complete totals
+                // YTD - aggregate all daily data for current year
                 viewingDateEl.style.display = 'none';
-                // This is more reliable than using annual_pnl which might not be populated
-                data = {pnl: 0, volume: 0, da_revenue: 0, da_mwh: 0, rt_sales_revenue: 0, rt_sales_mwh: 0,
-                        rt_purchase_cost: 0, rt_purchase_mwh: 0, avg_da_price: 0, avg_rt_price: 0,
-                        avg_hub_price: 0, gwa_basis: 0, da_lmp_product: 0, rt_lmp_product: 0, hub_lmp_product: 0, hub_volume: 0};
-
-                // Aggregate from daily data for current year
                 const currentYear = new Date().getFullYear().toString();
-                if (nwoh.daily_pnl) {
-                    Object.entries(nwoh.daily_pnl).forEach(([day, d]) => {
-                        // Only include days from current year
-                        if (day.startsWith(currentYear)) {
-                            data.pnl += d.pnl || 0;
-                            data.volume += d.volume || 0;
-                            data.da_revenue += d.da_revenue || 0;
-                            data.da_mwh += d.da_mwh || 0;
-                            data.rt_sales_revenue += d.rt_sales_revenue || 0;
-                            data.rt_sales_mwh += d.rt_sales_mwh || 0;
-                            data.rt_purchase_cost += d.rt_purchase_cost || 0;
-                            data.rt_purchase_mwh += d.rt_purchase_mwh || 0;
-                            data.da_lmp_product += d.da_lmp_product || 0;
-                            data.rt_lmp_product += d.rt_lmp_product || 0;
-                            data.hub_lmp_product += d.hub_lmp_product || 0;
-                            data.hub_volume += d.hub_volume || 0;
-                        }
-                    });
-                }
-                // Calculate weighted averages
-                if (data.da_mwh > 0) data.avg_da_price = data.da_lmp_product / data.da_mwh;
-                if (data.volume > 0) data.avg_rt_price = data.rt_lmp_product / data.volume;
-                if (data.hub_volume > 0) data.avg_hub_price = data.hub_lmp_product / data.hub_volume;
-                if (data.volume > 0) data.gwa_basis = (data.hub_lmp_product - data.rt_lmp_product) / data.volume;
+                data = aggregateNwohDays(nwoh.daily_pnl, day => day.startsWith(currentYear));
             }
 
             const formatCurrency = (val) => {
@@ -5537,14 +5549,14 @@ def dashboard():
             basisEl.textContent = (gwaBasis >= 0 ? '+' : '') + '$' + formatNumber(gwaBasis);
             basisEl.style.color = gwaBasis >= 0 ? '#22c55e' : '#ef4444';
 
-            // PPA Settlement
+            // PPA Settlement - use pre-calculated values when available (more accurate for aggregated periods)
             // Fixed: GM pays us $33.31/MWh (revenue)
             // Floating: We pay GM Hub LMP (cost)
             // Net = Fixed - Floating (positive when hub < $33.31)
             const ppaPrice = 33.31;
-            const fixedPayment = genMwh * ppaPrice;  // Revenue from GM
-            const floatingPayment = genMwh * avgHubLmp;  // Cost to GM
-            const netPpaSettlement = fixedPayment - floatingPayment;
+            const fixedPayment = data.ppa_fixed_payment || (genMwh * ppaPrice);
+            const floatingPayment = data.ppa_floating_payment || (genMwh * avgHubLmp);
+            const netPpaSettlement = data.ppa_net_settlement !== undefined ? data.ppa_net_settlement : (fixedPayment - floatingPayment);
 
             document.getElementById('nwoh-fixed-payment').textContent = '+' + formatCurrency(fixedPayment);
             document.getElementById('nwoh-floating-payment').textContent = '-' + formatCurrency(floatingPayment);
@@ -5552,9 +5564,9 @@ def dashboard():
             netEl.textContent = (netPpaSettlement >= 0 ? '+' : '-') + formatCurrency(Math.abs(netPpaSettlement));
             netEl.style.color = netPpaSettlement >= 0 ? '#22c55e' : '#ef4444';
 
-            // Realized Price = (Total PJM Revenue + Net PPA Settlement) / Generation
-            // This is the all-in blended price per MWh
-            const totalRevenue = totalPjmRevenue + netPpaSettlement;
+            // Total PnL = PJM Revenue + PPA Settlement (use backend value when available)
+            const totalRevenue = data.pnl || (totalPjmRevenue + netPpaSettlement);
+            // Realized Price = Total PnL / Generation
             const realizedPrice = genMwh > 0 ? totalRevenue / genMwh : 0;
             document.getElementById('nwoh-realized-price').textContent = '$' + formatNumber(realizedPrice);
 
