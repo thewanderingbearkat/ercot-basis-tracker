@@ -5617,10 +5617,49 @@ def dashboard():
             document.getElementById('nwoh-tomorrow-da-rev').textContent = formatCurrency(tomorrowExpectedRev);
         }
 
+        // Helper to calculate realized price for a specific asset
+        // Industry Standard: Realized Price = Total Revenue / Total Volume ($/MWh)
+        // For PPA assets with basis exposure: Realized = PPA Price + (Basis Exposure % × GWA Basis)
+        function calcRealizedPrice(assetKey, pnl, volume, gwaBasis, ppaRevenue, merchantRevenue, merchantVolume) {
+            if (!volume || volume <= 0) return null;
+
+            // BKI: 100% Merchant - Realized = Total Revenue / Volume
+            if (assetKey === 'BKI') {
+                return Math.round(pnl / volume * 100) / 100;
+            }
+
+            // BKII: 100% PPA @ $34, 50% basis exposure
+            // Realized = PPA Price + (50% × GWA Basis)
+            if (assetKey === 'BKII') {
+                const basisEffect = gwaBasis !== null ? 0.5 * gwaBasis : 0;
+                return Math.round((34 + basisEffect) * 100) / 100;
+            }
+
+            // Holstein: 87.5% PPA @ $35 with 100% basis, 12.5% Merchant
+            // Blended = 0.875 × (PPA + Basis) + 0.125 × (Merchant Rev / Merchant Vol)
+            if (assetKey === 'HOLSTEIN') {
+                const ppaPrice = gwaBasis !== null ? 35 + gwaBasis : 35;
+                const merchantPrice = merchantVolume > 0 ? merchantRevenue / merchantVolume : pnl / volume;
+                return Math.round((0.875 * ppaPrice + 0.125 * merchantPrice) * 100) / 100;
+            }
+
+            // NWOH: 100% PPA @ $33.31 with hub settlement
+            // Realized = (PJM Revenue + Net PPA) / Volume = pnl / volume
+            if (assetKey === 'NWOH') {
+                return Math.round(pnl / volume * 100) / 100;
+            }
+
+            // Default: Revenue / Volume
+            return Math.round(pnl / volume * 100) / 100;
+        }
+
         // Helper to aggregate daily data across a date range
+        // Note: Does NOT calculate realized_price - that must be done per-asset by caller
         function aggregateDateRange(dailyPnl, startDate, endDate) {
             let totalPnl = 0, totalVolume = 0, totalBasisProduct = 0;
             let totalDaRevenue = 0, totalRtRevenue = 0;
+            let totalPpaRevenue = 0, totalMerchantRevenue = 0, totalMerchantVolume = 0;
+            let totalPjmGross = 0, totalPpaNet = 0;
             const dates = [];
 
             // Get all dates in range that have data
@@ -5631,6 +5670,11 @@ def dashboard():
                     totalVolume += data.volume || 0;
                     totalDaRevenue += data.da_revenue || 0;
                     totalRtRevenue += data.rt_revenue || 0;
+                    totalPpaRevenue += data.ppa_revenue || 0;
+                    totalMerchantRevenue += data.merchant_revenue || 0;
+                    totalMerchantVolume += data.merchant_volume || 0;
+                    totalPjmGross += data.pjm_gross_revenue || 0;
+                    totalPpaNet += data.ppa_net_settlement || 0;
                     if (data.gwa_basis && data.volume) {
                         totalBasisProduct += data.gwa_basis * data.volume;
                     }
@@ -5645,7 +5689,12 @@ def dashboard():
                 da_revenue: totalDaRevenue,
                 rt_revenue: totalRtRevenue,
                 gwa_basis: gwaBasis,
-                realized_price: gwaBasis !== null ? 33.31 + gwaBasis : null,
+                ppa_revenue: totalPpaRevenue,
+                merchant_revenue: totalMerchantRevenue,
+                merchant_volume: totalMerchantVolume,
+                pjm_gross_revenue: totalPjmGross,
+                ppa_net_settlement: totalPpaNet,
+                // realized_price must be calculated by caller based on asset type
                 days: dates.length
             };
         }
@@ -5772,35 +5821,41 @@ def dashboard():
                             pnl = rangeData.pnl;
                             volume = rangeData.volume;
                             gwaBasis = rangeData.gwa_basis;
-                            realizedPrice = rangeData.realized_price;
+                            // Calculate realized price based on asset type
+                            realizedPrice = calcRealizedPrice(currentAssetFilter, pnl, volume, gwaBasis,
+                                rangeData.ppa_revenue, rangeData.merchant_revenue, rangeData.merchant_volume);
                         } else {
                             // Single day
                             const dayData = assetData.daily_pnl?.[startDate];
                             pnl = dayData?.pnl || 0;
                             volume = dayData?.volume || 0;
-                            realizedPrice = dayData?.realized_price;
                             gwaBasis = dayData?.gwa_basis;
                             realizedPpaPrice = dayData?.realized_ppa_price;
                             realizedMerchantPrice = dayData?.realized_merchant_price;
+                            // Calculate realized price if not available
+                            realizedPrice = calcRealizedPrice(currentAssetFilter, pnl, volume, gwaBasis,
+                                dayData?.ppa_revenue, dayData?.merchant_revenue, dayData?.merchant_volume);
                         }
                     } else if (currentPeriod === 'mtd') {
                         const monthData = assetData.monthly_pnl?.[currentMonth];
                         pnl = monthData?.pnl || 0;
                         volume = monthData?.volume || 0;
-                        realizedPrice = monthData?.realized_price;
                         gwaBasis = monthData?.gwa_basis;
                         realizedPpaPrice = monthData?.realized_ppa_price;
                         realizedMerchantPrice = monthData?.realized_merchant_price;
+                        realizedPrice = calcRealizedPrice(currentAssetFilter, pnl, volume, gwaBasis,
+                            monthData?.ppa_revenue, monthData?.merchant_revenue, monthData?.merchant_volume);
                     } else {
                         // YTD - use current year's annual data
                         const yearData = assetData.annual_pnl?.[currentYear];
                         pnl = yearData?.pnl || 0;
                         volume = yearData?.volume || 0;
-                        // For YTD realized prices, still use the asset's YTD totals (they're calculated for full data)
-                        realizedPrice = assetData.realized_price;
                         gwaBasis = assetData.gwa_basis;
                         realizedPpaPrice = assetData.realized_ppa_price;
                         realizedMerchantPrice = assetData.realized_merchant_price;
+                        // Calculate realized price for YTD
+                        realizedPrice = calcRealizedPrice(currentAssetFilter, assetData.total_pnl, assetData.total_volume, gwaBasis,
+                            yearData?.ppa_revenue, yearData?.merchant_revenue, yearData?.merchant_volume);
                     }
                 }
 
@@ -6041,34 +6096,42 @@ def dashboard():
                             pnl = rangeData.pnl;
                             volume = rangeData.volume;
                             gwaBasis = rangeData.gwa_basis;
-                            realizedPrice = rangeData.realized_price;
+                            // Calculate realized price per asset type
+                            realizedPrice = calcRealizedPrice(assetKey, pnl, volume, gwaBasis,
+                                rangeData.ppa_revenue, rangeData.merchant_revenue, rangeData.merchant_volume);
                         } else {
                             // Single day
                             const dayData = assetData.daily_pnl?.[startDate];
                             pnl = dayData?.pnl || 0;
                             volume = dayData?.volume || 0;
                             gwaBasis = dayData?.gwa_basis;
-                            realizedPrice = dayData?.realized_price;
                             realizedPpaPrice = dayData?.realized_ppa_price;
                             realizedMerchantPrice = dayData?.realized_merchant_price;
+                            // Calculate realized price per asset type
+                            realizedPrice = calcRealizedPrice(assetKey, pnl, volume, gwaBasis,
+                                dayData?.ppa_revenue, dayData?.merchant_revenue, dayData?.merchant_volume);
                         }
                     } else if (currentPeriod === 'mtd') {
                         const monthData = assetData.monthly_pnl?.[currentMonth];
                         pnl = monthData?.pnl || 0;
                         volume = monthData?.volume || 0;
                         gwaBasis = monthData?.gwa_basis;
-                        realizedPrice = monthData?.realized_price;
                         realizedPpaPrice = monthData?.realized_ppa_price;
                         realizedMerchantPrice = monthData?.realized_merchant_price;
+                        // Calculate realized price per asset type
+                        realizedPrice = calcRealizedPrice(assetKey, pnl, volume, gwaBasis,
+                            monthData?.ppa_revenue, monthData?.merchant_revenue, monthData?.merchant_volume);
                     } else {
                         // YTD - use current year's annual data
                         const yearData = assetData.annual_pnl?.[currentYear];
                         pnl = yearData?.pnl || 0;
                         volume = yearData?.volume || 0;
                         gwaBasis = assetData.gwa_basis;
-                        realizedPrice = assetData.realized_price;
                         realizedPpaPrice = assetData.realized_ppa_price;
                         realizedMerchantPrice = assetData.realized_merchant_price;
+                        // Calculate realized price per asset type
+                        realizedPrice = calcRealizedPrice(assetKey, assetData.total_pnl, assetData.total_volume, gwaBasis,
+                            yearData?.ppa_revenue, yearData?.merchant_revenue, yearData?.merchant_volume);
                     }
 
                     if (pnlEl) {
