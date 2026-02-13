@@ -1179,6 +1179,8 @@ def aggregate_excel_pnl(records, hub_prices=None):
     asset_realized_daily = defaultdict(lambda: defaultdict(make_realized_tracker))
     # Monthly tracking: asset_realized_monthly[asset_key][month_key]
     asset_realized_monthly = defaultdict(lambda: defaultdict(make_realized_tracker))
+    # Annual tracking: asset_realized_annual[asset_key][year_key]
+    asset_realized_annual = defaultdict(lambda: defaultdict(make_realized_tracker))
 
     # Worst basis intervals tracking - ONLY for prior day (yesterday) per contractual requirements
     all_intervals = []
@@ -1319,6 +1321,11 @@ def aggregate_excel_pnl(records, hub_prices=None):
                 asset_realized_monthly[asset_key][month_key]["total_revenue"] += volume * node_price
                 asset_realized_monthly[asset_key][month_key]["volume_basis_product"] += volume * basis
 
+                # Annual tracking
+                asset_realized_annual[asset_key][year_key]["total_volume"] += volume
+                asset_realized_annual[asset_key][year_key]["total_revenue"] += volume * node_price
+                asset_realized_annual[asset_key][year_key]["volume_basis_product"] += volume * basis
+
                 # For Holstein, track merchant portion separately (12.5% merchant)
                 if asset_key == "HOLSTEIN":
                     merchant_pct = ASSET_CONFIG.get("HOLSTEIN", {}).get("merchant_percent", 12.5) / 100
@@ -1331,6 +1338,9 @@ def aggregate_excel_pnl(records, hub_prices=None):
                     # Monthly
                     asset_realized_monthly[asset_key][month_key]["merchant_volume"] += volume * merchant_pct
                     asset_realized_monthly[asset_key][month_key]["merchant_revenue"] += volume * merchant_pct * node_price
+                    # Annual
+                    asset_realized_annual[asset_key][year_key]["merchant_volume"] += volume * merchant_pct
+                    asset_realized_annual[asset_key][year_key]["merchant_revenue"] += volume * merchant_pct * node_price
 
         except Exception as e:
             logger.error(f"Error aggregating Excel PnL record: {e}")
@@ -1424,6 +1434,11 @@ def aggregate_excel_pnl(records, hub_prices=None):
         for month_key, month_data in asset_realized_monthly[asset_key].items():
             monthly_realized[month_key] = calc_realized_prices(asset_key, month_data)
 
+        # Calculate annual realized prices
+        annual_realized = {}
+        for year_key, year_data in asset_realized_annual[asset_key].items():
+            annual_realized[year_key] = calc_realized_prices(asset_key, year_data)
+
         assets_result[asset_key] = {
             "display_name": config.get("display_name", asset_key),
             "ppa_percent": config.get("ppa_percent", 0),
@@ -1451,7 +1466,8 @@ def aggregate_excel_pnl(records, hub_prices=None):
                 "count": v["count"],
                 **monthly_realized.get(k, {})
             } for k, v in asset_monthly[asset_key].items()},
-            "annual_pnl": {k: {"pnl": round(v["pnl"], 2), "volume": round(v["volume"], 4), "count": v["count"]}
+            # Annual data with PnL, volume, and realized prices
+            "annual_pnl": {k: {"pnl": round(v["pnl"], 2), "volume": round(v["volume"], 4), "count": v["count"], **annual_realized.get(k, {})}
                           for k, v in asset_annual[asset_key].items()},
         }
 
