@@ -2129,6 +2129,54 @@ def fetch_pharos_current_dispatch():
         logger.error(f"Error fetching current dispatch: {e}")
         return None
 
+def fetch_pharos_today_generation():
+    """
+    Fetch today's actual generation from dispatches/historic endpoint.
+    This provides real-time generation data when meter data isn't available yet.
+    Uses gen_send_out field which shows actual MW output at each 5-minute interval.
+    """
+    try:
+        today = datetime.now().strftime("%Y-%m-%d")
+        url = f"{PHAROS_BASE_URL}/pjm/dispatches/historic"
+        params = {
+            "organization_key": PHAROS_ORGANIZATION_KEY,
+            "start_date": today,
+            "end_date": today,
+        }
+
+        response = requests.get(url, auth=get_pharos_auth(), params=params, timeout=60)
+
+        if response.status_code == 200:
+            data = response.json()
+            dispatches = data.get("dispatches", [])
+
+            if dispatches:
+                # Calculate total MWh from gen_send_out (5-minute intervals)
+                # Each interval is 5 minutes = 5/60 hours
+                total_mwh = sum(d.get("gen_send_out", 0) * (5/60) for d in dispatches)
+                interval_count = len(dispatches)
+
+                # Also get current hour ending for display
+                last_dispatch = dispatches[-1]
+                last_ts = last_dispatch.get("timestamp", "")
+
+                return {
+                    "total_mwh": round(total_mwh, 2),
+                    "interval_count": interval_count,
+                    "hours_covered": round(interval_count * 5 / 60, 1),
+                    "last_timestamp": last_ts,
+                    "current_mw": last_dispatch.get("gen_send_out", 0),
+                    "source": "dispatches",
+                }
+            return {"total_mwh": 0, "interval_count": 0, "source": "dispatches"}
+        else:
+            logger.warning(f"Failed to fetch today's dispatches: {response.status_code}")
+            return None
+
+    except Exception as e:
+        logger.error(f"Error fetching today's generation from dispatches: {e}")
+        return None
+
 def aggregate_pharos_unit_operations(ops):
     """
     Aggregate Pharos unit operations data by daily, monthly, and annual periods.
@@ -3632,14 +3680,23 @@ def get_nwoh_status():
         # Fetch current dispatch
         current_dispatch = fetch_pharos_current_dispatch()
 
-        # Get today's actual generation from unit_operations
+        # Get today's actual generation
         today = datetime.now().strftime("%Y-%m-%d")
         today_actual_gen = 0
+        gen_source = "meter"
 
+        # First try meter data (most accurate)
         with data_lock:
             daily_pnl = pharos_data.get("daily_pnl", {})
             today_data = daily_pnl.get(today, {})
             today_actual_gen = today_data.get("volume", 0)
+
+        # If no meter data, use real-time dispatches
+        if today_actual_gen == 0:
+            today_gen_data = fetch_pharos_today_generation()
+            if today_gen_data:
+                today_actual_gen = today_gen_data.get("total_mwh", 0)
+                gen_source = "dispatches"
 
         # Use DA commitment from market_results (full day), not unit_operations (partial)
         today_da_commitment = today_da.get("total_da_mwh", 0)
@@ -3656,6 +3713,7 @@ def get_nwoh_status():
                 "performance_pct": round((today_actual_gen / today_da_commitment * 100), 1) if today_da_commitment > 0 else 0,
                 "hourly_awards": today_da.get("hourly", []),
                 "hours_with_awards": today_da.get("hours_with_awards", 0),
+                "gen_source": gen_source,  # "meter" or "dispatches"
             },
             "fetched_at": datetime.now().isoformat(),
         })
