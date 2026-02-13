@@ -3323,6 +3323,31 @@ def background_data_fetch():
 
 # Flag to track if background thread has started in this process
 _background_thread_started = False
+_cache_loaded = False
+
+def load_caches_if_needed():
+    """Load cached data files for immediate availability (before background thread finishes)."""
+    global _cache_loaded
+    if _cache_loaded:
+        return
+    _cache_loaded = True
+    try:
+        cached_pnl = load_pnl_data()
+        if cached_pnl:
+            with data_lock:
+                pnl_data.update(cached_pnl)
+            logger.info(f"Pre-loaded PnL cache: total_pnl=${pnl_data.get('total_pnl', 0):,.0f}")
+        cached_pharos = load_pharos_data()
+        if cached_pharos and cached_pharos.get("total_pnl", 0) != 0:
+            with data_lock:
+                pharos_data.update(cached_pharos)
+            logger.info(f"Pre-loaded Pharos cache: total_pnl=${pharos_data.get('total_pnl', 0):,.0f}")
+            merge_nwoh_historical_with_pharos()
+        elif os.path.exists(NWOH_HISTORICAL_FILE):
+            merge_nwoh_historical_with_pharos()
+            logger.info("Pre-loaded NWOH historical data as fallback")
+    except Exception as e:
+        logger.error(f"Error pre-loading caches: {e}")
 
 def start_background_thread_if_needed():
     """Start the background thread if not already running in this process."""
@@ -3332,6 +3357,12 @@ def start_background_thread_if_needed():
         fetch_thread = threading.Thread(target=background_data_fetch, daemon=True)
         fetch_thread.start()
         logger.info(f"Background data fetch thread started in process {os.getpid()}")
+
+@app.before_request
+def ensure_data_loaded():
+    """Ensure caches are loaded and background thread is running for every worker."""
+    load_caches_if_needed()
+    start_background_thread_if_needed()
 
 # Routes
 @app.route('/login', methods=['GET', 'POST'])
