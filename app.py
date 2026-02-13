@@ -1820,6 +1820,7 @@ def fetch_pharos_combined_pnl_data(start_date=None, end_date=None):
             meter_response = requests.get(meter_url, auth=get_pharos_auth(), params=meter_params, timeout=60)
 
             gen_by_hour = {}
+            gen_source = "meter"
             if meter_response.status_code == 200:
                 meter_data = meter_response.json()
                 submissions = meter_data.get("submissions", [])
@@ -1847,6 +1848,38 @@ def fetch_pharos_combined_pnl_data(start_date=None, end_date=None):
                         gen_by_hour[hour] = mw_val
 
                     logger.debug(f"Meter values for {date_str}: {len(meter_values)} entries, hours: {sorted(gen_by_hour.keys())}, total: {sum(gen_by_hour.values())}")
+
+            # 2b. If no meter data, fall back to dispatches/historic for real-time generation
+            if not gen_by_hour:
+                dispatch_url = f"{PHAROS_BASE_URL}/pjm/dispatches/historic"
+                dispatch_params = {
+                    "organization_key": PHAROS_ORGANIZATION_KEY,
+                    "start_date": date_str,
+                    "end_date": date_str,
+                }
+                dispatch_response = requests.get(dispatch_url, auth=get_pharos_auth(), params=dispatch_params, timeout=60)
+
+                if dispatch_response.status_code == 200:
+                    dispatch_data = dispatch_response.json()
+                    dispatches = dispatch_data.get("dispatches", [])
+                    if dispatches:
+                        gen_source = "dispatches"
+                        # Group by hour and sum gen_send_out (5-minute intervals -> hourly MWh)
+                        hourly_gen = defaultdict(float)
+                        for d in dispatches:
+                            ts = d.get("timestamp", "")
+                            if "T" in ts:
+                                hour = int(ts.split("T")[1].split(":")[0])
+                            elif " " in ts:
+                                hour = int(ts.split(" ")[1].split(":")[0])
+                            else:
+                                continue
+                            # gen_send_out is MW, each interval is 5 min = 5/60 hours
+                            gen_mw = d.get("gen_send_out", 0) or 0
+                            hourly_gen[hour] += gen_mw * (5/60)  # Convert to MWh
+
+                        gen_by_hour = dict(hourly_gen)
+                        logger.debug(f"Dispatch values for {date_str}: {len(dispatches)} intervals, {len(gen_by_hour)} hours, total: {sum(gen_by_hour.values()):.2f} MWh")
 
             # 3. Fetch RT LMP from lmp/historic
             lmp_url = f"{PHAROS_BASE_URL}/pjm/lmp/historic"
