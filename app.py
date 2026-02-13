@@ -3440,10 +3440,10 @@ def get_pnl():
         combined_total_pnl = pnl_data.get("total_pnl", 0) + pharos_data.get("total_pnl", 0)
         combined_total_volume = pnl_data.get("total_volume", 0) + pharos_data.get("total_volume", 0)
 
-        # Merge daily/monthly/annual aggregates
-        daily_pnl = dict(pnl_data.get("daily_pnl", {}))
-        monthly_pnl = dict(pnl_data.get("monthly_pnl", {}))
-        annual_pnl = dict(pnl_data.get("annual_pnl", {}))
+        # Merge daily/monthly/annual aggregates (deep copy to avoid mutating pnl_data)
+        daily_pnl = {k: dict(v) for k, v in pnl_data.get("daily_pnl", {}).items()}
+        monthly_pnl = {k: dict(v) for k, v in pnl_data.get("monthly_pnl", {}).items()}
+        annual_pnl = {k: dict(v) for k, v in pnl_data.get("annual_pnl", {}).items()}
 
         # Add Pharos daily data to combined totals
         for day, data in pharos_data.get("daily_pnl", {}).items():
@@ -6092,6 +6092,11 @@ def dashboard():
             // Update filtered display based on current toggles
             updateFilteredDisplay();
 
+            // Update NWOH settlement flow if visible
+            if (currentAssetFilter === 'NWOH') {
+                updateNwohDetailCard();
+            }
+
             // Update worst basis intervals
             updateWorstBasisTable();
 
@@ -6204,34 +6209,10 @@ def dashboard():
                             merchantEl.textContent = realizedMerchantPrice !== null && realizedMerchantPrice !== undefined ? formatCurrency(realizedMerchantPrice) + '/MWh' : '--';
                         }
                     } else if (assetKey === 'NWOH') {
-                        // Calculate NWOH blended realized price
+                        // NWOH realized price = PnL / Volume (same as calcRealizedPrice)
                         const realizedEl = document.getElementById('asset-realized-NWOH');
-                        if (realizedEl && volume > 0) {
-                            // Get period-specific NWOH data for realized price calc
-                            let periodData = {};
-                            if (currentPeriod === 'daily') {
-                                const days = Object.keys(assetData.daily_pnl || {}).sort();
-                                periodData = assetData.daily_pnl?.[days[days.length - 1]] || {};
-                            } else if (currentPeriod === 'mtd') {
-                                periodData = assetData.monthly_pnl?.[currentMonth] || {};
-                            } else {
-                                periodData = assetData.annual_pnl?.[currentYear] || {};
-                            }
-
-                            const daRev = periodData.da_revenue || 0;
-                            const rtSales = periodData.rt_sales_revenue || 0;
-                            const rtPurchase = periodData.rt_purchase_cost || 0;
-                            const totalPjm = daRev + rtSales - rtPurchase;
-                            const avgHub = periodData.avg_hub_price || periodData.avg_rt_price || 0;
-
-                            const fixedPmt = volume * 33.31;
-                            const floatingPmt = volume * avgHub;
-                            const netPpa = fixedPmt - floatingPmt;
-
-                            const nwohRealized = Math.round((totalPjm + netPpa) / volume * 100) / 100;
-                            realizedEl.textContent = formatCurrency(nwohRealized) + '/MWh';
-                        } else if (realizedEl) {
-                            realizedEl.textContent = '--';
+                        if (realizedEl) {
+                            realizedEl.textContent = realizedPrice !== null && realizedPrice !== undefined ? formatCurrency(realizedPrice) + '/MWh' : '--';
                         }
                     }
                 } else {
