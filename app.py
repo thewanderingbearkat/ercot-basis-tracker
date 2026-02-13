@@ -5850,11 +5850,11 @@ def dashboard():
                         const yearData = assetData.annual_pnl?.[currentYear];
                         pnl = yearData?.pnl || 0;
                         volume = yearData?.volume || 0;
-                        gwaBasis = assetData.gwa_basis;
-                        realizedPpaPrice = assetData.realized_ppa_price;
-                        realizedMerchantPrice = assetData.realized_merchant_price;
-                        // Calculate realized price for YTD
-                        realizedPrice = calcRealizedPrice(currentAssetFilter, assetData.total_pnl, assetData.total_volume, gwaBasis,
+                        gwaBasis = yearData?.gwa_basis;
+                        realizedPpaPrice = yearData?.realized_ppa_price;
+                        realizedMerchantPrice = yearData?.realized_merchant_price;
+                        // Calculate realized price using SAME pnl/volume that are displayed
+                        realizedPrice = calcRealizedPrice(currentAssetFilter, pnl, volume, gwaBasis,
                             yearData?.ppa_revenue, yearData?.merchant_revenue, yearData?.merchant_volume);
                     }
                 }
@@ -6126,11 +6126,11 @@ def dashboard():
                         const yearData = assetData.annual_pnl?.[currentYear];
                         pnl = yearData?.pnl || 0;
                         volume = yearData?.volume || 0;
-                        gwaBasis = assetData.gwa_basis;
-                        realizedPpaPrice = assetData.realized_ppa_price;
-                        realizedMerchantPrice = assetData.realized_merchant_price;
-                        // Calculate realized price per asset type
-                        realizedPrice = calcRealizedPrice(assetKey, assetData.total_pnl, assetData.total_volume, gwaBasis,
+                        gwaBasis = yearData?.gwa_basis;
+                        realizedPpaPrice = yearData?.realized_ppa_price;
+                        realizedMerchantPrice = yearData?.realized_merchant_price;
+                        // Calculate realized price using SAME pnl/volume that are displayed
+                        realizedPrice = calcRealizedPrice(assetKey, pnl, volume, gwaBasis,
                             yearData?.ppa_revenue, yearData?.merchant_revenue, yearData?.merchant_volume);
                     }
 
