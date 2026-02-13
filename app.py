@@ -2646,6 +2646,118 @@ pharos_data = {
     "last_pharos_update": None,
 }
 
+# Historical NWOH data file (imported from Excel)
+NWOH_HISTORICAL_FILE = 'nwoh_historical_data.json'
+
+def load_nwoh_historical_data():
+    """
+    Load historical NWOH data from JSON file (imported from Excel reports).
+    This provides data for months not yet available in Pharos API.
+    """
+    try:
+        if os.path.exists(NWOH_HISTORICAL_FILE):
+            with open(NWOH_HISTORICAL_FILE, 'r') as f:
+                data = json.load(f)
+            logger.info(f"Loaded NWOH historical data: {len(data.get('daily_pnl', {}))} days")
+            return data
+        else:
+            logger.info(f"No NWOH historical data file found at {NWOH_HISTORICAL_FILE}")
+            return None
+    except Exception as e:
+        logger.error(f"Error loading NWOH historical data: {e}")
+        return None
+
+def merge_nwoh_historical_with_pharos():
+    """
+    Merge historical NWOH data (from Excel) with current Pharos API data.
+    Historical data is used for dates not available in Pharos.
+    Pharos data takes precedence for overlapping dates (more up-to-date).
+    """
+    global pharos_data
+
+    historical = load_nwoh_historical_data()
+    if not historical:
+        return
+
+    # Merge daily_pnl - historical first, then Pharos overwrites
+    merged_daily = {}
+    merged_monthly = {}
+    merged_annual = {}
+
+    # Add historical data
+    for date_key, day_data in historical.get('daily_pnl', {}).items():
+        merged_daily[date_key] = day_data
+
+    for month_key, month_data in historical.get('monthly_pnl', {}).items():
+        merged_monthly[month_key] = month_data
+
+    for year_key, year_data in historical.get('annual_pnl', {}).items():
+        merged_annual[year_key] = year_data
+
+    # Overwrite with Pharos data (more current)
+    for date_key, day_data in pharos_data.get('daily_pnl', {}).items():
+        merged_daily[date_key] = day_data
+
+    # Recalculate monthly/annual totals from merged daily
+    recalc_monthly = {}
+    recalc_annual = {}
+
+    for date_key, day_data in merged_daily.items():
+        month_key = date_key[:7]  # YYYY-MM
+        year_key = date_key[:4]   # YYYY
+
+        if month_key not in recalc_monthly:
+            recalc_monthly[month_key] = {
+                'pnl': 0, 'volume': 0, 'da_mwh': 0, 'da_revenue': 0, 'rt_revenue': 0,
+                'rt_sales_revenue': 0, 'rt_purchase_cost': 0, 'count': 0,
+                'hub_product': 0, 'node_product': 0
+            }
+        if year_key not in recalc_annual:
+            recalc_annual[year_key] = {
+                'pnl': 0, 'volume': 0, 'da_mwh': 0, 'da_revenue': 0, 'rt_revenue': 0,
+                'rt_sales_revenue': 0, 'rt_purchase_cost': 0, 'count': 0,
+                'hub_product': 0, 'node_product': 0
+            }
+
+        vol = day_data.get('volume', 0)
+        hub = day_data.get('avg_hub_price', 0) or 0
+        node = day_data.get('avg_rt_price', 0) or 0
+
+        for period_data in [recalc_monthly[month_key], recalc_annual[year_key]]:
+            period_data['pnl'] += day_data.get('pnl', 0)
+            period_data['volume'] += vol
+            period_data['da_mwh'] += day_data.get('da_mwh', 0)
+            period_data['da_revenue'] += day_data.get('da_revenue', 0)
+            period_data['rt_revenue'] += day_data.get('rt_revenue', 0)
+            period_data['rt_sales_revenue'] += day_data.get('rt_sales_revenue', 0)
+            period_data['rt_purchase_cost'] += day_data.get('rt_purchase_cost', 0)
+            period_data['count'] += 1
+            if hub and vol > 0:
+                period_data['hub_product'] += vol * hub
+                period_data['node_product'] += vol * node
+
+    # Calculate averages for monthly/annual
+    for period_data in list(recalc_monthly.values()) + list(recalc_annual.values()):
+        vol = period_data.get('volume', 0)
+        if vol > 0 and period_data.get('hub_product', 0) > 0:
+            period_data['avg_hub_price'] = round(period_data['hub_product'] / vol, 2)
+            period_data['gwa_basis'] = round((period_data['hub_product'] - period_data['node_product']) / vol, 2)
+            period_data['realized_price'] = round(33.31 + period_data['gwa_basis'], 2)
+        period_data['pnl'] = round(period_data['pnl'], 2)
+        period_data['volume'] = round(vol, 2)
+        # Clean up temp fields
+        period_data.pop('hub_product', None)
+        period_data.pop('node_product', None)
+
+    # Update pharos_data with merged data
+    pharos_data['daily_pnl'] = merged_daily
+    pharos_data['monthly_pnl'] = recalc_monthly
+    pharos_data['annual_pnl'] = recalc_annual
+    pharos_data['total_pnl'] = round(sum(d.get('pnl', 0) for d in merged_daily.values()), 2)
+    pharos_data['total_volume'] = round(sum(d.get('volume', 0) for d in merged_daily.values()), 2)
+
+    logger.info(f"Merged NWOH data: {len(merged_daily)} total days, ${pharos_data['total_pnl']:,.2f} total PnL")
+
 # ============================================================================
 # ERCOT Helper Functions
 # ============================================================================
@@ -2799,6 +2911,8 @@ def background_data_fetch():
             with data_lock:
                 pharos_data.update(cached_pharos)
             logger.info(f"Loaded cached Pharos data: total_pnl=${pharos_data.get('total_pnl', 0):,.0f}, volume={pharos_data.get('total_volume', 0):,.0f} MWh")
+            # Also merge historical data from Excel (for months not in API cache)
+            merge_nwoh_historical_with_pharos()
             last_pharos_fetch_time = datetime.now()  # Don't immediately re-fetch if cache is valid
         else:
             # Fetch fresh data on first run or if cache is empty
@@ -2834,6 +2948,10 @@ def background_data_fetch():
 
                 with data_lock:
                     pharos_data["last_pharos_update"] = datetime.now(ZoneInfo("America/New_York")).isoformat()
+
+                # Merge historical NWOH data (from Excel) with Pharos data
+                merge_nwoh_historical_with_pharos()
+
                 save_pharos_data(pharos_data)
                 last_pharos_fetch_time = datetime.now()
     except Exception as e:
@@ -3093,6 +3211,10 @@ def background_data_fetch():
 
                         with data_lock:
                             pharos_data["last_pharos_update"] = datetime.now(ZoneInfo("America/New_York")).isoformat()
+
+                        # Merge historical NWOH data (from Excel) with Pharos data
+                        merge_nwoh_historical_with_pharos()
+
                         save_pharos_data(pharos_data)
                         last_pharos_fetch_time = datetime.now()
                         logger.info(f"Pharos refresh complete: PnL=${pharos_data.get('total_pnl', 0)}, DA={pharos_data.get('total_da_mwh', 0)} MWh")
@@ -4056,10 +4178,14 @@ def dashboard():
                             <button id="asset-NWOH" onclick="setAssetFilter('NWOH')" class="px-3 py-1 text-xs font-semibold asset-btn" style="background-color: white; color: var(--skyvest-navy);">NWOH</button>
                         </div>
                     </div>
-                    <!-- Date Picker (for Daily view) -->
+                    <!-- Date Range Picker -->
                     <div class="flex items-center gap-2">
-                        <span class="text-xs font-semibold" style="color: #666;">Date:</span>
-                        <input type="date" id="date-picker" onchange="setSelectedDate(this.value)"
+                        <span class="text-xs font-semibold" style="color: #666;">From:</span>
+                        <input type="date" id="date-picker-start" onchange="setDateRange()"
+                               class="px-2 py-1 text-xs border rounded"
+                               style="border-color: var(--skyvest-navy); color: var(--skyvest-navy);">
+                        <span class="text-xs font-semibold" style="color: #666;">To:</span>
+                        <input type="date" id="date-picker-end" onchange="setDateRange()"
                                class="px-2 py-1 text-xs border rounded"
                                style="border-color: var(--skyvest-navy); color: var(--skyvest-navy);">
                         <button onclick="resetToToday()" class="px-2 py-1 text-xs font-semibold rounded border"
@@ -4134,7 +4260,7 @@ def dashboard():
                         <p class="text-xs" style="color: #999;">GWA Basis: <span id="asset-basis-HOLSTEIN">--</span> (100%)</p>
                     </div>
                 </div>
-                <div class="card rounded-sm p-3" id="asset-card-NWOH" style="border-left: 3px solid var(--skyvest-blue);">
+                <div class="card rounded-sm p-3" id="asset-card-NWOH">
                     <div class="flex justify-between items-start mb-1">
                         <p class="metric-label" style="color: #666;">NW Ohio Wind</p>
                         <span class="text-xs px-2 py-0.5 rounded" style="background-color: var(--skyvest-light-blue); color: var(--skyvest-navy);">100% PPA @ $33.31</span>
@@ -4428,34 +4554,6 @@ def dashboard():
                 </div>
             </div>
 
-            <!-- Worst Basis Intervals (PPA Exclusion Tracking) -->
-            <div class="card rounded-sm p-3 mb-3">
-                <div class="flex justify-between items-center mb-2">
-                    <h3 class="text-sm font-semibold" style="color: var(--skyvest-navy);">Worst Basis Intervals - Yesterday (PPA Exclusion Candidates)</h3>
-                    <span class="text-xs" style="color: #999;">Gen × Basis (prior day only per contract)</span>
-                </div>
-                <div id="worst-basis-container" style="max-height: 200px; overflow-y: auto;">
-                    <table class="w-full text-xs">
-                        <thead>
-                            <tr style="border-bottom: 1px solid #e5e5e5;">
-                                <th class="text-left py-1 px-2" style="color: #666;">Date/Time</th>
-                                <th class="text-left py-1 px-2" style="color: #666;">Asset</th>
-                                <th class="text-right py-1 px-2" style="color: #666;">Basis</th>
-                                <th class="text-right py-1 px-2" style="color: #666;">Volume</th>
-                                <th class="text-right py-1 px-2" style="color: #666;">PnL Impact</th>
-                            </tr>
-                        </thead>
-                        <tbody id="worst-basis-body">
-                            <tr><td colspan="5" class="text-center py-2" style="color: #999;">Loading...</td></tr>
-                        </tbody>
-                    </table>
-                </div>
-                <div class="mt-2 pt-2" style="border-top: 1px solid #e5e5e5;">
-                    <span class="text-xs" style="color: #666;">Potential savings if excluded: </span>
-                    <span id="excludable-savings" class="text-sm font-bold" style="color: var(--skyvest-blue);">$0.00</span>
-                </div>
-            </div>
-
             <!-- PnL View Selector -->
             <div class="card rounded-sm p-3 mb-3">
                 <div class="flex justify-between items-center mb-3">
@@ -4488,6 +4586,34 @@ def dashboard():
             <div class="card rounded-sm p-3 mb-3">
                 <h3 class="text-sm font-semibold mb-2" style="color: var(--skyvest-navy); border-bottom: 1px solid #e5e5e5; padding-bottom: 4px;">PnL Trend</h3>
                 <div id="pnl-chart-container"></div>
+            </div>
+
+            <!-- Worst Basis Intervals (PPA Exclusion Tracking) - Holstein Only -->
+            <div class="card rounded-sm p-3 mb-3">
+                <div class="flex justify-between items-center mb-2">
+                    <h3 class="text-sm font-semibold" style="color: var(--skyvest-navy);">Worst Basis Intervals - Yesterday (PPA Exclusion Candidates)</h3>
+                    <span class="text-xs" style="color: #999;">Gen × Basis (prior day only per contract)</span>
+                </div>
+                <div id="worst-basis-container" style="max-height: 200px; overflow-y: auto;">
+                    <table class="w-full text-xs">
+                        <thead>
+                            <tr style="border-bottom: 1px solid #e5e5e5;">
+                                <th class="text-left py-1 px-2" style="color: #666;">Date/Time</th>
+                                <th class="text-left py-1 px-2" style="color: #666;">Asset</th>
+                                <th class="text-right py-1 px-2" style="color: #666;">Basis</th>
+                                <th class="text-right py-1 px-2" style="color: #666;">Volume</th>
+                                <th class="text-right py-1 px-2" style="color: #666;">PnL Impact</th>
+                            </tr>
+                        </thead>
+                        <tbody id="worst-basis-body">
+                            <tr><td colspan="5" class="text-center py-2" style="color: #999;">Loading...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="mt-2 pt-2" style="border-top: 1px solid #e5e5e5;">
+                    <span class="text-xs" style="color: #666;">Potential savings if excluded: </span>
+                    <span id="excludable-savings" class="text-sm font-bold" style="color: var(--skyvest-blue);">$0.00</span>
+                </div>
             </div>
         </div>
     </div>
@@ -5013,19 +5139,37 @@ def dashboard():
         // Toggle state variables
         let currentPeriod = 'ytd';  // 'daily', 'mtd', 'ytd'
         let currentAssetFilter = 'all';  // 'all', 'BKI', 'BKII', 'HOLSTEIN'
-        let selectedDate = null;  // Selected date for Daily view (YYYY-MM-DD format)
+        let selectedDate = null;  // Selected start date for Daily view (YYYY-MM-DD format)
+        let selectedEndDate = null;  // Selected end date for Daily view (YYYY-MM-DD format)
 
         // Initialize date picker with today's date
         function initDatePicker() {
             const today = new Date().toISOString().split('T')[0];
-            const datePicker = document.getElementById('date-picker');
-            datePicker.value = today;
-            datePicker.max = today;  // Can't select future dates
+            const startPicker = document.getElementById('date-picker-start');
+            const endPicker = document.getElementById('date-picker-end');
+
+            // Default both to today
+            startPicker.value = today;
+            endPicker.value = today;
+            startPicker.max = today;  // Can't select future dates
+            endPicker.max = today;
             selectedDate = today;
+            selectedEndDate = today;
         }
 
-        function setSelectedDate(date) {
-            selectedDate = date;
+        function setDateRange() {
+            const startPicker = document.getElementById('date-picker-start');
+            const endPicker = document.getElementById('date-picker-end');
+
+            selectedDate = startPicker.value;
+            selectedEndDate = endPicker.value;
+
+            // Ensure end >= start
+            if (selectedEndDate < selectedDate) {
+                endPicker.value = selectedDate;
+                selectedEndDate = selectedDate;
+            }
+
             // Auto-switch to Daily view when a date is selected
             if (currentPeriod !== 'daily') {
                 setPeriod('daily');
@@ -5039,10 +5183,21 @@ def dashboard():
             }
         }
 
+        function setSelectedDate(date) {
+            // Legacy function for compatibility - sets single date
+            selectedDate = date;
+            selectedEndDate = date;
+            document.getElementById('date-picker-start').value = date;
+            document.getElementById('date-picker-end').value = date;
+            setDateRange();
+        }
+
         function resetToToday() {
             const today = new Date().toISOString().split('T')[0];
-            document.getElementById('date-picker').value = today;
+            document.getElementById('date-picker-start').value = today;
+            document.getElementById('date-picker-end').value = today;
             selectedDate = today;
+            selectedEndDate = today;
             // Refresh if on daily view
             if (currentPeriod === 'daily') {
                 updateFilteredDisplay();
@@ -5051,6 +5206,25 @@ def dashboard():
                     updateNwohDetailCard();
                 }
             }
+        }
+
+        // Helper function to check if a date is within the selected range
+        function isDateInRange(dateStr) {
+            if (!selectedDate || !selectedEndDate) return true;
+            return dateStr >= selectedDate && dateStr <= selectedEndDate;
+        }
+
+        // Helper function to get all dates in the selected range
+        function getDatesInRange() {
+            if (!selectedDate || !selectedEndDate) return [];
+            const dates = [];
+            let current = new Date(selectedDate);
+            const end = new Date(selectedEndDate);
+            while (current <= end) {
+                dates.push(current.toISOString().split('T')[0]);
+                current.setDate(current.getDate() + 1);
+            }
+            return dates;
         }
 
         function setPeriod(period) {
@@ -5069,8 +5243,20 @@ def dashboard():
             });
 
             // Update labels
-            const periodLabels = { 'daily': 'Daily', 'mtd': 'MTD', 'ytd': 'YTD' };
-            const label = periodLabels[period];
+            let label = { 'daily': 'Daily', 'mtd': 'MTD', 'ytd': 'YTD' }[period];
+
+            // For daily view with date range, show the range in the label
+            if (period === 'daily' && selectedDate && selectedEndDate && selectedDate !== selectedEndDate) {
+                const startParts = selectedDate.split('-');
+                const endParts = selectedEndDate.split('-');
+                const startFormatted = startParts[1] + '/' + startParts[2];
+                const endFormatted = endParts[1] + '/' + endParts[2];
+                label = startFormatted + ' - ' + endFormatted;
+            } else if (period === 'daily' && selectedDate) {
+                const parts = selectedDate.split('-');
+                label = parts[1] + '/' + parts[2] + '/' + parts[0].slice(2);
+            }
+
             document.getElementById('pnl-label').textContent = label;
             document.getElementById('volume-label').textContent = label;
 
@@ -5365,6 +5551,39 @@ def dashboard():
             document.getElementById('nwoh-tomorrow-da-rev').textContent = formatCurrency(tomorrowExpectedRev);
         }
 
+        // Helper to aggregate daily data across a date range
+        function aggregateDateRange(dailyPnl, startDate, endDate) {
+            let totalPnl = 0, totalVolume = 0, totalBasisProduct = 0;
+            let totalDaRevenue = 0, totalRtRevenue = 0;
+            const dates = [];
+
+            // Get all dates in range that have data
+            for (const [dateKey, data] of Object.entries(dailyPnl || {})) {
+                if (dateKey >= startDate && dateKey <= endDate) {
+                    dates.push(dateKey);
+                    totalPnl += data.pnl || 0;
+                    totalVolume += data.volume || 0;
+                    totalDaRevenue += data.da_revenue || 0;
+                    totalRtRevenue += data.rt_revenue || 0;
+                    if (data.gwa_basis && data.volume) {
+                        totalBasisProduct += data.gwa_basis * data.volume;
+                    }
+                }
+            }
+
+            const gwaBasis = totalVolume > 0 ? totalBasisProduct / totalVolume : null;
+
+            return {
+                pnl: totalPnl,
+                volume: totalVolume,
+                da_revenue: totalDaRevenue,
+                rt_revenue: totalRtRevenue,
+                gwa_basis: gwaBasis,
+                realized_price: gwaBasis !== null ? 33.31 + gwaBasis : null,
+                days: dates.length
+            };
+        }
+
         function updateFilteredDisplay() {
             if (!pnlData) return;
 
@@ -5374,18 +5593,29 @@ def dashboard():
             const currentMonth = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0');
             const currentYear = now.getFullYear().toString();
 
-            // Use selected date for daily view if available
-            if (currentPeriod === 'daily' && selectedDate) {
-                today = selectedDate;
-            }
+            // For daily view, use date range if both dates are set
+            let startDate = selectedDate || today;
+            let endDate = selectedEndDate || today;
 
-            // If selected/today's data doesn't exist, find the most recent available date
-            if (currentPeriod === 'daily' && pnlData.daily_pnl && !pnlData.daily_pnl[today]) {
-                const availableDates = Object.keys(pnlData.daily_pnl).sort();
+            // If selected dates don't exist, fall back to most recent available
+            if (currentPeriod === 'daily' && pnlData.daily_pnl) {
+                const actualToday = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
+                const availableDates = Object.keys(pnlData.daily_pnl).filter(d => d <= actualToday).sort();
                 if (availableDates.length > 0) {
-                    today = availableDates[availableDates.length - 1];
+                    // If start date has no data, use most recent
+                    if (!pnlData.daily_pnl[startDate]) {
+                        startDate = availableDates[availableDates.length - 1];
+                        endDate = startDate;
+                    }
+                    // Ensure end date doesn't exceed available data
+                    if (!pnlData.daily_pnl[endDate] && endDate > startDate) {
+                        endDate = availableDates[availableDates.length - 1];
+                    }
                 }
             }
+
+            // Check if this is a date range (multiple days)
+            const isDateRange = currentPeriod === 'daily' && startDate !== endDate;
 
             let pnl = 0, volume = 0, realizedPrice = null, gwaBasis = null;
             let realizedPpaPrice = null, realizedMerchantPrice = null;
@@ -5393,9 +5623,18 @@ def dashboard():
             if (currentAssetFilter === 'all') {
                 // Aggregate all assets
                 if (currentPeriod === 'daily') {
-                    const dayData = pnlData.daily_pnl?.[today];
-                    pnl = dayData?.pnl || 0;
-                    volume = dayData?.volume || 0;
+                    if (isDateRange) {
+                        // Aggregate across date range
+                        const rangeData = aggregateDateRange(pnlData.daily_pnl, startDate, endDate);
+                        pnl = rangeData.pnl;
+                        volume = rangeData.volume;
+                        gwaBasis = rangeData.gwa_basis;
+                    } else {
+                        // Single day
+                        const dayData = pnlData.daily_pnl?.[startDate];
+                        pnl = dayData?.pnl || 0;
+                        volume = dayData?.volume || 0;
+                    }
                 } else if (currentPeriod === 'mtd') {
                     const monthData = pnlData.monthly_pnl?.[currentMonth];
                     pnl = monthData?.pnl || 0;
@@ -5461,13 +5700,23 @@ def dashboard():
                 const assetData = pnlData.assets?.[currentAssetFilter];
                 if (assetData) {
                     if (currentPeriod === 'daily') {
-                        const dayData = assetData.daily_pnl?.[today];
-                        pnl = dayData?.pnl || 0;
-                        volume = dayData?.volume || 0;
-                        realizedPrice = dayData?.realized_price;
-                        gwaBasis = dayData?.gwa_basis;
-                        realizedPpaPrice = dayData?.realized_ppa_price;
-                        realizedMerchantPrice = dayData?.realized_merchant_price;
+                        if (isDateRange) {
+                            // Aggregate across date range for this asset
+                            const rangeData = aggregateDateRange(assetData.daily_pnl, startDate, endDate);
+                            pnl = rangeData.pnl;
+                            volume = rangeData.volume;
+                            gwaBasis = rangeData.gwa_basis;
+                            realizedPrice = rangeData.realized_price;
+                        } else {
+                            // Single day
+                            const dayData = assetData.daily_pnl?.[startDate];
+                            pnl = dayData?.pnl || 0;
+                            volume = dayData?.volume || 0;
+                            realizedPrice = dayData?.realized_price;
+                            gwaBasis = dayData?.gwa_basis;
+                            realizedPpaPrice = dayData?.realized_ppa_price;
+                            realizedMerchantPrice = dayData?.realized_merchant_price;
+                        }
                     } else if (currentPeriod === 'mtd') {
                         const monthData = assetData.monthly_pnl?.[currentMonth];
                         pnl = monthData?.pnl || 0;
@@ -5698,22 +5947,16 @@ def dashboard():
 
             // Get date keys based on current period
             const now = new Date();
-            let today = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
+            const actualToday = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
             const currentMonth = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0');
             const currentYear = now.getFullYear().toString();
 
-            // Use selected date for daily view if available
-            if (currentPeriod === 'daily' && selectedDate) {
-                today = selectedDate;
-            }
+            // For daily view, use date range
+            let startDate = selectedDate || actualToday;
+            let endDate = selectedEndDate || actualToday;
 
-            // If selected/today's data doesn't exist for daily period, use most recent available date
-            if (currentPeriod === 'daily' && pnlData.daily_pnl && !pnlData.daily_pnl[today]) {
-                const availableDates = Object.keys(pnlData.daily_pnl).sort();
-                if (availableDates.length > 0) {
-                    today = availableDates[availableDates.length - 1];
-                }
-            }
+            // Check if this is a date range
+            const isDateRange = currentPeriod === 'daily' && startDate !== endDate;
 
             ['BKII', 'BKI', 'HOLSTEIN', 'NWOH'].forEach(assetKey => {
                 const assetData = assets[assetKey];
@@ -5726,13 +5969,23 @@ def dashboard():
                     let pnl, volume, gwaBasis, realizedPrice, realizedPpaPrice, realizedMerchantPrice;
 
                     if (currentPeriod === 'daily') {
-                        const dayData = assetData.daily_pnl?.[today];
-                        pnl = dayData?.pnl || 0;
-                        volume = dayData?.volume || 0;
-                        gwaBasis = dayData?.gwa_basis;
-                        realizedPrice = dayData?.realized_price;
-                        realizedPpaPrice = dayData?.realized_ppa_price;
-                        realizedMerchantPrice = dayData?.realized_merchant_price;
+                        if (isDateRange) {
+                            // Aggregate across date range
+                            const rangeData = aggregateDateRange(assetData.daily_pnl, startDate, endDate);
+                            pnl = rangeData.pnl;
+                            volume = rangeData.volume;
+                            gwaBasis = rangeData.gwa_basis;
+                            realizedPrice = rangeData.realized_price;
+                        } else {
+                            // Single day
+                            const dayData = assetData.daily_pnl?.[startDate];
+                            pnl = dayData?.pnl || 0;
+                            volume = dayData?.volume || 0;
+                            gwaBasis = dayData?.gwa_basis;
+                            realizedPrice = dayData?.realized_price;
+                            realizedPpaPrice = dayData?.realized_ppa_price;
+                            realizedMerchantPrice = dayData?.realized_merchant_price;
+                        }
                     } else if (currentPeriod === 'mtd') {
                         const monthData = assetData.monthly_pnl?.[currentMonth];
                         pnl = monthData?.pnl || 0;
