@@ -1753,6 +1753,77 @@ def fetch_pharos_unit_operations(start_date=None, end_date=None):
         logger.error(f"Error fetching Pharos unit operations: {e}")
         return []
 
+def fetch_pharos_hourly_revenue(start_date=None, end_date=None):
+    """
+    Fetch pre-calculated hourly revenue data from Pharos hourly_revenue_estimate endpoint.
+    This endpoint provides all the values we need in one call with consistent calculations.
+
+    Fields available:
+    - gen_mw: Actual generation MW
+    - dam_mw: DA award MW
+    - dam_lmp: DA price
+    - rt_mw: RT deviation (gen - dam)
+    - rt_lmp: RT price
+    - dam_revenue: Pre-calculated DA revenue
+    - rt_revenue: Pre-calculated RT revenue
+    - net_revenue: Total PJM revenue (dam + rt)
+    """
+    try:
+        if start_date is None:
+            start_date = PHAROS_FETCH_START_DATE
+        if end_date is None:
+            end_date = datetime.now().strftime("%Y-%m-%d")
+
+        logger.info(f"Fetching Pharos hourly revenue estimate from {start_date} to {end_date}")
+
+        url = f"{PHAROS_BASE_URL}/pjm/hourly_revenue_estimate"
+        params = {
+            "organization_key": PHAROS_ORGANIZATION_KEY,
+            "start_date": start_date,
+            "end_date": end_date,
+        }
+
+        response = requests.get(url, auth=get_pharos_auth(), params=params, timeout=120)
+
+        if response.status_code == 200:
+            data = response.json()
+            records = data.get("hourly_revenue_estimate", [])
+            logger.info(f"Fetched {len(records)} hourly revenue records from Pharos")
+
+            # Convert to format expected by aggregate function
+            converted = []
+            for r in records:
+                gen_mw = r.get("gen_mw")  # Can be None for future hours
+                dam_mw = r.get("dam_mw") or 0
+                rt_mw = r.get("rt_mw") or 0  # gen - dam
+
+                converted.append({
+                    "timestamp": r.get("hour", ""),
+                    "date": r.get("date", ""),
+                    "he": r.get("he", 0),
+                    "gen": gen_mw if gen_mw is not None else 0,
+                    "dam_mw": dam_mw,
+                    "da_lmp": r.get("dam_lmp") or 0,
+                    "rt_mw": rt_mw,
+                    "rt_lmp": r.get("rt_lmp") or 0,
+                    "dam_revenue": r.get("dam_revenue") or 0,
+                    "rt_revenue": r.get("rt_revenue") or 0,
+                    "net_revenue": r.get("net_revenue") or 0,
+                    "has_gen_data": gen_mw is not None,
+                    "is_hourly": True,
+                    "source": "hourly_revenue_estimate",
+                })
+
+            return converted
+        else:
+            logger.warning(f"Pharos hourly_revenue_estimate returned {response.status_code}")
+            return []
+
+    except Exception as e:
+        logger.error(f"Error fetching Pharos hourly revenue: {e}")
+        return []
+
+
 def fetch_pharos_combined_pnl_data(start_date=None, end_date=None):
     """
     Fetch and combine data from multiple Pharos endpoints for PnL calculation.
@@ -2297,59 +2368,66 @@ def aggregate_pharos_unit_operations(ops):
             month_key = dt.strftime("%Y-%m")
             year_key = dt.strftime("%Y")
 
-            # Extract values (handle nulls) - support both v1 and v2 field names
-            # v1 uses: da_award, deviation_mw, gen
-            # v2 uses: dam_mw, rt_mw, meter_mw, gen
-            # Combined hourly data (from fetch_pharos_combined_pnl_data) has is_hourly=True
-            # NOTE: Data is 5-minute intervals by default, so values are in MW not MWh
-            # To convert to MWh: MW × (5/60) = MW / 12
-            # For hourly data, MW = MWh (1 hour)
+            # Extract values - use pre-calculated values from hourly_revenue_estimate if available
+            source = op.get("source", "")
             is_hourly = op.get("is_hourly", False)
             INTERVAL_HOURS = 1.0 if is_hourly else (5 / 60)  # Hourly vs 5-minute intervals
 
-            dam_mw = float(op.get("dam_mw") or op.get("da_award") or 0)
-            da_lmp = float(op.get("da_lmp", 0) or 0)
-            gen_mw = float(op.get("gen", 0) or 0)  # Actual generation in MW
-            meter_mw = float(op.get("meter_mw", 0) or 0)  # Metered MW (v2 only)
-            rt_lmp = float(op.get("rt_lmp", 0) or 0)
+            # Check if this is from hourly_revenue_estimate (has pre-calculated values)
+            if source == "hourly_revenue_estimate":
+                # Use Pharos pre-calculated values directly (already in correct units)
+                actual_gen_mwh = float(op.get("gen", 0) or 0)  # gen_mw is actually MWh for hourly
+                dam_mwh = float(op.get("dam_mw", 0) or 0)
+                da_lmp = float(op.get("da_lmp", 0) or 0)
+                rt_mwh = float(op.get("rt_mw", 0) or 0)  # RT deviation (gen - dam)
+                rt_lmp = float(op.get("rt_lmp", 0) or 0)
 
-            # Use metered MW if available, otherwise use gen
-            actual_gen_mw = meter_mw if meter_mw else gen_mw
+                # Use pre-calculated revenue values from Pharos
+                da_revenue = float(op.get("dam_revenue", 0) or 0)
+                rt_imbalance = float(op.get("rt_revenue", 0) or 0)
+                interval_pnl = float(op.get("net_revenue", 0) or 0)
 
-            # Calculate RT deviation ourselves (gen - da_award)
-            # IMPORTANT: Do NOT use API's deviation_mw - it has opposite sign!
-            # Positive deviation = over-generation = sell at RT (revenue)
-            # Negative deviation = under-generation = buy at RT (cost)
-            rt_deviation_mw = actual_gen_mw - dam_mw
-
-            # Convert MW to MWh for the 5-minute interval
-            actual_gen_mwh = actual_gen_mw * INTERVAL_HOURS
-            dam_mwh = dam_mw * INTERVAL_HOURS
-            rt_mwh = rt_deviation_mw * INTERVAL_HOURS
-
-            # PnL calculation:
-            # DA Revenue = DA Award (MWh) × DA LMP ($/MWh)
-            da_revenue = dam_mwh * da_lmp
-
-            # RT Settlement: deviation determines if selling or buying
-            # Positive deviation = over-generation = sell at RT (revenue)
-            # Negative deviation = under-generation = buy at RT (cost)
-            rt_imbalance = rt_mwh * rt_lmp
-
-            # Separate RT sales (positive) and RT purchases (negative)
-            if rt_mwh > 0:
-                rt_sales_mwh = rt_mwh
-                rt_sales_rev = rt_mwh * rt_lmp
-                rt_purchase_mwh = 0
-                rt_purchase_cost = 0
+                # Separate RT sales and purchases based on rt_mwh sign
+                if rt_mwh > 0:
+                    rt_sales_mwh = rt_mwh
+                    rt_sales_rev = rt_imbalance if rt_imbalance > 0 else 0
+                    rt_purchase_mwh = 0
+                    rt_purchase_cost = 0
+                else:
+                    rt_sales_mwh = 0
+                    rt_sales_rev = 0
+                    rt_purchase_mwh = abs(rt_mwh)
+                    rt_purchase_cost = abs(rt_imbalance) if rt_imbalance < 0 else 0
             else:
-                rt_sales_mwh = 0
-                rt_sales_rev = 0
-                rt_purchase_mwh = abs(rt_mwh)
-                rt_purchase_cost = abs(rt_mwh * rt_lmp)
+                # Fallback: calculate values ourselves (old method)
+                dam_mw = float(op.get("dam_mw") or op.get("da_award") or 0)
+                da_lmp = float(op.get("da_lmp", 0) or 0)
+                gen_mw = float(op.get("gen", 0) or 0)
+                meter_mw = float(op.get("meter_mw", 0) or 0)
+                rt_lmp = float(op.get("rt_lmp", 0) or 0)
 
-            # Total PnL = DA Revenue + RT Imbalance
-            interval_pnl = da_revenue + rt_imbalance
+                actual_gen_mw = meter_mw if meter_mw else gen_mw
+                rt_deviation_mw = actual_gen_mw - dam_mw
+
+                actual_gen_mwh = actual_gen_mw * INTERVAL_HOURS
+                dam_mwh = dam_mw * INTERVAL_HOURS
+                rt_mwh = rt_deviation_mw * INTERVAL_HOURS
+
+                da_revenue = dam_mwh * da_lmp
+                rt_imbalance = rt_mwh * rt_lmp
+
+                if rt_mwh > 0:
+                    rt_sales_mwh = rt_mwh
+                    rt_sales_rev = rt_mwh * rt_lmp
+                    rt_purchase_mwh = 0
+                    rt_purchase_cost = 0
+                else:
+                    rt_sales_mwh = 0
+                    rt_sales_rev = 0
+                    rt_purchase_mwh = abs(rt_mwh)
+                    rt_purchase_cost = abs(rt_mwh * rt_lmp)
+
+                interval_pnl = da_revenue + rt_imbalance
 
             # Basis calculation (hub - node)
             # Try to get hub price from PJM cache, fall back to DA/RT spread
@@ -2741,7 +2819,7 @@ def background_data_fetch():
 
                 # Fetch PnL data using combined endpoint (market_results + power_meter + lmp)
                 logger.info("Fetching Pharos combined PnL data...")
-                unit_ops = fetch_pharos_combined_pnl_data(start_date=PHAROS_FETCH_START_DATE)
+                unit_ops = fetch_pharos_hourly_revenue(start_date=PHAROS_FETCH_START_DATE)
 
                 if unit_ops:
                     ops_aggregated = aggregate_pharos_unit_operations(unit_ops)
@@ -3001,7 +3079,7 @@ def background_data_fetch():
                                 pharos_data["capped_intervals"] = aggregated["capped_intervals"]
 
                         # Fetch PnL data using combined endpoint (market_results + power_meter + lmp)
-                        unit_ops = fetch_pharos_combined_pnl_data(start_date=PHAROS_FETCH_START_DATE)
+                        unit_ops = fetch_pharos_hourly_revenue(start_date=PHAROS_FETCH_START_DATE)
 
                         if unit_ops:
                             ops_aggregated = aggregate_pharos_unit_operations(unit_ops)
@@ -3574,11 +3652,10 @@ def reload_pharos():
                 pharos_data["total_da_revenue"] = aggregated["total_da_revenue"]
                 pharos_data["capped_intervals"] = aggregated["capped_intervals"]
 
-        # Fetch PnL data using combined endpoint (market_results + power_meter + lmp)
-        # NOTE: Always use combined endpoint because unit_operations/historic gen field
-        # may not match official power_meter/submissions values for NWOH.
-        logger.info(f"Fetching Pharos combined PnL data (start_date={start_date})...")
-        unit_ops = fetch_pharos_combined_pnl_data(start_date=start_date)
+        # Fetch PnL data using hourly_revenue_estimate endpoint
+        # This endpoint provides pre-calculated values that match Pharos exactly
+        logger.info(f"Fetching Pharos hourly revenue data (start_date={start_date})...")
+        unit_ops = fetch_pharos_hourly_revenue(start_date=start_date)
 
         if unit_ops:
             ops_aggregated = aggregate_pharos_unit_operations(unit_ops)
