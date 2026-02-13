@@ -2503,9 +2503,15 @@ def aggregate_pharos_unit_operations(ops):
             logger.error(f"Error processing Pharos unit operation: {e}")
             continue
 
+    # NWOH PPA constants
+    PPA_PRICE = 33.31  # Fixed PPA price $/MWh
+
     # Round values and calculate averages
     for d in daily.values():
-        d["pnl"] = round(d["pnl"], 2)
+        # Store PJM-only revenue first
+        pjm_gross = d["pnl"]
+        d["pjm_gross_revenue"] = round(pjm_gross, 2)
+
         d["volume"] = round(d["volume"], 4)
         d["da_mwh"] = round(d["da_mwh"], 2)
         d["da_revenue"] = round(d["da_revenue"], 2)
@@ -2533,8 +2539,32 @@ def aggregate_pharos_unit_operations(ops):
         else:
             d["avg_hub_price"] = None
 
+        # Calculate PPA settlement for NWOH
+        # Fixed payment = Gen × $33.31 (revenue from GM)
+        # Floating payment = Gen × Hub LMP (cost to GM)
+        # Net PPA = Fixed - Floating (positive when hub < $33.31)
+        gen_mwh = d["volume"]
+        avg_hub = d.get("avg_hub_price") or d.get("avg_rt_price") or 0
+        if gen_mwh > 0:
+            d["ppa_fixed_payment"] = round(gen_mwh * PPA_PRICE, 2)
+            d["ppa_floating_payment"] = round(gen_mwh * avg_hub, 2)
+            d["ppa_net_settlement"] = round(d["ppa_fixed_payment"] - d["ppa_floating_payment"], 2)
+            # Total PnL = PJM revenue + PPA settlement
+            d["pnl"] = round(pjm_gross + d["ppa_net_settlement"], 2)
+            # Realized price = total PnL / volume
+            d["realized_price"] = round(d["pnl"] / gen_mwh, 2) if gen_mwh > 0 else None
+        else:
+            d["ppa_fixed_payment"] = 0
+            d["ppa_floating_payment"] = 0
+            d["ppa_net_settlement"] = 0
+            d["pnl"] = round(pjm_gross, 2)
+            d["realized_price"] = None
+
     for d in monthly.values():
-        d["pnl"] = round(d["pnl"], 2)
+        # Store PJM-only revenue first
+        pjm_gross = d["pnl"]
+        d["pjm_gross_revenue"] = round(pjm_gross, 2)
+
         d["volume"] = round(d["volume"], 4)
         d["da_mwh"] = round(d["da_mwh"], 2)
         d["da_revenue"] = round(d["da_revenue"], 2)
@@ -2560,8 +2590,27 @@ def aggregate_pharos_unit_operations(ops):
         else:
             d["avg_hub_price"] = None
 
+        # Calculate PPA settlement for NWOH
+        gen_mwh = d["volume"]
+        avg_hub = d.get("avg_hub_price") or d.get("avg_rt_price") or 0
+        if gen_mwh > 0:
+            d["ppa_fixed_payment"] = round(gen_mwh * PPA_PRICE, 2)
+            d["ppa_floating_payment"] = round(gen_mwh * avg_hub, 2)
+            d["ppa_net_settlement"] = round(d["ppa_fixed_payment"] - d["ppa_floating_payment"], 2)
+            d["pnl"] = round(pjm_gross + d["ppa_net_settlement"], 2)
+            d["realized_price"] = round(d["pnl"] / gen_mwh, 2)
+        else:
+            d["ppa_fixed_payment"] = 0
+            d["ppa_floating_payment"] = 0
+            d["ppa_net_settlement"] = 0
+            d["pnl"] = round(pjm_gross, 2)
+            d["realized_price"] = None
+
     for d in annual.values():
-        d["pnl"] = round(d["pnl"], 2)
+        # Store PJM-only revenue first
+        pjm_gross = d["pnl"]
+        d["pjm_gross_revenue"] = round(pjm_gross, 2)
+
         d["volume"] = round(d["volume"], 4)
         d["da_mwh"] = round(d["da_mwh"], 2)
         d["da_revenue"] = round(d["da_revenue"], 2)
@@ -2585,6 +2634,23 @@ def aggregate_pharos_unit_operations(ops):
         if hub_vol > 0:
             d["avg_hub_price"] = round(d.get("hub_lmp_product", 0) / hub_vol, 2)
         else:
+            d["avg_hub_price"] = None
+
+        # Calculate PPA settlement for NWOH
+        gen_mwh = d["volume"]
+        avg_hub = d.get("avg_hub_price") or d.get("avg_rt_price") or 0
+        if gen_mwh > 0:
+            d["ppa_fixed_payment"] = round(gen_mwh * PPA_PRICE, 2)
+            d["ppa_floating_payment"] = round(gen_mwh * avg_hub, 2)
+            d["ppa_net_settlement"] = round(d["ppa_fixed_payment"] - d["ppa_floating_payment"], 2)
+            d["pnl"] = round(pjm_gross + d["ppa_net_settlement"], 2)
+            d["realized_price"] = round(d["pnl"] / gen_mwh, 2)
+        else:
+            d["ppa_fixed_payment"] = 0
+            d["ppa_floating_payment"] = 0
+            d["ppa_net_settlement"] = 0
+            d["pnl"] = round(pjm_gross, 2)
+            d["realized_price"] = None
             d["avg_hub_price"] = None
 
     total_pnl = sum(d["pnl"] for d in daily.values())
