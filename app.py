@@ -2805,11 +2805,14 @@ def merge_nwoh_historical_with_pharos():
     # Calculate averages for monthly/annual
     for period_data in list(recalc_monthly.values()) + list(recalc_annual.values()):
         vol = period_data.get('volume', 0)
+        pnl = period_data.get('pnl', 0)
         if vol > 0 and period_data.get('hub_product', 0) > 0:
             period_data['avg_hub_price'] = round(period_data['hub_product'] / vol, 2)
             period_data['gwa_basis'] = round((period_data['hub_product'] - period_data['node_product']) / vol, 2)
-            period_data['realized_price'] = round(33.31 + period_data['gwa_basis'], 2)
-        period_data['pnl'] = round(period_data['pnl'], 2)
+        # Realized price = PnL / Volume (NOT $33.31 + basis)
+        if vol > 0:
+            period_data['realized_price'] = round(pnl / vol, 2)
+        period_data['pnl'] = round(pnl, 2)
         period_data['volume'] = round(vol, 2)
         # Clean up temp fields
         period_data.pop('hub_product', None)
@@ -3024,6 +3027,12 @@ def background_data_fetch():
         logger.error(f"Error loading Pharos data: {e}")
         import traceback
         logger.error(traceback.format_exc())
+
+    # Always ensure historical NWOH data is merged, even if Pharos API failed
+    # This guarantees Jan+ data is available from the Excel-imported JSON
+    if not pharos_data.get("daily_pnl"):
+        logger.info("No Pharos API data available, loading historical NWOH data as fallback...")
+        merge_nwoh_historical_with_pharos()
 
     # Load PnL data (ERCOT/Tenaska) - this is slower, happens after Pharos
     last_tenaska_fetch_time = None
@@ -5875,37 +5884,6 @@ def dashboard():
                     realizedPrice = Math.round((0.875 * realizedPpaPrice + 0.125 * realizedMerchantPrice) * 100) / 100;
                 } else if (realizedPpaPrice !== null) {
                     realizedPrice = realizedPpaPrice;
-                }
-            }
-
-            // For NWOH, calculate blended realized price: (PJM Revenue + Net PPA) / Generation
-            if (currentAssetFilter === 'NWOH') {
-                const nwohData = pnlData.assets?.NWOH;
-                if (nwohData) {
-                    let periodData = {};
-                    if (currentPeriod === 'daily') {
-                        const days = Object.keys(nwohData.daily_pnl || {}).sort();
-                        periodData = nwohData.daily_pnl?.[days[days.length - 1]] || {};
-                    } else if (currentPeriod === 'mtd') {
-                        periodData = nwohData.monthly_pnl?.[currentMonth] || {};
-                    } else {
-                        periodData = nwohData.annual_pnl?.[currentYear] || {};
-                    }
-
-                    const daRev = periodData.da_revenue || 0;
-                    const rtSales = periodData.rt_sales_revenue || 0;
-                    const rtPurchase = periodData.rt_purchase_cost || 0;
-                    const totalPjm = daRev + rtSales - rtPurchase;
-                    const genMwh = periodData.volume || 0;
-                    const avgHub = periodData.avg_hub_price || periodData.avg_rt_price || 0;
-
-                    const fixedPmt = genMwh * 33.31;
-                    const floatingPmt = genMwh * avgHub;
-                    const netPpa = fixedPmt - floatingPmt;
-
-                    if (genMwh > 0) {
-                        realizedPrice = Math.round((totalPjm + netPpa) / genMwh * 100) / 100;
-                    }
                 }
             }
 
