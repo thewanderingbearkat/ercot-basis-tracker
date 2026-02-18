@@ -285,19 +285,8 @@ def get_pjm_lmp_data(hours_back=4):
 
         headers = {"Ocp-Apim-Subscription-Key": key}
 
-        # Find the unverified 5-minute feed
-        response = requests.get("https://api.pjm.com/api/v1/", headers=headers, timeout=10)
-        feeds = response.json()
-
-        feed_url = None
-        for item in feeds.get('items', []):
-            if item.get('name') == 'rt_unverified_fivemin_lmps':
-                feed_url = item['links'][0]['href']
-                break
-
-        if not feed_url:
-            logger.error("Could not find PJM unverified 5-minute LMP feed")
-            return []
+        # Use direct feed URL (avoids fetching 142KB feed list which can timeout on Render)
+        feed_url = "https://api.pjm.com/api/v1/rt_unverified_fivemin_lmps"
 
         # Fetch data from the last N hours
         from datetime import timezone as tz
@@ -392,32 +381,20 @@ def fetch_pjm_hub_prices_for_date(date_str):
     try:
         key = get_pjm_subscription_key()
         if not key:
+            logger.warning("[PJM HUB] Could not get PJM subscription key")
             return {}
 
         headers = {"Ocp-Apim-Subscription-Key": key}
 
-        # Find the unverified 5-minute feed
-        response = requests.get("https://api.pjm.com/api/v1/", headers=headers, timeout=10)
-        feeds = response.json()
+        # Use direct feed URL (avoids fetching 142KB feed list which can timeout)
+        feed_url = "https://api.pjm.com/api/v1/rt_unverified_fivemin_lmps"
 
-        feed_url = None
-        for item in feeds.get('items', []):
-            if item.get('name') == 'rt_unverified_fivemin_lmps':
-                feed_url = item['links'][0]['href']
-                break
-
-        if not feed_url:
-            logger.error("Could not find PJM 5-minute LMP feed")
-            return {}
-
-        # Fetch data for the specific date
-        from datetime import timezone as tz
         start_time = f"{date_str}T00:00:00"
         end_time = f"{date_str}T23:59:59"
 
         params = {
             'datetime_beginning_utc': f'{start_time} to {end_time}',
-            'pnode_id': PJM_HUB_ID,  # Only fetch hub prices
+            'pnode_id': PJM_HUB_ID,  # Only fetch hub prices (AEP-Dayton Hub)
             'startRow': 1,
             'rowCount': 500  # 288 intervals per day + buffer
         }
@@ -425,11 +402,16 @@ def fetch_pjm_hub_prices_for_date(date_str):
         response = requests.get(feed_url, headers=headers, params=params, timeout=30)
 
         if response.status_code != 200:
-            logger.error(f"PJM API returned status {response.status_code} for {date_str}")
+            logger.error(f"[PJM HUB] API returned status {response.status_code} for {date_str}")
+            return {}
+        if not response.text.strip():
+            logger.error(f"[PJM HUB] API returned empty response for {date_str}")
             return {}
 
         data = response.json()
         items = data.get('items', [])
+
+        logger.info(f"[PJM HUB] Got {len(items)} items from PJM API for {date_str}")
 
         # Build lookup dict
         hub_prices = {}
@@ -439,11 +421,11 @@ def fetch_pjm_hub_prices_for_date(date_str):
             if time_utc:
                 hub_prices[time_utc] = float(hub_lmp)
 
-        logger.info(f"Fetched {len(hub_prices)} hub prices for {date_str}")
+        logger.info(f"[PJM HUB] Fetched {len(hub_prices)} hub prices for {date_str}")
         return hub_prices
 
     except Exception as e:
-        logger.error(f"Error fetching PJM hub prices for {date_str}: {e}")
+        logger.error(f"[PJM HUB] Error fetching hub prices for {date_str}: {e}")
         return {}
 
 def get_hub_price_for_timestamp(timestamp_str):
@@ -1805,6 +1787,11 @@ def fetch_pharos_hourly_revenue(start_date=None, end_date=None):
             data = response.json()
             records = data.get("hourly_revenue_estimate", [])
             logger.info(f"Fetched {len(records)} hourly revenue records from Pharos")
+
+            # Log first record to discover all available fields (including potential hub LMP)
+            if records:
+                logger.info(f"[HOURLY_REV] First record keys: {list(records[0].keys())}")
+                logger.info(f"[HOURLY_REV] First record: {records[0]}")
 
             # Convert to format expected by aggregate function
             converted = []
@@ -4160,6 +4147,42 @@ def get_nwoh_status():
         rt_lmp_data = fetch_pharos_today_rt_lmp()
         rt_lmp_by_he = rt_lmp_data.get("rt_lmp", {}) if rt_lmp_data else {}
         hub_lmp_by_he = rt_lmp_data.get("hub_lmp", {}) if rt_lmp_data else {}
+
+        # Fallback: if Pharos LMP endpoint doesn't have hub prices, use PJM hub cache
+        hub_all_zero = all(v == 0 for v in hub_lmp_by_he.values()) if hub_lmp_by_he else True
+        if hub_all_zero:
+            logger.info("[NWOH] Hub LMP from Pharos is all zeros, trying PJM hub price cache...")
+            try:
+                # Fetch today + tomorrow UTC to cover full EST day
+                tomorrow = (datetime.strptime(today, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+                ensure_hub_prices_cached(today, tomorrow)
+            except Exception as e:
+                logger.warning(f"Could not fetch hub prices from PJM API: {e}")
+
+            if pjm_hub_price_cache:
+                est_tz = ZoneInfo("America/New_York")
+                hourly_hub_sums = defaultdict(list)
+                for ts_str, price in pjm_hub_price_cache.items():
+                    try:
+                        dt_utc = datetime.strptime(ts_str, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=ZoneInfo("UTC"))
+                        dt_est = dt_utc.astimezone(est_tz)
+                        day_str = dt_est.strftime("%Y-%m-%d")
+                        if day_str == today:
+                            # 5-min interval beginning at hour X belongs to HE X+1
+                            he = dt_est.hour + 1
+                            hourly_hub_sums[he].append(float(price))
+                    except Exception:
+                        pass
+
+                for he, prices in hourly_hub_sums.items():
+                    hub_lmp_by_he[he] = sum(prices) / len(prices) if prices else 0
+
+                if hourly_hub_sums:
+                    logger.info(f"[NWOH] Got hub prices from PJM cache for {len(hourly_hub_sums)} hours")
+                else:
+                    logger.warning("[NWOH] PJM hub cache exists but no data for today")
+            else:
+                logger.warning("[NWOH] PJM hub price cache is empty - hub LMP will be 0")
 
         # Use DA commitment from market_results (full day), not unit_operations (partial)
         today_da_commitment = today_da.get("total_da_mwh", 0)
