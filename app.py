@@ -4683,7 +4683,7 @@ def dashboard():
                     <!-- Hourly DA vs Gen Strip Chart -->
                     <div class="mb-2">
                         <div class="text-xs mb-1" style="color: #64748b; font-weight: 600;">Hourly DA vs Actual (MW)</div>
-                        <div id="nwoh-hourly-chart" style="display: flex; gap: 1px; height: 60px; align-items: flex-end; background: #f1f5f9; border-radius: 4px; padding: 2px; position: relative;">
+                        <div id="nwoh-hourly-chart" style="display: flex; gap: 1px; height: 80px; align-items: stretch; background: #f1f5f9; border-radius: 4px; padding: 2px; position: relative;">
                             <!-- 24 hour bars will be populated by JS -->
                         </div>
                         <div id="nwoh-hourly-labels" style="display: flex; gap: 1px; padding: 0 2px;">
@@ -5900,6 +5900,7 @@ def dashboard():
 
             // Find max MW for scaling bars
             const maxMw = Math.max(...hourlyBreakdown.map(h => Math.max(h.da_mw || 0, h.gen_mw || 0)), 1);
+            console.log('[NWOH Chart] maxMw:', maxMw, 'breakdown sample HE1:', hourlyBreakdown[0], 'HE14:', hourlyBreakdown[13]);
 
             hourlyBreakdown.forEach(hour => {
                 const he = hour.he;
@@ -5910,7 +5911,7 @@ def dashboard():
 
                 // Bar container for this hour
                 const barContainer = document.createElement('div');
-                barContainer.style.cssText = 'flex:1; display:flex; flex-direction:column; justify-content:flex-end; align-items:center; position:relative; cursor:pointer; min-width:0;';
+                barContainer.style.cssText = 'flex:1; position:relative; cursor:pointer; min-width:0; height:100%;';
 
                 // Color based on status
                 let genColor, daColor;
