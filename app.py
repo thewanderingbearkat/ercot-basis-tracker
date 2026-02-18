@@ -4476,7 +4476,6 @@ def dashboard():
                     </div>
                     <div id="nwoh-price-cap-warning" class="mt-2 p-2 rounded text-xs" style="display: none; background-color: #fef3c7; border: 1px solid #f59e0b; color: #92400e;">
                         <span style="font-weight: bold;">⚠️ PRICE CAPPED</span>
-                        <span id="nwoh-cap-details"></span>
                     </div>
                 </div>
             </div>
@@ -6216,7 +6215,6 @@ def dashboard():
 
         function updateNwohPriceCapWarning() {
             const warningEl = document.getElementById('nwoh-price-cap-warning');
-            const detailsEl = document.getElementById('nwoh-cap-details');
 
             if (!nwohStatus || !nwohStatus.price_caps) {
                 if (warningEl) warningEl.style.display = 'none';
@@ -6224,13 +6222,8 @@ def dashboard():
             }
 
             const caps = nwohStatus.price_caps;
-            if (caps.is_capped && caps.caps && caps.caps.length > 0) {
-                // Show price cap warning
-                if (warningEl) {
-                    warningEl.style.display = 'block';
-                    const capList = caps.caps.map(c => `HE${c.hour_ending}: $${c.energy_price}`).join(', ');
-                    if (detailsEl) detailsEl.textContent = ' - ' + capList;
-                }
+            if (caps.is_capped) {
+                if (warningEl) warningEl.style.display = 'block';
             } else {
                 if (warningEl) warningEl.style.display = 'none';
             }
