@@ -2048,13 +2048,18 @@ def fetch_pharos_price_caps():
             price_caps = []
             for r in results:
                 if r.get("price_capped"):
-                    # Extract hour from timestamp (format: "2026-02-11 15:00:00 -0500")
+                    # Extract hour from timestamp
+                    # Handles both formats: "2026-02-11T15:00:00.000-05:00" and "2026-02-11 15:00:00 -0500"
                     ts = r.get("timestamp", "")
                     hour_ending = None
-                    if " " in ts:
-                        time_part = ts.split(" ")[1]
+                    if "T" in ts:
+                        time_part = ts.split("T")[1]
                         hour = int(time_part.split(":")[0])
                         hour_ending = hour + 1  # Convert to hour ending
+                    elif " " in ts:
+                        time_part = ts.split(" ")[1]
+                        hour = int(time_part.split(":")[0])
+                        hour_ending = hour + 1
 
                     price_caps.append({
                         "hour_ending": hour_ending,
@@ -4055,6 +4060,81 @@ def get_nwoh_status():
         # Use DA commitment from market_results (full day), not unit_operations (partial)
         today_da_commitment = today_da.get("total_da_mwh", 0)
 
+        # Build hourly breakdown from unit_ops (hourly_revenue_estimate data)
+        # Each hour settles independently in PJM DART
+        hourly_breakdown = []
+        with data_lock:
+            unit_ops = pharos_data.get("unit_ops", [])
+            today_ops = [op for op in unit_ops if op.get("date") == today or (op.get("timestamp", "").startswith(today))]
+
+            # Index by hour ending
+            ops_by_he = {}
+            for op in today_ops:
+                he = op.get("he")
+                if he is None:
+                    # Parse from timestamp
+                    ts = op.get("timestamp", "")
+                    if "T" in ts:
+                        he = int(ts.split("T")[1].split(":")[0]) + 1
+                    elif " " in ts:
+                        he = int(ts.split(" ")[1].split(":")[0]) + 1
+                if he is not None:
+                    ops_by_he[he] = op
+
+        # Also index DA awards by hour ending
+        da_by_he = {}
+        for award in today_da.get("hourly", []):
+            he = award.get("hour_ending")
+            if he is not None:
+                da_by_he[he] = award
+
+        current_he = datetime.now().hour + 1  # Current hour ending
+
+        for he in range(1, 25):
+            op = ops_by_he.get(he, {})
+            award = da_by_he.get(he, {})
+
+            da_mw = float(op.get("dam_mw", 0) or award.get("da_award_mw", 0) or 0)
+            gen_mw = float(op.get("gen", 0) or 0)
+            da_lmp = float(op.get("da_lmp", 0) or award.get("da_lmp", 0) or 0)
+            rt_lmp = float(op.get("rt_lmp", 0) or 0)
+            rt_dev = float(op.get("rt_mw", 0) or 0)  # gen - dam
+            da_rev = float(op.get("dam_revenue", 0) or 0)
+            rt_rev = float(op.get("rt_revenue", 0) or 0)
+            net_rev = float(op.get("net_revenue", 0) or 0)
+            has_gen = op.get("has_gen_data", False)
+
+            # Determine hour status
+            if he > current_he:
+                status = "future"
+            elif has_gen or gen_mw > 0:
+                if da_mw == 0:
+                    status = "no_award"
+                elif abs(rt_dev) < 1:  # Within 1 MW tolerance
+                    status = "matched"
+                elif rt_dev > 0:
+                    status = "over"  # Over-generated, selling RT
+                else:
+                    status = "under"  # Under-generated, buying RT
+            elif he <= current_he and da_mw > 0:
+                status = "pending"  # Past/current hour, no gen data yet
+            else:
+                status = "no_award"
+
+            hourly_breakdown.append({
+                "he": he,
+                "da_mw": round(da_mw, 1),
+                "gen_mw": round(gen_mw, 1),
+                "deviation_mw": round(rt_dev, 1),
+                "da_lmp": round(da_lmp, 2),
+                "rt_lmp": round(rt_lmp, 2),
+                "da_revenue": round(da_rev, 2),
+                "rt_revenue": round(rt_rev, 2),
+                "net_revenue": round(net_rev, 2),
+                "status": status,
+                "has_gen": has_gen,
+            })
+
         return jsonify({
             "price_caps": price_caps,
             "next_day_awards": next_day,
@@ -4066,8 +4146,9 @@ def get_nwoh_status():
                 "deviation_mwh": round(today_actual_gen - today_da_commitment, 2),
                 "performance_pct": round((today_actual_gen / today_da_commitment * 100), 1) if today_da_commitment > 0 else 0,
                 "hourly_awards": today_da.get("hourly", []),
+                "hourly_breakdown": hourly_breakdown,
                 "hours_with_awards": today_da.get("hours_with_awards", 0),
-                "gen_source": gen_source,  # "meter" or "dispatches"
+                "gen_source": gen_source,
             },
             "fetched_at": datetime.now().isoformat(),
         })
@@ -4435,28 +4516,40 @@ def dashboard():
                         </div>
                     </div>
 
-                    <!-- Hourly Progress: Show progress through the day -->
-                    <div class="mb-3">
+                    <!-- Summary line -->
+                    <div class="mb-2">
                         <div class="flex justify-between text-xs mb-1">
                             <span style="color: #64748b;">Day Total DA: <strong id="nwoh-today-da-commitment" style="color: var(--skyvest-navy);">-- MWh</strong> <span id="nwoh-hours-with-awards" style="color: #999;">-- hrs awarded</span></span>
                             <span style="color: #64748b;">Actual Gen: <strong id="nwoh-today-actual-gen" style="color: var(--skyvest-navy);">-- MWh</strong></span>
                         </div>
-                        <div style="height: 24px; background: #e2e8f0; border-radius: 4px; overflow: hidden; position: relative;">
-                            <!-- Time elapsed bar (shows how far through the day we are) -->
-                            <div id="nwoh-time-bar" style="position: absolute; height: 100%; background: #f1f5f9; width: 0%; transition: width 0.5s; border-right: 2px dashed #94a3b8;"></div>
-                            <!-- DA commitment bar for elapsed hours -->
-                            <div id="nwoh-da-bar" style="position: absolute; height: 100%; background: #cbd5e1; width: 0%; transition: width 0.5s;"></div>
-                            <!-- Actual generation bar (overlay) -->
-                            <div id="nwoh-gen-bar" style="position: absolute; height: 100%; background: var(--skyvest-blue); width: 0%; transition: width 0.5s;"></div>
-                            <!-- Percentage label -->
-                            <div style="position: absolute; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;">
-                                <span id="nwoh-performance-pct" class="text-xs font-bold" style="color: white; text-shadow: 0 1px 2px rgba(0,0,0,0.3);">--%</span>
-                            </div>
+                    </div>
+
+                    <!-- Hourly DA vs Gen Strip Chart -->
+                    <div class="mb-2">
+                        <div class="text-xs mb-1" style="color: #64748b; font-weight: 600;">Hourly DA vs Actual (MW)</div>
+                        <div id="nwoh-hourly-chart" style="display: flex; gap: 1px; height: 60px; align-items: flex-end; background: #f1f5f9; border-radius: 4px; padding: 2px; position: relative;">
+                            <!-- 24 hour bars will be populated by JS -->
                         </div>
-                        <div class="flex justify-between text-xs mt-1">
-                            <span id="nwoh-deviation-text" style="color: #64748b;">RT Deviation: <strong>-- MWh</strong></span>
-                            <span id="nwoh-deviation-status" style="color: #64748b;"></span>
+                        <div id="nwoh-hourly-labels" style="display: flex; gap: 1px; padding: 0 2px;">
+                            <!-- Hour labels populated by JS -->
                         </div>
+                        <!-- Legend -->
+                        <div class="flex gap-3 mt-1" style="font-size: 10px; color: #94a3b8;">
+                            <span><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:#22c55e;margin-right:2px;vertical-align:middle;"></span>Over-gen</span>
+                            <span><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:var(--skyvest-blue);margin-right:2px;vertical-align:middle;"></span>Matched</span>
+                            <span><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:#ef4444;margin-right:2px;vertical-align:middle;"></span>Under-gen</span>
+                            <span><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:#e2e8f0;margin-right:2px;vertical-align:middle;"></span>Future</span>
+                        </div>
+                    </div>
+
+                    <!-- Hourly tooltip (hidden, shown on hover) -->
+                    <div id="nwoh-hour-tooltip" style="display:none; position:fixed; background:#1e293b; color:white; padding:8px 12px; border-radius:6px; font-size:11px; z-index:1000; pointer-events:none; box-shadow: 0 4px 12px rgba(0,0,0,0.3); line-height:1.5;">
+                    </div>
+
+                    <!-- Deviation summary -->
+                    <div class="flex justify-between text-xs mb-3">
+                        <span id="nwoh-deviation-text" style="color: #64748b;">RT Deviation: <strong>-- MWh</strong></span>
+                        <span id="nwoh-deviation-status" style="color: #64748b;"></span>
                     </div>
 
                     <!-- Today's Revenue Summary -->
@@ -5599,7 +5692,7 @@ def dashboard():
             const detailCapInfo = document.getElementById('nwoh-detail-cap-info');
             if (nwohStatus.price_caps?.is_capped) {
                 detailWarning.style.display = 'block';
-                const capList = nwohStatus.price_caps.caps.map(c => 'HE' + c.hour_ending + ': $' + c.cap_price).join(', ');
+                const capList = nwohStatus.price_caps.caps.map(c => 'HE' + c.hour_ending + ': $' + c.energy_price).join(', ');
                 detailCapInfo.textContent = 'Capped hours: ' + capList;
             } else {
                 detailWarning.style.display = 'none';
@@ -5610,34 +5703,112 @@ def dashboard():
             const daCommitment = today.da_commitment_mwh || 0;
             const actualGen = today.actual_gen_mwh || 0;
             const deviation = today.deviation_mwh || 0;
-            const perfPct = today.performance_pct || 0;
             const hoursWithAwards = today.hours_with_awards || 0;
+            const hourlyBreakdown = today.hourly_breakdown || [];
 
             // Update today's date label and current hour
             const todayDate = new Date();
-            const currentHourEnding = todayDate.getHours() + 1;  // Hour ending (1-24)
+            const currentHourEnding = todayDate.getHours() + 1;
             document.getElementById('nwoh-today-date').textContent = todayDate.toLocaleDateString('en-US', {month: 'short', day: 'numeric'});
             document.getElementById('nwoh-current-hour').textContent = 'HE ' + currentHourEnding;
             document.getElementById('nwoh-hours-with-awards').textContent = '(' + hoursWithAwards + ' hrs awarded)';
 
-            // Calculate time-based progress (what % of day has elapsed)
-            const timeElapsedPct = (currentHourEnding / 24) * 100;
-
-            // Update progress bars
-            // Show DA commitment and actual gen as % of full day commitment
-            const maxMwh = Math.max(daCommitment, 1);  // Use full day DA as reference
-            const genBarPct = Math.min((actualGen / maxMwh) * 100, 100);
-
-            document.getElementById('nwoh-time-bar').style.width = timeElapsedPct + '%';
-            document.getElementById('nwoh-da-bar').style.width = '100%';  // Full bar shows total DA commitment
-            document.getElementById('nwoh-gen-bar').style.width = genBarPct + '%';
-            document.getElementById('nwoh-performance-pct').textContent = perfPct.toFixed(0) + '%';
-
-            // Update text fields
+            // Update summary text
             document.getElementById('nwoh-today-da-commitment').textContent = formatNumber(daCommitment) + ' MWh';
             document.getElementById('nwoh-today-actual-gen').textContent = formatNumber(actualGen) + ' MWh';
 
-            // Deviation text with status
+            // Build hourly strip chart
+            const chartEl = document.getElementById('nwoh-hourly-chart');
+            const labelsEl = document.getElementById('nwoh-hourly-labels');
+            const tooltipEl = document.getElementById('nwoh-hour-tooltip');
+            chartEl.innerHTML = '';
+            labelsEl.innerHTML = '';
+
+            // Find max MW for scaling bars
+            const maxMw = Math.max(...hourlyBreakdown.map(h => Math.max(h.da_mw || 0, h.gen_mw || 0)), 1);
+
+            hourlyBreakdown.forEach(hour => {
+                const he = hour.he;
+                const daMw = hour.da_mw || 0;
+                const genMw = hour.gen_mw || 0;
+                const dev = hour.deviation_mw || 0;
+                const status = hour.status;
+
+                // Bar container for this hour
+                const barContainer = document.createElement('div');
+                barContainer.style.cssText = 'flex:1; display:flex; flex-direction:column; justify-content:flex-end; align-items:center; position:relative; cursor:pointer; min-width:0;';
+
+                // Color based on status
+                let genColor, daColor;
+                switch (status) {
+                    case 'over':    genColor = '#22c55e'; daColor = '#bbf7d0'; break;
+                    case 'matched': genColor = 'var(--skyvest-blue)'; daColor = '#bfdbfe'; break;
+                    case 'under':   genColor = '#ef4444'; daColor = '#fecaca'; break;
+                    case 'future':  genColor = 'transparent'; daColor = '#e2e8f0'; break;
+                    case 'pending': genColor = '#fbbf24'; daColor = '#fef3c7'; break;
+                    default:        genColor = '#94a3b8'; daColor = '#e2e8f0'; break;
+                }
+
+                // DA commitment bar (background)
+                const daPct = maxMw > 0 ? (daMw / maxMw) * 100 : 0;
+                const genPct = maxMw > 0 ? (genMw / maxMw) * 100 : 0;
+
+                const daBar = document.createElement('div');
+                daBar.style.cssText = 'width:100%; border-radius:2px 2px 0 0; position:absolute; bottom:0; background:' + daColor + '; height:' + daPct + '%;';
+
+                const genBar = document.createElement('div');
+                genBar.style.cssText = 'width:100%; border-radius:2px 2px 0 0; position:absolute; bottom:0; background:' + genColor + '; height:' + genPct + '%; z-index:1;';
+
+                // Current hour indicator
+                if (he === currentHourEnding) {
+                    barContainer.style.outline = '2px solid var(--skyvest-navy)';
+                    barContainer.style.borderRadius = '2px';
+                    barContainer.style.outlineOffset = '-1px';
+                }
+
+                barContainer.appendChild(daBar);
+                barContainer.appendChild(genBar);
+
+                // Tooltip on hover
+                barContainer.addEventListener('mouseenter', function(e) {
+                    let tipHtml = '<strong>HE ' + he + '</strong>';
+                    if (status === 'future') {
+                        tipHtml += '<br>DA Award: ' + daMw.toFixed(1) + ' MW';
+                        tipHtml += '<br>DA LMP: $' + (hour.da_lmp || 0).toFixed(2);
+                        tipHtml += '<br><span style="color:#94a3b8">Awaiting generation</span>';
+                    } else if (daMw === 0 && genMw === 0) {
+                        tipHtml += '<br><span style="color:#94a3b8">No award</span>';
+                    } else {
+                        tipHtml += '<br>DA Award: ' + daMw.toFixed(1) + ' MW @ $' + (hour.da_lmp || 0).toFixed(2);
+                        tipHtml += '<br>Actual: ' + genMw.toFixed(1) + ' MW';
+                        tipHtml += '<br>Deviation: <span style="color:' + (dev >= 0 ? '#4ade80' : '#f87171') + '">' + (dev >= 0 ? '+' : '') + dev.toFixed(1) + ' MW</span>';
+                        tipHtml += '<br>RT LMP: $' + (hour.rt_lmp || 0).toFixed(2);
+                        const rtRev = hour.rt_revenue || 0;
+                        if (Math.abs(rtRev) > 0.01) {
+                            tipHtml += '<br>RT $: <span style="color:' + (rtRev >= 0 ? '#4ade80' : '#f87171') + '">' + (rtRev >= 0 ? '+' : '-') + '$' + Math.abs(rtRev).toFixed(0) + '</span>';
+                        }
+                    }
+                    tooltipEl.innerHTML = tipHtml;
+                    tooltipEl.style.display = 'block';
+                });
+                barContainer.addEventListener('mousemove', function(e) {
+                    tooltipEl.style.left = (e.clientX + 12) + 'px';
+                    tooltipEl.style.top = (e.clientY - 10) + 'px';
+                });
+                barContainer.addEventListener('mouseleave', function() {
+                    tooltipEl.style.display = 'none';
+                });
+
+                chartEl.appendChild(barContainer);
+
+                // Hour label (show every other to avoid crowding)
+                const label = document.createElement('div');
+                label.style.cssText = 'flex:1; text-align:center; font-size:8px; color:#94a3b8; min-width:0; overflow:hidden;';
+                label.textContent = (he % 2 === 0 || he === 1) ? he : '';
+                labelsEl.appendChild(label);
+            });
+
+            // Deviation summary text
             const deviationText = document.getElementById('nwoh-deviation-text');
             deviationText.innerHTML = 'RT Deviation: <strong style=\"color: ' + (deviation >= 0 ? '#22c55e' : '#ef4444') + '\">' + (deviation >= 0 ? '+' : '') + formatNumber(deviation) + ' MWh</strong>';
 
@@ -6057,7 +6228,7 @@ def dashboard():
                 // Show price cap warning
                 if (warningEl) {
                     warningEl.style.display = 'block';
-                    const capList = caps.caps.map(c => `HE${c.hour_ending}: $${c.cap_price}`).join(', ');
+                    const capList = caps.caps.map(c => `HE${c.hour_ending}: $${c.energy_price}`).join(', ');
                     if (detailsEl) detailsEl.textContent = ' - ' + capList;
                 }
             } else {
