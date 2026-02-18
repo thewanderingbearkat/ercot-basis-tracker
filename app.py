@@ -2257,7 +2257,7 @@ def fetch_pharos_current_dispatch():
 def fetch_pharos_today_generation():
     """
     Fetch today's actual generation from dispatches/historic endpoint.
-    This provides real-time generation data when meter data isn't available yet.
+    Returns both total MWh and per-hour breakdown (MWh per hour ending).
     Uses gen_send_out field which shows actual MW output at each 5-minute interval.
     """
     try:
@@ -2276,24 +2276,43 @@ def fetch_pharos_today_generation():
             dispatches = data.get("dispatches", [])
 
             if dispatches:
-                # Calculate total MWh from gen_send_out (5-minute intervals)
-                # Each interval is 5 minutes = 5/60 hours
-                total_mwh = sum(d.get("gen_send_out", 0) * (5/60) for d in dispatches)
-                interval_count = len(dispatches)
+                # Calculate total MWh and per-hour breakdown from gen_send_out
+                # Each 5-minute interval: MW * (5/60) = MWh
+                total_mwh = 0
+                hourly_gen = defaultdict(float)
+                hourly_count = defaultdict(int)
 
-                # Also get current hour ending for display
+                for d in dispatches:
+                    gen_mw = d.get("gen_send_out", 0) or 0
+                    interval_mwh = gen_mw * (5/60)
+                    total_mwh += interval_mwh
+
+                    ts = d.get("timestamp", "")
+                    hour = None
+                    if "T" in ts:
+                        hour = int(ts.split("T")[1].split(":")[0])
+                    elif " " in ts:
+                        hour = int(ts.split(" ")[1].split(":")[0])
+
+                    if hour is not None:
+                        he = hour + 1 if hour < 23 else 24  # Convert to hour ending
+                        hourly_gen[he] += interval_mwh
+                        hourly_count[he] += 1
+
                 last_dispatch = dispatches[-1]
                 last_ts = last_dispatch.get("timestamp", "")
 
                 return {
                     "total_mwh": round(total_mwh, 2),
-                    "interval_count": interval_count,
-                    "hours_covered": round(interval_count * 5 / 60, 1),
+                    "hourly_gen": {he: round(mwh, 2) for he, mwh in hourly_gen.items()},
+                    "hourly_intervals": dict(hourly_count),
+                    "interval_count": len(dispatches),
+                    "hours_covered": round(len(dispatches) * 5 / 60, 1),
                     "last_timestamp": last_ts,
                     "current_mw": last_dispatch.get("gen_send_out", 0),
                     "source": "dispatches",
                 }
-            return {"total_mwh": 0, "interval_count": 0, "source": "dispatches"}
+            return {"total_mwh": 0, "hourly_gen": {}, "interval_count": 0, "source": "dispatches"}
         else:
             logger.warning(f"Failed to fetch today's dispatches: {response.status_code}")
             return None
@@ -2301,6 +2320,44 @@ def fetch_pharos_today_generation():
     except Exception as e:
         logger.error(f"Error fetching today's generation from dispatches: {e}")
         return None
+
+
+def fetch_pharos_today_rt_lmp():
+    """
+    Fetch today's RT LMP from Pharos lmp/historic endpoint.
+    Returns dict keyed by hour ending with RT LMP values.
+    """
+    try:
+        today = datetime.now().strftime("%Y-%m-%d")
+        url = f"{PHAROS_BASE_URL}/pjm/lmp/historic"
+        params = {
+            "organization_key": PHAROS_ORGANIZATION_KEY,
+            "start_date": today,
+            "end_date": today,
+        }
+
+        response = requests.get(url, auth=get_pharos_auth(), params=params, timeout=60)
+
+        if response.status_code == 200:
+            data = response.json()
+            lmps = data.get("lmp", [])
+
+            rt_lmp_by_he = {}
+            hub_lmp_by_he = {}
+            for l in lmps:
+                hour = l.get("hour_beginning", 0)
+                he = hour + 1 if hour < 23 else 24
+                rt_lmp_by_he[he] = float(l.get("rt_lmp", 0) or 0)
+                hub_lmp_by_he[he] = float(l.get("hub_rt_lmp", 0) or l.get("hub_lmp", 0) or 0)
+
+            return {"rt_lmp": rt_lmp_by_he, "hub_lmp": hub_lmp_by_he}
+        else:
+            logger.warning(f"Failed to fetch today's RT LMP: {response.status_code}")
+            return {"rt_lmp": {}, "hub_lmp": {}}
+
+    except Exception as e:
+        logger.error(f"Error fetching today's RT LMP: {e}")
+        return {"rt_lmp": {}, "hub_lmp": {}}
 
 def aggregate_pharos_unit_operations(ops):
     """
@@ -4067,28 +4124,36 @@ def get_nwoh_status():
         # Fetch current dispatch
         current_dispatch = fetch_pharos_current_dispatch()
 
-        # Get today's actual generation
+        # Get today's actual generation (per-hour from dispatches + total)
         today = datetime.now().strftime("%Y-%m-%d")
         today_actual_gen = 0
         gen_source = "meter"
+        dispatch_hourly_gen = {}  # {hour_ending: mwh}
 
-        # First try meter data (most accurate)
+        # First try meter data (most accurate for total)
         with data_lock:
             daily_pnl = pharos_data.get("daily_pnl", {})
             today_data = daily_pnl.get(today, {})
             today_actual_gen = today_data.get("volume", 0)
 
-        # If no meter data, use real-time dispatches
-        if today_actual_gen == 0:
-            today_gen_data = fetch_pharos_today_generation()
-            if today_gen_data:
+        # Always fetch dispatches for per-hour breakdown (needed for hourly chart)
+        today_gen_data = fetch_pharos_today_generation()
+        if today_gen_data:
+            dispatch_hourly_gen = today_gen_data.get("hourly_gen", {})
+            if today_actual_gen == 0:
                 today_actual_gen = today_gen_data.get("total_mwh", 0)
                 gen_source = "dispatches"
+
+        # Fetch today's RT LMP for deviation settlement calculations
+        rt_lmp_data = fetch_pharos_today_rt_lmp()
+        rt_lmp_by_he = rt_lmp_data.get("rt_lmp", {}) if rt_lmp_data else {}
+        hub_lmp_by_he = rt_lmp_data.get("hub_lmp", {}) if rt_lmp_data else {}
 
         # Use DA commitment from market_results (full day), not unit_operations (partial)
         today_da_commitment = today_da.get("total_da_mwh", 0)
 
-        # Build hourly breakdown from unit_ops (hourly_revenue_estimate data)
+        # Build hourly breakdown combining all data sources:
+        # Priority: unit_ops (hourly_revenue_estimate) > dispatches + lmp + da_awards
         # Each hour settles independently in PJM DART
         hourly_breakdown = []
         with data_lock:
@@ -4122,22 +4187,40 @@ def get_nwoh_status():
             op = ops_by_he.get(he, {})
             award = da_by_he.get(he, {})
 
+            # DA data: prefer unit_ops, fallback to DA awards
             da_mw = float(op.get("dam_mw", 0) or award.get("da_award_mw", 0) or 0)
-            gen_mw = float(op.get("gen", 0) or 0)
             da_lmp = float(op.get("da_lmp", 0) or award.get("da_lmp", 0) or 0)
+
+            # Generation data: prefer unit_ops, fallback to dispatch hourly gen
+            gen_mw = float(op.get("gen", 0) or 0)
+            has_gen = op.get("has_gen_data", False)
+
+            if gen_mw == 0 and he in dispatch_hourly_gen:
+                # Dispatch gen is in MWh (already aggregated from 5-min intervals)
+                gen_mw = dispatch_hourly_gen[he]
+                has_gen = True
+
+            # RT LMP: prefer unit_ops, fallback to lmp/historic
             rt_lmp = float(op.get("rt_lmp", 0) or 0)
-            rt_dev = float(op.get("rt_mw", 0) or 0)  # gen - dam
+            if rt_lmp == 0 and he in rt_lmp_by_he:
+                rt_lmp = rt_lmp_by_he[he]
+
+            # Hub LMP for basis calculation
+            hub_lmp = hub_lmp_by_he.get(he, 0)
+
+            # RT deviation = actual gen - DA commitment
+            rt_dev = float(op.get("rt_mw", 0) or 0)
+            if rt_dev == 0 and has_gen and da_mw > 0:
+                rt_dev = gen_mw - da_mw
+
+            # Revenue calculations: prefer unit_ops pre-calculated values
             da_rev = float(op.get("dam_revenue", 0) or 0)
             rt_rev = float(op.get("rt_revenue", 0) or 0)
             net_rev = float(op.get("net_revenue", 0) or 0)
-            has_gen = op.get("has_gen_data", False)
 
-            # If unit_ops doesn't have revenue, calculate from awards data
+            # Calculate revenue if unit_ops doesn't have it
             if da_rev == 0 and da_mw > 0 and da_lmp > 0:
                 da_rev = da_mw * da_lmp
-            # If we have gen but no rt_revenue, calculate from deviation
-            if gen_mw > 0 and not op:
-                rt_dev = gen_mw - da_mw
             if rt_rev == 0 and abs(rt_dev) > 0 and rt_lmp != 0:
                 rt_rev = rt_dev * rt_lmp
             if net_rev == 0 and (da_rev != 0 or rt_rev != 0):
@@ -4167,6 +4250,7 @@ def get_nwoh_status():
                 "deviation_mw": round(rt_dev, 1),
                 "da_lmp": round(da_lmp, 2),
                 "rt_lmp": round(rt_lmp, 2),
+                "hub_lmp": round(hub_lmp, 2),
                 "da_revenue": round(da_rev, 2),
                 "rt_revenue": round(rt_rev, 2),
                 "net_revenue": round(net_rev, 2),
@@ -4181,11 +4265,19 @@ def get_nwoh_status():
         total_gen = sum(h["gen_mw"] for h in hourly_breakdown)
         total_da_mwh = sum(h["da_mw"] for h in hourly_breakdown)
 
+        # Split RT into sales (over-generation) vs purchases (under-generation)
+        rt_sales_revenue = sum(h["rt_revenue"] for h in hourly_breakdown if h["rt_revenue"] > 0)
+        rt_purchase_cost = sum(abs(h["rt_revenue"]) for h in hourly_breakdown if h["rt_revenue"] < 0)
+        rt_sales_mwh = sum(h["deviation_mw"] for h in hourly_breakdown if h["deviation_mw"] > 0 and h["has_gen"])
+        rt_purchase_mwh = sum(abs(h["deviation_mw"]) for h in hourly_breakdown if h["deviation_mw"] < 0 and h["has_gen"])
+
         # Weighted avg prices
         da_lmp_product = sum(h["da_mw"] * h["da_lmp"] for h in hourly_breakdown)
         rt_lmp_product = sum(h["gen_mw"] * h["rt_lmp"] for h in hourly_breakdown)
+        hub_lmp_product = sum(h["gen_mw"] * h.get("hub_lmp", 0) for h in hourly_breakdown)
         avg_da_price = da_lmp_product / total_da_mwh if total_da_mwh > 0 else 0
         avg_rt_price = rt_lmp_product / total_gen if total_gen > 0 else 0
+        avg_hub_price = hub_lmp_product / total_gen if total_gen > 0 else 0
 
         return jsonify({
             "price_caps": price_caps,
@@ -4204,11 +4296,16 @@ def get_nwoh_status():
                 # Revenue totals computed from hourly breakdown
                 "da_revenue": round(total_da_revenue, 2),
                 "rt_revenue": round(total_rt_revenue, 2),
+                "rt_sales_revenue": round(rt_sales_revenue, 2),
+                "rt_purchase_cost": round(rt_purchase_cost, 2),
+                "rt_sales_mwh": round(rt_sales_mwh, 2),
+                "rt_purchase_mwh": round(rt_purchase_mwh, 2),
                 "net_revenue": round(total_net_revenue, 2),
                 "total_gen_mwh": round(total_gen, 2),
                 "total_da_mwh": round(total_da_mwh, 2),
                 "avg_da_price": round(avg_da_price, 2),
                 "avg_rt_price": round(avg_rt_price, 2),
+                "avg_hub_price": round(avg_hub_price, 2),
             },
             "fetched_at": datetime.now().isoformat(),
         })
@@ -5651,8 +5748,11 @@ def dashboard():
                             pnl: t.net_revenue || data.pnl || 0,
                             avg_da_price: t.avg_da_price || data.avg_da_price || 0,
                             avg_rt_price: t.avg_rt_price || data.avg_rt_price || 0,
-                            rt_sales_revenue: t.rt_revenue > 0 ? t.rt_revenue : (data.rt_sales_revenue || 0),
-                            rt_purchase_cost: t.rt_revenue < 0 ? Math.abs(t.rt_revenue) : (data.rt_purchase_cost || 0),
+                            avg_hub_price: t.avg_hub_price || data.avg_hub_price || 0,
+                            rt_sales_revenue: t.rt_sales_revenue || data.rt_sales_revenue || 0,
+                            rt_purchase_cost: t.rt_purchase_cost || data.rt_purchase_cost || 0,
+                            rt_sales_mwh: t.rt_sales_mwh || data.rt_sales_mwh || 0,
+                            rt_purchase_mwh: t.rt_purchase_mwh || data.rt_purchase_mwh || 0,
                         });
                     }
 
@@ -6139,6 +6239,18 @@ def dashboard():
                             gwaBasis = dayData?.gwa_basis;
                             realizedPpaPrice = dayData?.realized_ppa_price;
                             realizedMerchantPrice = dayData?.realized_merchant_price;
+
+                            // For NWOH today: supplement with nwohStatus computed data
+                            if (currentAssetFilter === 'NWOH' && startDate === today && nwohStatus?.today) {
+                                const t = nwohStatus.today;
+                                if (t.net_revenue && (pnl === 0 || Math.abs(t.net_revenue) > Math.abs(pnl))) {
+                                    pnl = t.net_revenue;
+                                }
+                                if (t.total_gen_mwh && (volume === 0 || t.total_gen_mwh > volume)) {
+                                    volume = t.total_gen_mwh;
+                                }
+                            }
+
                             // Calculate realized price if not available
                             realizedPrice = calcRealizedPrice(currentAssetFilter, pnl, volume, gwaBasis,
                                 dayData?.ppa_revenue, dayData?.merchant_revenue, dayData?.merchant_volume);
@@ -6382,6 +6494,19 @@ def dashboard():
                             gwaBasis = dayData?.gwa_basis;
                             realizedPpaPrice = dayData?.realized_ppa_price;
                             realizedMerchantPrice = dayData?.realized_merchant_price;
+
+                            // For NWOH today: use nwohStatus if available and better
+                            // (hourly_revenue_estimate API lags, nwohStatus computes from dispatches)
+                            if (assetKey === 'NWOH' && startDate === actualToday && nwohStatus?.today) {
+                                const t = nwohStatus.today;
+                                if (t.net_revenue && (pnl === 0 || Math.abs(t.net_revenue) > Math.abs(pnl))) {
+                                    pnl = t.net_revenue;
+                                }
+                                if (t.total_gen_mwh && (volume === 0 || t.total_gen_mwh > volume)) {
+                                    volume = t.total_gen_mwh;
+                                }
+                            }
+
                             // Calculate realized price per asset type
                             realizedPrice = calcRealizedPrice(assetKey, pnl, volume, gwaBasis,
                                 dayData?.ppa_revenue, dayData?.merchant_revenue, dayData?.merchant_volume);
