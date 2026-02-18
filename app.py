@@ -2839,14 +2839,17 @@ def merge_nwoh_historical_with_pharos():
         period_data.pop('hub_product', None)
         period_data.pop('node_product', None)
 
-    # Update pharos_data with merged data
-    pharos_data['daily_pnl'] = merged_daily
-    pharos_data['monthly_pnl'] = recalc_monthly
-    pharos_data['annual_pnl'] = recalc_annual
-    pharos_data['total_pnl'] = round(sum(d.get('pnl', 0) for d in merged_daily.values()), 2)
-    pharos_data['total_volume'] = round(sum(d.get('volume', 0) for d in merged_daily.values()), 2)
+    # Update pharos_data with merged data (use data_lock for thread safety)
+    total_pnl = round(sum(d.get('pnl', 0) for d in merged_daily.values()), 2)
+    total_volume = round(sum(d.get('volume', 0) for d in merged_daily.values()), 2)
+    with data_lock:
+        pharos_data['daily_pnl'] = merged_daily
+        pharos_data['monthly_pnl'] = recalc_monthly
+        pharos_data['annual_pnl'] = recalc_annual
+        pharos_data['total_pnl'] = total_pnl
+        pharos_data['total_volume'] = total_volume
 
-    logger.info(f"Merged NWOH data: {len(merged_daily)} total days, ${pharos_data['total_pnl']:,.2f} total PnL")
+    logger.info(f"Merged NWOH data: {len(merged_daily)} total days, ${total_pnl:,.2f} total PnL")
 
 # ============================================================================
 # ERCOT Helper Functions
@@ -3329,30 +3332,37 @@ def background_data_fetch():
 # Flag to track if background thread has started in this process
 _background_thread_started = False
 _cache_loaded = False
+_cache_lock = threading.Lock()
 
 def load_caches_if_needed():
     """Load cached data files for immediate availability (before background thread finishes)."""
     global _cache_loaded
     if _cache_loaded:
         return
-    _cache_loaded = True
-    try:
-        cached_pnl = load_pnl_data()
-        if cached_pnl:
-            with data_lock:
-                pnl_data.update(cached_pnl)
-            logger.info(f"Pre-loaded PnL cache: total_pnl=${pnl_data.get('total_pnl', 0):,.0f}")
-        cached_pharos = load_pharos_data()
-        if cached_pharos and cached_pharos.get("total_pnl", 0) != 0:
-            with data_lock:
-                pharos_data.update(cached_pharos)
-            logger.info(f"Pre-loaded Pharos cache: total_pnl=${pharos_data.get('total_pnl', 0):,.0f}")
-            merge_nwoh_historical_with_pharos()
-        elif os.path.exists(NWOH_HISTORICAL_FILE):
-            merge_nwoh_historical_with_pharos()
-            logger.info("Pre-loaded NWOH historical data as fallback")
-    except Exception as e:
-        logger.error(f"Error pre-loading caches: {e}")
+    # Use double-checked locking to prevent race condition with multi-threaded gunicorn:
+    # Without this, thread 2 could see _cache_loaded=True before thread 1 finishes loading,
+    # causing /api/pnl to return empty pharos_data (NWOH shows N/A).
+    with _cache_lock:
+        if _cache_loaded:
+            return
+        try:
+            cached_pnl = load_pnl_data()
+            if cached_pnl:
+                with data_lock:
+                    pnl_data.update(cached_pnl)
+                logger.info(f"Pre-loaded PnL cache: total_pnl=${pnl_data.get('total_pnl', 0):,.0f}")
+            cached_pharos = load_pharos_data()
+            if cached_pharos and cached_pharos.get("total_pnl", 0) != 0:
+                with data_lock:
+                    pharos_data.update(cached_pharos)
+                logger.info(f"Pre-loaded Pharos cache: total_pnl=${pharos_data.get('total_pnl', 0):,.0f}")
+                merge_nwoh_historical_with_pharos()
+            elif os.path.exists(NWOH_HISTORICAL_FILE):
+                merge_nwoh_historical_with_pharos()
+                logger.info("Pre-loaded NWOH historical data as fallback")
+        except Exception as e:
+            logger.error(f"Error pre-loading caches: {e}")
+        _cache_loaded = True
 
 def start_background_thread_if_needed():
     """Start the background thread if not already running in this process."""
@@ -3425,6 +3435,10 @@ def get_pnl():
         # Merge Tenaska and Pharos assets
         assets = dict(pnl_data.get("assets", {}))
 
+        # Debug: log pharos_data state at request time
+        pharos_daily = pharos_data.get("daily_pnl")
+        logger.info(f"[/api/pnl] pharos_data keys: {list(pharos_data.keys())}, daily_pnl truthy: {bool(pharos_daily)}, daily_pnl count: {len(pharos_daily) if pharos_daily else 0}, total_pnl: {pharos_data.get('total_pnl', 'MISSING')}")
+
         # Add NWOH from Pharos data
         if pharos_data.get("daily_pnl"):
             assets["NWOH"] = {
@@ -3490,6 +3504,8 @@ def get_pnl():
         for d in annual_pnl.values():
             if d.get("volume", 0) > 0 and "volume_basis_product" in d:
                 d["gwa_basis"] = round(d["volume_basis_product"] / d["volume"], 2)
+
+        logger.info(f"[/api/pnl] Response assets: {list(assets.keys())}, combined_pnl: ${combined_total_pnl:,.0f}, NWOH in assets: {'NWOH' in assets}")
 
         return jsonify({
             "total_pnl": combined_total_pnl,
@@ -3919,6 +3935,10 @@ def reload_pharos():
         with data_lock:
             pharos_data["last_pharos_update"] = datetime.now(ZoneInfo("America/New_York")).isoformat()
 
+        # Always merge historical NWOH data back in after API refresh
+        # This ensures older data from Excel import isn't lost when API returns limited results
+        merge_nwoh_historical_with_pharos()
+
         save_pharos_data(pharos_data)
 
         if awards or unit_ops:
@@ -3931,6 +3951,14 @@ def reload_pharos():
                 "total_capped": len(pharos_data.get("capped_intervals", [])),
             })
         else:
+            # Even if API returned nothing, we still have historical data
+            if pharos_data.get("daily_pnl"):
+                return jsonify({
+                    "success": True,
+                    "message": "Pharos API returned no new data, but historical data is available",
+                    "total_pnl": pharos_data.get("total_pnl", 0),
+                    "total_volume": pharos_data.get("total_volume", 0),
+                })
             return jsonify({
                 "success": False,
                 "message": "No data found from Pharos API"
