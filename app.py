@@ -4283,6 +4283,14 @@ def get_nwoh_status():
         # GWA Basis = (Hub Revenue - Nodal Revenue) / Generation (gen-weighted)
         gwa_basis = (hub_lmp_product - rt_lmp_product) / total_gen if total_gen > 0 else 0
 
+        # PPA Settlement: 100% PPA @ $33.31/MWh with GM
+        ppa_price = 33.31
+        ppa_fixed_payment = total_gen * ppa_price  # GM pays us
+        ppa_floating_payment = hub_lmp_product      # We pay GM (gen × hub_lmp, already summed)
+        ppa_net_settlement = ppa_fixed_payment - ppa_floating_payment
+        # Total PnL = PJM market revenue + PPA net settlement
+        total_pnl = total_net_revenue + ppa_net_settlement
+
         return jsonify({
             "price_caps": price_caps,
             "next_day_awards": next_day,
@@ -4311,6 +4319,10 @@ def get_nwoh_status():
                 "avg_rt_price": round(avg_rt_price, 2),
                 "avg_hub_price": round(avg_hub_price, 2),
                 "gwa_basis": round(gwa_basis, 2),
+                "ppa_fixed_payment": round(ppa_fixed_payment, 2),
+                "ppa_floating_payment": round(ppa_floating_payment, 2),
+                "ppa_net_settlement": round(ppa_net_settlement, 2),
+                "total_pnl": round(total_pnl, 2),
             },
             "fetched_at": datetime.now().isoformat(),
         })
@@ -5743,22 +5755,26 @@ def dashboard():
                     const targetDay = startDate;
                     data = nwoh.daily_pnl?.[targetDay] || {};
 
-                    // For today: if pnlData is empty/zero, use nwohStatus computed totals
-                    if (targetDay === today && nwohStatus?.today && (!data.da_revenue || data.da_revenue === 0)) {
+                    // For today: always use nwohStatus (more current than hourly_revenue_estimate)
+                    if (targetDay === today && nwohStatus?.today) {
                         const t = nwohStatus.today;
                         data = Object.assign({}, data, {
                             da_revenue: t.da_revenue || data.da_revenue || 0,
                             da_mwh: t.total_da_mwh || data.da_mwh || 0,
-                            volume: t.actual_gen_mwh || data.volume || 0,
-                            pnl: t.net_revenue || data.pnl || 0,
+                            volume: t.total_gen_mwh || data.volume || 0,
                             avg_da_price: t.avg_da_price || data.avg_da_price || 0,
                             avg_rt_price: t.avg_rt_price || data.avg_rt_price || 0,
                             avg_hub_price: t.avg_hub_price || data.avg_hub_price || 0,
+                            gwa_basis: t.gwa_basis,
                             rt_sales_revenue: t.rt_sales_revenue || data.rt_sales_revenue || 0,
                             rt_purchase_cost: t.rt_purchase_cost || data.rt_purchase_cost || 0,
                             rt_sales_mwh: t.rt_sales_mwh || data.rt_sales_mwh || 0,
                             rt_purchase_mwh: t.rt_purchase_mwh || data.rt_purchase_mwh || 0,
+                            ppa_fixed_payment: t.ppa_fixed_payment,
+                            ppa_floating_payment: t.ppa_floating_payment,
+                            ppa_net_settlement: t.ppa_net_settlement,
                         });
+                        // Don't set data.pnl - let Total PnL be computed from PJM + PPA downstream
                     }
 
                     if (targetDay && targetDay !== today) {
@@ -6246,17 +6262,16 @@ def dashboard():
                             realizedPpaPrice = dayData?.realized_ppa_price;
                             realizedMerchantPrice = dayData?.realized_merchant_price;
 
-                            // For NWOH today: supplement with nwohStatus computed data
-                            // (hourly_revenue_estimate API lags, nwohStatus computes from dispatches+lmp)
+                            // For NWOH today: always use nwohStatus (more current than hourly_revenue_estimate)
                             if (currentAssetFilter === 'NWOH' && startDate === today && nwohStatus?.today) {
                                 const t = nwohStatus.today;
-                                if (t.net_revenue && (pnl === 0 || Math.abs(t.net_revenue) > Math.abs(pnl))) {
+                                // Use total_pnl (PJM + PPA), with proper null checks (0 is valid)
+                                if (t.total_pnl !== undefined && t.total_pnl !== null) {
+                                    pnl = t.total_pnl;
+                                } else if (t.net_revenue !== undefined && t.net_revenue !== null) {
                                     pnl = t.net_revenue;
                                 }
-                                if (t.total_gen_mwh && (volume === 0 || t.total_gen_mwh > volume)) {
-                                    volume = t.total_gen_mwh;
-                                }
-                                // GWA basis = (Hub Revenue - Nodal Revenue) / Generation (gen-weighted)
+                                if (t.total_gen_mwh) volume = t.total_gen_mwh;
                                 if (t.gwa_basis !== undefined && t.gwa_basis !== null) {
                                     gwaBasis = t.gwa_basis;
                                 }
@@ -6516,17 +6531,15 @@ def dashboard():
                             realizedPpaPrice = dayData?.realized_ppa_price;
                             realizedMerchantPrice = dayData?.realized_merchant_price;
 
-                            // For NWOH today: use nwohStatus if available and better
-                            // (hourly_revenue_estimate API lags, nwohStatus computes from dispatches)
+                            // For NWOH today: always use nwohStatus (more current than hourly_revenue_estimate)
                             if (assetKey === 'NWOH' && startDate === actualToday && nwohStatus?.today) {
                                 const t = nwohStatus.today;
-                                if (t.net_revenue && (pnl === 0 || Math.abs(t.net_revenue) > Math.abs(pnl))) {
+                                if (t.total_pnl !== undefined && t.total_pnl !== null) {
+                                    pnl = t.total_pnl;
+                                } else if (t.net_revenue !== undefined && t.net_revenue !== null) {
                                     pnl = t.net_revenue;
                                 }
-                                if (t.total_gen_mwh && (volume === 0 || t.total_gen_mwh > volume)) {
-                                    volume = t.total_gen_mwh;
-                                }
-                                // GWA basis = (Hub Revenue - Nodal Revenue) / Generation (gen-weighted)
+                                if (t.total_gen_mwh) volume = t.total_gen_mwh;
                                 if (t.gwa_basis !== undefined && t.gwa_basis !== null) {
                                     gwaBasis = t.gwa_basis;
                                 }
