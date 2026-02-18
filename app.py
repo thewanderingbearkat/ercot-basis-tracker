@@ -6156,14 +6156,16 @@ def dashboard():
             // For daily view, use date range if both dates are set
             let startDate = selectedDate || today;
             let endDate = selectedEndDate || today;
+            const userSelectedDate = startDate;  // Preserve before fallback modifies it
 
-            // If selected dates don't exist, fall back to most recent available
+            // If selected dates don't exist in aggregate, fall back to most recent available
+            // (but only for non-NWOH assets; NWOH uses nwohStatus for today's data)
             if (currentPeriod === 'daily' && pnlData.daily_pnl) {
                 const actualToday = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
                 const availableDates = Object.keys(pnlData.daily_pnl).filter(d => d <= actualToday).sort();
                 if (availableDates.length > 0) {
-                    // If start date has no data, use most recent
-                    if (!pnlData.daily_pnl[startDate]) {
+                    // If start date has no data, use most recent (unless NWOH today - nwohStatus has live data)
+                    if (!pnlData.daily_pnl[startDate] && !(currentAssetFilter === 'NWOH' && startDate === today)) {
                         startDate = availableDates[availableDates.length - 1];
                         endDate = startDate;
                     }
@@ -6279,10 +6281,8 @@ def dashboard():
                             realizedMerchantPrice = dayData?.realized_merchant_price;
 
                             // For NWOH today: always use nwohStatus (more current than hourly_revenue_estimate)
-                            console.log('[NWOH Override] check:', {currentAssetFilter, startDate, today, match: startDate === today, hasNwohStatus: !!nwohStatus?.today, nwohPnl: nwohStatus?.today?.total_pnl, nwohGen: nwohStatus?.today?.total_gen_mwh, pnlDataPnl: pnl, pnlDataVol: volume});
-                            if (currentAssetFilter === 'NWOH' && startDate === today && nwohStatus?.today) {
+                            if (currentAssetFilter === 'NWOH' && userSelectedDate === today && nwohStatus?.today) {
                                 const t = nwohStatus.today;
-                                console.log('[NWOH Override] FIRING with:', {total_pnl: t.total_pnl, net_revenue: t.net_revenue, total_gen_mwh: t.total_gen_mwh, gwa_basis: t.gwa_basis});
                                 // Use total_pnl (PJM + PPA), with proper null checks (0 is valid)
                                 if (t.total_pnl !== undefined && t.total_pnl !== null) {
                                     pnl = t.total_pnl;
