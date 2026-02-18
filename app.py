@@ -283,6 +283,7 @@ def get_pjm_lmp_data(hours_back=4):
             logger.error("Could not get PJM subscription key")
             return []
 
+        logger.info(f"[PJM API] Using subscription key: {key[:8]}...{key[-4:]}")
         headers = {"Ocp-Apim-Subscription-Key": key}
 
         # Use direct feed URL (avoids fetching 142KB feed list which can timeout on Render)
@@ -303,7 +304,8 @@ def get_pjm_lmp_data(hours_back=4):
         response = requests.get(feed_url, headers=headers, params=params, timeout=30)
 
         if response.status_code != 200:
-            logger.error(f"PJM API returned status {response.status_code}")
+            logger.error(f"[PJM API] Status {response.status_code} | URL: {feed_url} | Response: {response.text[:500]}")
+            logger.error(f"[PJM API] Response headers: {dict(response.headers)}")
             return []
 
         data = response.json()
@@ -402,7 +404,7 @@ def fetch_pjm_hub_prices_for_date(date_str):
         response = requests.get(feed_url, headers=headers, params=params, timeout=30)
 
         if response.status_code != 200:
-            logger.error(f"[PJM HUB] API returned status {response.status_code} for {date_str}")
+            logger.error(f"[PJM HUB] Status {response.status_code} for {date_str} | Response: {response.text[:500]}")
             return {}
         if not response.text.strip():
             logger.error(f"[PJM HUB] API returned empty response for {date_str}")
