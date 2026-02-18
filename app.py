@@ -2342,13 +2342,22 @@ def fetch_pharos_today_rt_lmp():
             data = response.json()
             lmps = data.get("lmp", [])
 
+            # Log first record fields to discover hub LMP field name
+            if lmps:
+                logger.info(f"[LMP API] First record keys: {list(lmps[0].keys())}")
+                logger.info(f"[LMP API] First record: {lmps[0]}")
+
             rt_lmp_by_he = {}
             hub_lmp_by_he = {}
             for l in lmps:
                 hour = l.get("hour_beginning", 0)
                 he = hour + 1 if hour < 23 else 24
                 rt_lmp_by_he[he] = float(l.get("rt_lmp", 0) or 0)
-                hub_lmp_by_he[he] = float(l.get("hub_rt_lmp", 0) or l.get("hub_lmp", 0) or 0)
+                # Try multiple possible field names for hub RT LMP
+                hub_val = (l.get("hub_rt_lmp") or l.get("hub_lmp") or
+                          l.get("hub_rt_total_lmp") or l.get("hub_total_lmp_rt") or
+                          l.get("total_lmp_rt_hub") or 0)
+                hub_lmp_by_he[he] = float(hub_val or 0)
 
             return {"rt_lmp": rt_lmp_by_he, "hub_lmp": hub_lmp_by_he}
         else:
