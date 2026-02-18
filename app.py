@@ -5850,8 +5850,9 @@ def dashboard():
                             ppa_fixed_payment: t.ppa_fixed_payment,
                             ppa_floating_payment: t.ppa_floating_payment,
                             ppa_net_settlement: t.ppa_net_settlement,
+                            // Use live total_pnl from nwohStatus (PJM + PPA), clearing stale aggregation value
+                            pnl: t.total_pnl,
                         });
-                        // Don't set data.pnl - let Total PnL be computed from PJM + PPA downstream
                     }
 
                     if (targetDay && targetDay !== today) {
@@ -5930,7 +5931,7 @@ def dashboard():
             netEl.style.color = netPpaSettlement >= 0 ? '#22c55e' : '#ef4444';
 
             // Total PnL = PJM Revenue + PPA Settlement (use backend value when available)
-            const totalRevenue = data.pnl || (totalPjmRevenue + netPpaSettlement);
+            const totalRevenue = (data.pnl != null) ? data.pnl : (totalPjmRevenue + netPpaSettlement);
             // Realized Price = Total PnL / Generation
             const realizedPrice = genMwh > 0 ? totalRevenue / genMwh : 0;
             document.getElementById('nwoh-realized-price').textContent = '$' + formatNumber(realizedPrice);
