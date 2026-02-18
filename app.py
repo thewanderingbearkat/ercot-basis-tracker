@@ -6242,6 +6242,7 @@ def dashboard():
                             realizedMerchantPrice = dayData?.realized_merchant_price;
 
                             // For NWOH today: supplement with nwohStatus computed data
+                            // (hourly_revenue_estimate API lags, nwohStatus computes from dispatches+lmp)
                             if (currentAssetFilter === 'NWOH' && startDate === today && nwohStatus?.today) {
                                 const t = nwohStatus.today;
                                 if (t.net_revenue && (pnl === 0 || Math.abs(t.net_revenue) > Math.abs(pnl))) {
@@ -6250,9 +6251,13 @@ def dashboard():
                                 if (t.total_gen_mwh && (volume === 0 || t.total_gen_mwh > volume)) {
                                     volume = t.total_gen_mwh;
                                 }
+                                // GWA basis = Hub LMP - Node LMP (weighted by volume)
+                                if (t.avg_hub_price && t.avg_rt_price) {
+                                    gwaBasis = Math.round((t.avg_hub_price - t.avg_rt_price) * 100) / 100;
+                                }
                             }
 
-                            // Calculate realized price if not available
+                            // Calculate realized price (uses updated pnl/volume from nwohStatus)
                             realizedPrice = calcRealizedPrice(currentAssetFilter, pnl, volume, gwaBasis,
                                 dayData?.ppa_revenue, dayData?.merchant_revenue, dayData?.merchant_volume);
                         }
@@ -6390,6 +6395,16 @@ def dashboard():
                 const response = await fetch('/api/nwoh/status');
                 nwohStatus = await response.json();
                 updateNwohPriceCapWarning();
+                // Re-run display updates now that nwohStatus is available
+                // (first run from fetchPnlData had nwohStatus=null, so NWOH today fallbacks didn't trigger)
+                if (pnlData) {
+                    updateAssetCards();
+                    updateFilteredDisplay();
+                    if (currentAssetFilter === 'NWOH') {
+                        updateNwohDetailCard();
+                        updateNwohDaSection();
+                    }
+                }
             } catch (error) {
                 console.error('Error fetching NWOH status:', error);
             }
@@ -6505,6 +6520,9 @@ def dashboard():
                                 }
                                 if (t.total_gen_mwh && (volume === 0 || t.total_gen_mwh > volume)) {
                                     volume = t.total_gen_mwh;
+                                }
+                                if (t.avg_hub_price && t.avg_rt_price) {
+                                    gwaBasis = Math.round((t.avg_hub_price - t.avg_rt_price) * 100) / 100;
                                 }
                             }
 
