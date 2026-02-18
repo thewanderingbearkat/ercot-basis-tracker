@@ -4312,7 +4312,7 @@ def get_nwoh_status():
         hub_lmp_product = sum(h["gen_mw"] * h.get("hub_lmp", 0) for h in hourly_breakdown)
         avg_da_price = da_lmp_product / total_da_mwh if total_da_mwh > 0 else 0
         avg_rt_price = rt_lmp_product / total_gen if total_gen > 0 else 0
-        avg_hub_price = hub_lmp_product / total_gen if total_gen > 0 else 0
+        avg_hub_price = hub_lmp_product / total_gen if (total_gen > 0 and hub_lmp_product > 0) else avg_rt_price
 
         # GWA Basis = (Hub Revenue - Nodal Revenue) / Generation
         # Use ONLY lmp/historic data for both hub and node to ensure consistent source
@@ -4334,7 +4334,8 @@ def get_nwoh_status():
         # PPA Settlement: 100% PPA @ $33.31/MWh with GM
         ppa_price = 33.31
         ppa_fixed_payment = total_gen * ppa_price  # GM pays us
-        ppa_floating_payment = hub_lmp_product      # We pay GM (gen × hub_lmp, already summed)
+        # Floating = gen × hub_lmp; if no hub data, fall back to node (same as backend aggregation)
+        ppa_floating_payment = hub_lmp_product if hub_lmp_product > 0 else rt_lmp_product
         ppa_net_settlement = ppa_fixed_payment - ppa_floating_payment
         # Total PnL = PJM market revenue + PPA net settlement
         total_pnl = total_net_revenue + ppa_net_settlement
@@ -5890,9 +5891,9 @@ def dashboard():
             // Floating: We pay GM Hub LMP (cost)
             // Net = Fixed - Floating (positive when hub < $33.31)
             const ppaPrice = 33.31;
-            const fixedPayment = data.ppa_fixed_payment || (genMwh * ppaPrice);
-            const floatingPayment = data.ppa_floating_payment || (genMwh * avgHubLmp);
-            const netPpaSettlement = data.ppa_net_settlement !== undefined ? data.ppa_net_settlement : (fixedPayment - floatingPayment);
+            const fixedPayment = (data.ppa_fixed_payment != null) ? data.ppa_fixed_payment : (genMwh * ppaPrice);
+            const floatingPayment = (data.ppa_floating_payment != null) ? data.ppa_floating_payment : (genMwh * avgHubLmp);
+            const netPpaSettlement = (data.ppa_net_settlement != null) ? data.ppa_net_settlement : (fixedPayment - floatingPayment);
 
             document.getElementById('nwoh-fixed-payment').textContent = '+' + formatCurrency(fixedPayment);
             document.getElementById('nwoh-floating-payment').textContent = '-' + formatCurrency(floatingPayment);
