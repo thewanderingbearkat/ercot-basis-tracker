@@ -4104,6 +4104,17 @@ def get_nwoh_status():
             net_rev = float(op.get("net_revenue", 0) or 0)
             has_gen = op.get("has_gen_data", False)
 
+            # If unit_ops doesn't have revenue, calculate from awards data
+            if da_rev == 0 and da_mw > 0 and da_lmp > 0:
+                da_rev = da_mw * da_lmp
+            # If we have gen but no rt_revenue, calculate from deviation
+            if gen_mw > 0 and not op:
+                rt_dev = gen_mw - da_mw
+            if rt_rev == 0 and abs(rt_dev) > 0 and rt_lmp != 0:
+                rt_rev = rt_dev * rt_lmp
+            if net_rev == 0 and (da_rev != 0 or rt_rev != 0):
+                net_rev = da_rev + rt_rev
+
             # Determine hour status
             if he > current_he:
                 status = "future"
@@ -4135,6 +4146,19 @@ def get_nwoh_status():
                 "has_gen": has_gen,
             })
 
+        # Compute today's revenue totals from hourly breakdown
+        total_da_revenue = sum(h["da_revenue"] for h in hourly_breakdown)
+        total_rt_revenue = sum(h["rt_revenue"] for h in hourly_breakdown)
+        total_net_revenue = sum(h["net_revenue"] for h in hourly_breakdown)
+        total_gen = sum(h["gen_mw"] for h in hourly_breakdown)
+        total_da_mwh = sum(h["da_mw"] for h in hourly_breakdown)
+
+        # Weighted avg prices
+        da_lmp_product = sum(h["da_mw"] * h["da_lmp"] for h in hourly_breakdown)
+        rt_lmp_product = sum(h["gen_mw"] * h["rt_lmp"] for h in hourly_breakdown)
+        avg_da_price = da_lmp_product / total_da_mwh if total_da_mwh > 0 else 0
+        avg_rt_price = rt_lmp_product / total_gen if total_gen > 0 else 0
+
         return jsonify({
             "price_caps": price_caps,
             "next_day_awards": next_day,
@@ -4149,6 +4173,14 @@ def get_nwoh_status():
                 "hourly_breakdown": hourly_breakdown,
                 "hours_with_awards": today_da.get("hours_with_awards", 0),
                 "gen_source": gen_source,
+                # Revenue totals computed from hourly breakdown
+                "da_revenue": round(total_da_revenue, 2),
+                "rt_revenue": round(total_rt_revenue, 2),
+                "net_revenue": round(total_net_revenue, 2),
+                "total_gen_mwh": round(total_gen, 2),
+                "total_da_mwh": round(total_da_mwh, 2),
+                "avg_da_price": round(avg_da_price, 2),
+                "avg_rt_price": round(avg_rt_price, 2),
             },
             "fetched_at": datetime.now().isoformat(),
         })
@@ -5581,6 +5613,21 @@ def dashboard():
                     const targetDay = startDate;
                     data = nwoh.daily_pnl?.[targetDay] || {};
 
+                    // For today: if pnlData is empty/zero, use nwohStatus computed totals
+                    if (targetDay === today && nwohStatus?.today && (!data.da_revenue || data.da_revenue === 0)) {
+                        const t = nwohStatus.today;
+                        data = Object.assign({}, data, {
+                            da_revenue: t.da_revenue || data.da_revenue || 0,
+                            da_mwh: t.total_da_mwh || data.da_mwh || 0,
+                            volume: t.actual_gen_mwh || data.volume || 0,
+                            pnl: t.net_revenue || data.pnl || 0,
+                            avg_da_price: t.avg_da_price || data.avg_da_price || 0,
+                            avg_rt_price: t.avg_rt_price || data.avg_rt_price || 0,
+                            rt_sales_revenue: t.rt_revenue > 0 ? t.rt_revenue : (data.rt_sales_revenue || 0),
+                            rt_purchase_cost: t.rt_revenue < 0 ? Math.abs(t.rt_revenue) : (data.rt_purchase_cost || 0),
+                        });
+                    }
+
                     if (targetDay && targetDay !== today) {
                         const dateObj = new Date(targetDay + 'T12:00:00');
                         viewingDateEl.textContent = 'Viewing: ' + dateObj.toLocaleDateString('en-US', {month: 'short', day: 'numeric', year: 'numeric'});
@@ -5820,22 +5867,16 @@ def dashboard():
                 deviationStatus.textContent = 'Matched DA';
             }
 
-            // Today's revenue summary (from today's daily_pnl if available)
-            const todayPnl = pnlData?.assets?.NWOH?.daily_pnl;
-            const todayStr = todayDate.getFullYear() + '-' + String(todayDate.getMonth() + 1).padStart(2, '0') + '-' + String(todayDate.getDate()).padStart(2, '0');
-            const todayData = todayPnl?.[todayStr] || {};
-
-            const todayDaRev = todayData.da_revenue || 0;
-            const todayRtSales = todayData.rt_sales_revenue || 0;
-            const todayRtPurchase = todayData.rt_purchase_cost || 0;
-            const todayRtNet = todayRtSales - todayRtPurchase;
-            const todayPjmTotal = todayDaRev + todayRtNet;
+            // Today's revenue summary - use nwohStatus totals (computed from hourly breakdown)
+            const todayDaRev = today.da_revenue || 0;
+            const todayRtRev = today.rt_revenue || 0;
+            const todayNetRev = today.net_revenue || 0;
 
             document.getElementById('nwoh-today-da-rev').textContent = formatCurrency(todayDaRev);
             const rtNetEl = document.getElementById('nwoh-today-rt-net');
-            rtNetEl.textContent = (todayRtNet >= 0 ? '+' : '-') + formatCurrency(Math.abs(todayRtNet));
-            rtNetEl.style.color = todayRtNet >= 0 ? '#22c55e' : '#ef4444';
-            document.getElementById('nwoh-today-pjm-total').textContent = formatCurrency(todayPjmTotal);
+            rtNetEl.textContent = (todayRtRev >= 0 ? '+' : '-') + formatCurrency(Math.abs(todayRtRev));
+            rtNetEl.style.color = todayRtRev >= 0 ? '#22c55e' : '#ef4444';
+            document.getElementById('nwoh-today-pjm-total').textContent = formatCurrency(todayNetRev);
 
             // Update tomorrow's DA awards
             const nextDay = nwohStatus.next_day_awards || {};
