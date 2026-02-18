@@ -264,10 +264,16 @@ def load_pjm_history():
         return []
 
 # PJM API Helper Functions
+PJM_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36"
+
 def get_pjm_subscription_key():
-    """Get the public PJM API subscription key."""
+    """Get the public PJM API subscription key from Data Miner 2."""
     try:
-        response = requests.get("http://dataminer2.pjm.com/config/settings.json", timeout=10)
+        response = requests.get(
+            "http://dataminer2.pjm.com/config/settings.json",
+            headers={"User-Agent": PJM_USER_AGENT},
+            timeout=10
+        )
         settings = response.json()
         return settings.get("subscriptionKey")
     except Exception as e:
@@ -283,11 +289,27 @@ def get_pjm_lmp_data(hours_back=4):
             logger.error("Could not get PJM subscription key")
             return []
 
-        logger.info(f"[PJM API] Using subscription key: {key[:8]}...{key[-4:]}")
-        headers = {"Ocp-Apim-Subscription-Key": key}
+        headers = {
+            "Ocp-Apim-Subscription-Key": key,
+            "User-Agent": PJM_USER_AGENT,
+        }
 
-        # Use direct feed URL (avoids fetching 142KB feed list which can timeout on Render)
-        feed_url = "https://api.pjm.com/api/v1/rt_unverified_fivemin_lmps"
+        # Find the unverified 5-minute feed
+        response = requests.get("https://api.pjm.com/api/v1/", headers=headers, timeout=15)
+        if response.status_code != 200:
+            logger.error(f"[PJM API] Feed list status {response.status_code} | Response: {response.text[:300]}")
+            return []
+        feeds = response.json()
+
+        feed_url = None
+        for item in feeds.get('items', []):
+            if item.get('name') == 'rt_unverified_fivemin_lmps':
+                feed_url = item['links'][0]['href']
+                break
+
+        if not feed_url:
+            logger.error("Could not find PJM unverified 5-minute LMP feed")
+            return []
 
         # Fetch data from the last N hours
         from datetime import timezone as tz
@@ -304,8 +326,7 @@ def get_pjm_lmp_data(hours_back=4):
         response = requests.get(feed_url, headers=headers, params=params, timeout=30)
 
         if response.status_code != 200:
-            logger.error(f"[PJM API] Status {response.status_code} | URL: {feed_url} | Response: {response.text[:500]}")
-            logger.error(f"[PJM API] Response headers: {dict(response.headers)}")
+            logger.error(f"[PJM API] Data status {response.status_code} | Response: {response.text[:300]}")
             return []
 
         data = response.json()
@@ -386,9 +407,12 @@ def fetch_pjm_hub_prices_for_date(date_str):
             logger.warning("[PJM HUB] Could not get PJM subscription key")
             return {}
 
-        headers = {"Ocp-Apim-Subscription-Key": key}
+        headers = {
+            "Ocp-Apim-Subscription-Key": key,
+            "User-Agent": PJM_USER_AGENT,
+        }
 
-        # Use direct feed URL (avoids fetching 142KB feed list which can timeout)
+        # Use direct feed URL for hub-only queries (smaller response)
         feed_url = "https://api.pjm.com/api/v1/rt_unverified_fivemin_lmps"
 
         start_time = f"{date_str}T00:00:00"
@@ -404,7 +428,7 @@ def fetch_pjm_hub_prices_for_date(date_str):
         response = requests.get(feed_url, headers=headers, params=params, timeout=30)
 
         if response.status_code != 200:
-            logger.error(f"[PJM HUB] Status {response.status_code} for {date_str} | Response: {response.text[:500]}")
+            logger.error(f"[PJM HUB] Status {response.status_code} for {date_str} | Response: {response.text[:300]}")
             return {}
         if not response.text.strip():
             logger.error(f"[PJM HUB] API returned empty response for {date_str}")
