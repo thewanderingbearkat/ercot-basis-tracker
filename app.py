@@ -6279,8 +6279,10 @@ def dashboard():
                             realizedMerchantPrice = dayData?.realized_merchant_price;
 
                             // For NWOH today: always use nwohStatus (more current than hourly_revenue_estimate)
+                            console.log('[NWOH Override] check:', {currentAssetFilter, startDate, today, match: startDate === today, hasNwohStatus: !!nwohStatus?.today, nwohPnl: nwohStatus?.today?.total_pnl, nwohGen: nwohStatus?.today?.total_gen_mwh, pnlDataPnl: pnl, pnlDataVol: volume});
                             if (currentAssetFilter === 'NWOH' && startDate === today && nwohStatus?.today) {
                                 const t = nwohStatus.today;
+                                console.log('[NWOH Override] FIRING with:', {total_pnl: t.total_pnl, net_revenue: t.net_revenue, total_gen_mwh: t.total_gen_mwh, gwa_basis: t.gwa_basis});
                                 // Use total_pnl (PJM + PPA), with proper null checks (0 is valid)
                                 if (t.total_pnl !== undefined && t.total_pnl !== null) {
                                     pnl = t.total_pnl;
