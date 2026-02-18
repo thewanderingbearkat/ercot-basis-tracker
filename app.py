@@ -3085,7 +3085,9 @@ def background_data_fetch():
             logger.info(f"Loaded cached Pharos data: total_pnl=${pharos_data.get('total_pnl', 0):,.0f}, volume={pharos_data.get('total_volume', 0):,.0f} MWh")
             # Also merge historical data from Excel (for months not in API cache)
             merge_nwoh_historical_with_pharos()
-            last_pharos_fetch_time = datetime.now()  # Don't immediately re-fetch if cache is valid
+            # Keep last_pharos_fetch_time = None so the while loop triggers an immediate
+            # API refresh. The cached data serves as a placeholder until fresh data arrives.
+            logger.info("Cache loaded for immediate display. API refresh will happen in first loop iteration.")
         else:
             # Fetch fresh data on first run or if cache is empty
             if PHAROS_AUTO_FETCH:
@@ -3334,24 +3336,7 @@ def background_data_fetch():
                 except Exception as e:
                     logger.error(f"Pharos fallback failed: {e}")
 
-            # Periodic Tenaska API refresh for PnL data
-            if TENASKA_AUTO_FETCH:
-                should_refresh = False
-                if last_tenaska_fetch_time is None:
-                    should_refresh = True
-                else:
-                    seconds_since_fetch = (datetime.now() - last_tenaska_fetch_time).total_seconds()
-                    if seconds_since_fetch >= TENASKA_FETCH_INTERVAL:
-                        should_refresh = True
-
-                if should_refresh:
-                    logger.info("Refreshing PnL data from Tenaska API...")
-                    try:
-                        refresh_pnl_data(source="api")
-                    except Exception as e:
-                        logger.error(f"Error refreshing Tenaska PnL data: {e}")
-
-            # Periodic Pharos API refresh for NWOH DA data
+            # Periodic Pharos API refresh for NWOH DA data (fast - single API call, do first)
             if PHAROS_AUTO_FETCH:
                 should_refresh_pharos = False
                 if last_pharos_fetch_time is None:
@@ -3401,6 +3386,23 @@ def background_data_fetch():
                         logger.info(f"Pharos refresh complete: PnL=${pharos_data.get('total_pnl', 0)}, DA={pharos_data.get('total_da_mwh', 0)} MWh")
                     except Exception as e:
                         logger.error(f"Error refreshing Pharos data: {e}")
+
+            # Periodic Tenaska API refresh for PnL data (slower - day-by-day hub price fetch)
+            if TENASKA_AUTO_FETCH:
+                should_refresh = False
+                if last_tenaska_fetch_time is None:
+                    should_refresh = True
+                else:
+                    seconds_since_fetch = (datetime.now() - last_tenaska_fetch_time).total_seconds()
+                    if seconds_since_fetch >= TENASKA_FETCH_INTERVAL:
+                        should_refresh = True
+
+                if should_refresh:
+                    logger.info("Refreshing PnL data from Tenaska API...")
+                    try:
+                        refresh_pnl_data(source="api")
+                    except Exception as e:
+                        logger.error(f"Error refreshing Tenaska PnL data: {e}")
 
             time.sleep(120)
 
