@@ -4148,6 +4148,10 @@ def get_nwoh_status():
         rt_lmp_data = fetch_pharos_today_rt_lmp()
         rt_lmp_by_he = rt_lmp_data.get("rt_lmp", {}) if rt_lmp_data else {}
         hub_lmp_by_he = rt_lmp_data.get("hub_lmp", {}) if rt_lmp_data else {}
+        logger.info(f"[NWOH LMP] rt_lmp_by_he hours: {sorted(rt_lmp_by_he.keys())}, hub_lmp_by_he hours: {sorted(hub_lmp_by_he.keys())}")
+        if rt_lmp_by_he:
+            sample_he = next(iter(rt_lmp_by_he))
+            logger.info(f"[NWOH LMP] Sample HE{sample_he}: node=${rt_lmp_by_he[sample_he]:.2f}, hub=${hub_lmp_by_he.get(sample_he, 'N/A')}")
 
         # Use DA commitment from market_results (full day), not unit_operations (partial)
         today_da_commitment = today_da.get("total_da_mwh", 0)
@@ -4205,10 +4209,8 @@ def get_nwoh_status():
             if rt_lmp == 0 and he in rt_lmp_by_he:
                 rt_lmp = rt_lmp_by_he[he]
 
-            # Hub LMP for basis calculation: prefer unit_ops, fallback to lmp/historic
-            hub_lmp = float(op.get("hub_rt_lmp", 0) or op.get("hub_lmp", 0) or 0)
-            if hub_lmp == 0 and he in hub_lmp_by_he:
-                hub_lmp = hub_lmp_by_he[he]
+            # Hub LMP for basis calculation: use lmp/historic only (consistent source with node)
+            hub_lmp = hub_lmp_by_he.get(he, 0)
 
             # RT deviation = actual gen - DA commitment
             rt_dev = float(op.get("rt_mw", 0) or 0)
@@ -4245,6 +4247,9 @@ def get_nwoh_status():
             else:
                 status = "no_award"
 
+            # Node LMP from lmp/historic (for basis comparison)
+            node_lmp_historic = rt_lmp_by_he.get(he, 0)
+
             hourly_breakdown.append({
                 "he": he,
                 "da_mw": round(da_mw, 1),
@@ -4253,6 +4258,7 @@ def get_nwoh_status():
                 "da_lmp": round(da_lmp, 2),
                 "rt_lmp": round(rt_lmp, 2),
                 "hub_lmp": round(hub_lmp, 2),
+                "node_lmp_historic": round(node_lmp_historic, 2),
                 "da_revenue": round(da_rev, 2),
                 "rt_revenue": round(rt_rev, 2),
                 "net_revenue": round(net_rev, 2),
@@ -4280,8 +4286,25 @@ def get_nwoh_status():
         avg_da_price = da_lmp_product / total_da_mwh if total_da_mwh > 0 else 0
         avg_rt_price = rt_lmp_product / total_gen if total_gen > 0 else 0
         avg_hub_price = hub_lmp_product / total_gen if total_gen > 0 else 0
-        # GWA Basis = (Hub Revenue - Nodal Revenue) / Generation (gen-weighted)
-        gwa_basis = (hub_lmp_product - rt_lmp_product) / total_gen if total_gen > 0 else 0
+
+        # GWA Basis = (Hub Revenue - Nodal Revenue) / Generation
+        # Use ONLY lmp/historic data for both hub and node to ensure consistent source
+        basis_hub_rev = 0
+        basis_node_rev = 0
+        basis_gen = 0
+        for h in hourly_breakdown:
+            he = h["he"]
+            gen = h["gen_mw"]
+            if gen > 0 and he in rt_lmp_by_he:
+                # Both hub and node from lmp/historic endpoint for apples-to-apples comparison
+                node_lmp = rt_lmp_by_he.get(he, 0)
+                hub_lmp_val = hub_lmp_by_he.get(he, 0)
+                basis_node_rev += gen * node_lmp
+                basis_hub_rev += gen * hub_lmp_val
+                basis_gen += gen
+        gwa_basis = (basis_hub_rev - basis_node_rev) / basis_gen if basis_gen > 0 else 0
+        logger.info(f"[NWOH Basis] hub_rev=${basis_hub_rev:,.2f}, node_rev=${basis_node_rev:,.2f}, gen={basis_gen:.2f}MWh, "
+                     f"gwa_basis=${gwa_basis:.2f}/MWh, hours_with_lmp_data={sum(1 for h in hourly_breakdown if h['he'] in rt_lmp_by_he and h['gen_mw'] > 0)}")
 
         # PPA Settlement: 100% PPA @ $33.31/MWh with GM
         ppa_price = 33.31
