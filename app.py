@@ -3281,8 +3281,11 @@ def background_data_fetch():
                     }
                     pharos_resp = requests.get(url, auth=get_pharos_auth(), params=params, timeout=30)
                     if pharos_resp.status_code == 200:
-                        pharos_data = pharos_resp.json()
-                        ops = pharos_data.get("unit_operations", pharos_data) if isinstance(pharos_data, dict) else pharos_data
+                        pharos_resp_data = pharos_resp.json()
+                        # Store unit_operations without overwriting the entire pharos_data dict
+                        if isinstance(pharos_resp_data, dict) and "unit_operations" in pharos_resp_data:
+                            pharos_data["unit_operations"] = pharos_resp_data["unit_operations"]
+                        ops = pharos_resp_data.get("unit_operations", pharos_resp_data) if isinstance(pharos_resp_data, dict) else pharos_resp_data
                         if ops:
                             # Get most recent record
                             latest_op = ops[-1]
