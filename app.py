@@ -4205,8 +4205,10 @@ def get_nwoh_status():
             if rt_lmp == 0 and he in rt_lmp_by_he:
                 rt_lmp = rt_lmp_by_he[he]
 
-            # Hub LMP for basis calculation
-            hub_lmp = hub_lmp_by_he.get(he, 0)
+            # Hub LMP for basis calculation: prefer unit_ops, fallback to lmp/historic
+            hub_lmp = float(op.get("hub_rt_lmp", 0) or op.get("hub_lmp", 0) or 0)
+            if hub_lmp == 0 and he in hub_lmp_by_he:
+                hub_lmp = hub_lmp_by_he[he]
 
             # RT deviation = actual gen - DA commitment
             rt_dev = float(op.get("rt_mw", 0) or 0)
@@ -4278,6 +4280,8 @@ def get_nwoh_status():
         avg_da_price = da_lmp_product / total_da_mwh if total_da_mwh > 0 else 0
         avg_rt_price = rt_lmp_product / total_gen if total_gen > 0 else 0
         avg_hub_price = hub_lmp_product / total_gen if total_gen > 0 else 0
+        # GWA Basis = (Hub Revenue - Nodal Revenue) / Generation (gen-weighted)
+        gwa_basis = (hub_lmp_product - rt_lmp_product) / total_gen if total_gen > 0 else 0
 
         return jsonify({
             "price_caps": price_caps,
@@ -4306,6 +4310,7 @@ def get_nwoh_status():
                 "avg_da_price": round(avg_da_price, 2),
                 "avg_rt_price": round(avg_rt_price, 2),
                 "avg_hub_price": round(avg_hub_price, 2),
+                "gwa_basis": round(gwa_basis, 2),
             },
             "fetched_at": datetime.now().isoformat(),
         })
@@ -5805,7 +5810,7 @@ def dashboard():
             const daMwh = data.da_mwh || 0;
             const avgNodeLmp = data.avg_rt_price || 0;
             const avgHubLmp = data.avg_hub_price || avgNodeLmp;  // Fallback to node if no hub
-            const gwaBasis = data.gwa_basis || (avgHubLmp - avgNodeLmp);
+            const gwaBasis = (data.gwa_basis !== undefined && data.gwa_basis !== null) ? data.gwa_basis : (avgHubLmp - avgNodeLmp);
 
             document.getElementById('nwoh-gen-mwh').textContent = formatNumber(genMwh);
             document.getElementById('nwoh-detail-gen').textContent = formatNumber(genMwh) + ' MWh';
@@ -6251,9 +6256,9 @@ def dashboard():
                                 if (t.total_gen_mwh && (volume === 0 || t.total_gen_mwh > volume)) {
                                     volume = t.total_gen_mwh;
                                 }
-                                // GWA basis = Hub LMP - Node LMP (weighted by volume)
-                                if (t.avg_hub_price && t.avg_rt_price) {
-                                    gwaBasis = Math.round((t.avg_hub_price - t.avg_rt_price) * 100) / 100;
+                                // GWA basis = (Hub Revenue - Nodal Revenue) / Generation (gen-weighted)
+                                if (t.gwa_basis !== undefined && t.gwa_basis !== null) {
+                                    gwaBasis = t.gwa_basis;
                                 }
                             }
 
@@ -6521,8 +6526,9 @@ def dashboard():
                                 if (t.total_gen_mwh && (volume === 0 || t.total_gen_mwh > volume)) {
                                     volume = t.total_gen_mwh;
                                 }
-                                if (t.avg_hub_price && t.avg_rt_price) {
-                                    gwaBasis = Math.round((t.avg_hub_price - t.avg_rt_price) * 100) / 100;
+                                // GWA basis = (Hub Revenue - Nodal Revenue) / Generation (gen-weighted)
+                                if (t.gwa_basis !== undefined && t.gwa_basis !== null) {
+                                    gwaBasis = t.gwa_basis;
                                 }
                             }
 
