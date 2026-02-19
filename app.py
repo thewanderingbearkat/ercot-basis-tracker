@@ -281,71 +281,66 @@ def get_pjm_subscription_key():
         return None
 
 def get_pjm_lmp_data(hours_back=4):
-    """Fetch PJM LMP data from the unverified 5-minute feed."""
+    """Fetch PJM LMP data from the unverified 5-minute feed.
+    Makes separate filtered requests per pnode to avoid pagination issues
+    (157K+ total rows across all pnodes, only 10K per page).
+    Falls back to Pharos /pjm/lmp/current for node price if PJM API fails.
+    """
     try:
         # Get subscription key
         key = get_pjm_subscription_key()
         if not key:
             logger.error("Could not get PJM subscription key")
-            return []
+            return _get_pjm_lmp_pharos_fallback()
 
         headers = {
             "Ocp-Apim-Subscription-Key": key,
             "User-Agent": PJM_USER_AGENT,
         }
 
-        # Find the unverified 5-minute feed
-        response = requests.get("https://api.pjm.com/api/v1/", headers=headers, timeout=15)
-        if response.status_code != 200:
-            logger.error(f"[PJM API] Feed list status {response.status_code} | Response: {response.text[:300]}")
-            return []
-        feeds = response.json()
+        feed_url = "https://api.pjm.com/api/v1/rt_unverified_fivemin_lmps"
 
-        feed_url = None
-        for item in feeds.get('items', []):
-            if item.get('name') == 'rt_unverified_fivemin_lmps':
-                feed_url = item['links'][0]['href']
-                break
-
-        if not feed_url:
-            logger.error("Could not find PJM unverified 5-minute LMP feed")
-            return []
-
-        # Fetch data from the last N hours
         from datetime import timezone as tz
         now = datetime.now(tz.utc)
         start_time = (now - timedelta(hours=hours_back)).strftime('%Y-%m-%dT%H:%M:%S')
         end_time = now.strftime('%Y-%m-%dT%H:%M:%S')
 
-        params = {
-            'datetime_beginning_utc': f'{start_time} to {end_time}',
-            'startRow': 1,
-            'rowCount': 10000
-        }
+        # Fetch node and hub data separately with pnode_id filter
+        node_items = []
+        hub_items = []
 
-        response = requests.get(feed_url, headers=headers, params=params, timeout=30)
+        for pnode_id, label, target_list in [
+            (PJM_NODE_ID, "Node (Haviland)", node_items),
+            (PJM_HUB_ID, "Hub (AEP-Dayton)", hub_items),
+        ]:
+            params = {
+                'datetime_beginning_utc': f'{start_time} to {end_time}',
+                'pnode_id': pnode_id,
+                'startRow': 1,
+                'rowCount': 5000,
+            }
+            try:
+                response = requests.get(feed_url, headers=headers, params=params, timeout=30)
+                if response.status_code == 200:
+                    items = response.json().get('items', [])
+                    target_list.extend(items)
+                    logger.info(f"[PJM API] {label}: {len(items)} items")
+                else:
+                    logger.error(f"[PJM API] {label} status {response.status_code} | {response.text[:200]}")
+            except Exception as e:
+                logger.error(f"[PJM API] {label} error: {e}")
 
-        if response.status_code != 200:
-            logger.error(f"[PJM API] Data status {response.status_code} | Response: {response.text[:300]}")
-            return []
-
-        data = response.json()
-        all_items = data.get('items', [])
-
-        if not all_items:
-            logger.warning("No PJM data available")
-            return []
-
-        # Filter for our specific nodes
-        node_items = [item for item in all_items if item.get('pnode_id') == PJM_NODE_ID]
-        hub_items = [item for item in all_items if item.get('pnode_id') == PJM_HUB_ID]
+        if not node_items and not hub_items:
+            logger.warning("No PJM data from filtered queries, trying Pharos fallback")
+            return _get_pjm_lmp_pharos_fallback()
 
         # Create merged data
         history = []
+        hub_by_time = {h.get('datetime_beginning_utc'): h for h in hub_items}
+
         for node_item in node_items:
             time_utc = node_item.get('datetime_beginning_utc')
-            # Find matching hub item
-            hub_item = next((h for h in hub_items if h.get('datetime_beginning_utc') == time_utc), None)
+            hub_item = hub_by_time.get(time_utc)
 
             if hub_item:
                 node_lmp = node_item.get('total_lmp_rt', 0)
@@ -364,12 +359,49 @@ def get_pjm_lmp_data(hours_back=4):
         # Sort by time
         history.sort(key=lambda x: x['time'])
 
-        logger.info(f"Fetched {len(history)} PJM historical data points")
+        logger.info(f"Fetched {len(history)} PJM historical data points (filtered)")
         return history
 
     except Exception as e:
         logger.error(f"Error fetching PJM data: {e}")
-        return []
+        return _get_pjm_lmp_pharos_fallback()
+
+
+def _get_pjm_lmp_pharos_fallback():
+    """Fallback: get current node LMP from Pharos + latest hub from cache."""
+    try:
+        url = f"{PHAROS_BASE_URL}/pjm/lmp/current"
+        params = {"organization_key": PHAROS_ORGANIZATION_KEY}
+        resp = requests.get(url, auth=get_pharos_auth(), params=params, timeout=15)
+
+        if resp.status_code == 200:
+            data = resp.json()
+            records = data.get("current_lmp", [])
+            if records:
+                rec = records[0]
+                node_lmp = float(rec.get("rt_lmp") or rec.get("da_lmp") or 0)
+                timestamp = rec.get("timestamp", "")
+
+                # Get hub from cache
+                hub_lmp = None
+                if pjm_hub_price_cache:
+                    hub_lmp = list(pjm_hub_price_cache.values())[-1]
+
+                if hub_lmp is not None and node_lmp > 0:
+                    hub_lmp = float(hub_lmp)
+                    basis = node_lmp - hub_lmp
+                    status = "safe" if basis > 0 else ("caution" if basis >= -30 else "alert")
+                    logger.info(f"[PJM Pharos fallback] node=${node_lmp:.2f}, hub=${hub_lmp:.2f}, basis=${basis:.2f}")
+                    return [{
+                        'time': timestamp,
+                        'node_price': round(node_lmp, 2),
+                        'hub_price': round(hub_lmp, 2),
+                        'basis': round(basis, 2),
+                        'status': status,
+                    }]
+    except Exception as e:
+        logger.error(f"Pharos LMP fallback failed: {e}")
+    return []
 
 # Cache for PJM hub prices (for Pharos basis calculation)
 PJM_HUB_CACHE_FILE = 'pjm_hub_prices.json'
