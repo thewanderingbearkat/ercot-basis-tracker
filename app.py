@@ -263,287 +263,232 @@ def load_pjm_history():
         logger.error(f"Error loading PJM history: {e}")
         return []
 
-# PJM API Helper Functions
-PJM_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36"
-
-def get_pjm_subscription_key():
-    """Get the public PJM API subscription key from Data Miner 2."""
-    try:
-        response = requests.get(
-            "http://dataminer2.pjm.com/config/settings.json",
-            headers={"User-Agent": PJM_USER_AGENT},
-            timeout=10
-        )
-        settings = response.json()
-        return settings.get("subscriptionKey")
-    except Exception as e:
-        logger.error(f"Error getting PJM subscription key: {e}")
-        return None
+# PJM LMP Functions - Using Pharos API (replaces PJM Data Miner)
 
 def get_pjm_lmp_data(hours_back=4):
-    """Fetch PJM LMP data from the unverified 5-minute feed.
-    Makes separate filtered requests per pnode to avoid pagination issues
-    (157K+ total rows across all pnodes, only 10K per page).
-    Falls back to Pharos /pjm/lmp/current for node price if PJM API fails.
+    """Fetch PJM LMP data from Pharos /pjm/lmp/window endpoint.
+    Returns node + hub data with 5-minute granularity for basis cards and chart.
+
+    Uses Pharos instead of PJM Data Miner API (no subscription key needed,
+    no pagination issues, faster).
     """
     try:
-        # Get subscription key
-        key = get_pjm_subscription_key()
-        if not key:
-            logger.error("Could not get PJM subscription key")
-            return _get_pjm_lmp_pharos_fallback()
-
-        headers = {
-            "Ocp-Apim-Subscription-Key": key,
-            "User-Agent": PJM_USER_AGENT,
+        params = {
+            "organization_key": PHAROS_ORGANIZATION_KEY,
+            "hours": hours_back,
         }
 
-        feed_url = "https://api.pjm.com/api/v1/rt_unverified_fivemin_lmps"
+        # Fetch node (Haviland) - default, no pnode_id needed
+        node_resp = requests.get(
+            f"{PHAROS_BASE_URL}/pjm/lmp/window",
+            auth=get_pharos_auth(),
+            params=params,
+            timeout=30,
+        )
 
-        from datetime import timezone as tz
-        now = datetime.now(tz.utc)
-        start_time = (now - timedelta(hours=hours_back)).strftime('%Y-%m-%dT%H:%M:%S')
-        end_time = now.strftime('%Y-%m-%dT%H:%M:%S')
+        # Fetch hub (AEP-Dayton)
+        hub_params = {**params, "pnode_id": PJM_HUB_ID}
+        hub_resp = requests.get(
+            f"{PHAROS_BASE_URL}/pjm/lmp/window",
+            auth=get_pharos_auth(),
+            params=hub_params,
+            timeout=30,
+        )
 
-        # Fetch node and hub data separately with pnode_id filter
-        node_items = []
-        hub_items = []
+        if node_resp.status_code != 200:
+            logger.error(f"[Pharos LMP] Node window status {node_resp.status_code}")
+            return []
+        if hub_resp.status_code != 200:
+            logger.error(f"[Pharos LMP] Hub window status {hub_resp.status_code}")
+            return []
 
-        for pnode_id, label, target_list in [
-            (PJM_NODE_ID, "Node (Haviland)", node_items),
-            (PJM_HUB_ID, "Hub (AEP-Dayton)", hub_items),
-        ]:
-            params = {
-                'datetime_beginning_utc': f'{start_time} to {end_time}',
-                'pnode_id': pnode_id,
-                'startRow': 1,
-                'rowCount': 5000,
-            }
-            try:
-                response = requests.get(feed_url, headers=headers, params=params, timeout=30)
-                if response.status_code == 200:
-                    items = response.json().get('items', [])
-                    target_list.extend(items)
-                    logger.info(f"[PJM API] {label}: {len(items)} items")
-                else:
-                    logger.error(f"[PJM API] {label} status {response.status_code} | {response.text[:200]}")
-            except Exception as e:
-                logger.error(f"[PJM API] {label} error: {e}")
+        node_data = node_resp.json()
+        hub_data = hub_resp.json()
 
-        if not node_items and not hub_items:
-            logger.warning("No PJM data from filtered queries, trying Pharos fallback")
-            return _get_pjm_lmp_pharos_fallback()
+        # Extract 5-minute LMP arrays
+        node_window = node_data.get("window", [{}])[0] if node_data.get("window") else {}
+        hub_window = hub_data.get("window", [{}])[0] if hub_data.get("window") else {}
 
-        # Create merged data
+        node_5min = node_window.get("five_minute_lmp", [])
+        hub_5min = hub_window.get("five_minute_lmp", [])
+
+        # Build hub lookup by timestamp
+        hub_by_time = {h["timestamp"]: h for h in hub_5min}
+
         history = []
-        hub_by_time = {h.get('datetime_beginning_utc'): h for h in hub_items}
-
-        for node_item in node_items:
-            time_utc = node_item.get('datetime_beginning_utc')
-            hub_item = hub_by_time.get(time_utc)
-
+        for node_item in node_5min:
+            ts = node_item.get("timestamp")
+            hub_item = hub_by_time.get(ts)
             if hub_item:
-                node_lmp = node_item.get('total_lmp_rt', 0)
-                hub_lmp = hub_item.get('total_lmp_rt', 0)
+                node_lmp = float(node_item.get("lmp", 0))
+                hub_lmp = float(hub_item.get("lmp", 0))
                 basis = node_lmp - hub_lmp
                 status = "safe" if basis > 0 else ("caution" if basis >= -30 else "alert")
-
                 history.append({
-                    'time': time_utc,
-                    'node_price': round(float(node_lmp), 2),
-                    'hub_price': round(float(hub_lmp), 2),
-                    'basis': round(float(basis), 2),
-                    'status': status
+                    "time": ts,
+                    "node_price": round(node_lmp, 2),
+                    "hub_price": round(hub_lmp, 2),
+                    "basis": round(basis, 2),
+                    "status": status,
                 })
 
-        # Sort by time
-        history.sort(key=lambda x: x['time'])
-
-        logger.info(f"Fetched {len(history)} PJM historical data points (filtered)")
+        history.sort(key=lambda x: x["time"])
+        logger.info(f"[Pharos LMP] Fetched {len(history)} PJM 5-min data points")
         return history
 
     except Exception as e:
-        logger.error(f"Error fetching PJM data: {e}")
-        return _get_pjm_lmp_pharos_fallback()
+        logger.error(f"Error fetching PJM data from Pharos: {e}")
+        return []
 
-
-def _get_pjm_lmp_pharos_fallback():
-    """Fallback: get current node LMP from Pharos + latest hub from cache."""
+def get_pjm_current_prices():
+    """Fetch current PJM node and hub prices from Pharos /pjm/lmp/current.
+    Returns a single data point dict, or None on failure.
+    Used by the background loop for real-time price updates.
+    """
     try:
-        url = f"{PHAROS_BASE_URL}/pjm/lmp/current"
         params = {"organization_key": PHAROS_ORGANIZATION_KEY}
-        resp = requests.get(url, auth=get_pharos_auth(), params=params, timeout=15)
 
-        if resp.status_code == 200:
-            data = resp.json()
-            records = data.get("current_lmp", [])
-            if records:
-                rec = records[0]
-                node_lmp = float(rec.get("rt_lmp") or rec.get("da_lmp") or 0)
-                timestamp = rec.get("timestamp", "")
+        # Fetch node (default)
+        node_resp = requests.get(
+            f"{PHAROS_BASE_URL}/pjm/lmp/current",
+            auth=get_pharos_auth(),
+            params=params,
+            timeout=15,
+        )
 
-                # Get hub from cache
-                hub_lmp = None
-                if pjm_hub_price_cache:
-                    hub_lmp = list(pjm_hub_price_cache.values())[-1]
+        # Fetch hub
+        hub_params = {**params, "pnode_id": PJM_HUB_ID}
+        hub_resp = requests.get(
+            f"{PHAROS_BASE_URL}/pjm/lmp/current",
+            auth=get_pharos_auth(),
+            params=hub_params,
+            timeout=15,
+        )
 
-                if hub_lmp is not None and node_lmp > 0:
-                    hub_lmp = float(hub_lmp)
-                    basis = node_lmp - hub_lmp
-                    status = "safe" if basis > 0 else ("caution" if basis >= -30 else "alert")
-                    logger.info(f"[PJM Pharos fallback] node=${node_lmp:.2f}, hub=${hub_lmp:.2f}, basis=${basis:.2f}")
-                    return [{
-                        'time': timestamp,
-                        'node_price': round(node_lmp, 2),
-                        'hub_price': round(hub_lmp, 2),
-                        'basis': round(basis, 2),
-                        'status': status,
-                    }]
-    except Exception as e:
-        logger.error(f"Pharos LMP fallback failed: {e}")
-    return []
+        if node_resp.status_code != 200 or hub_resp.status_code != 200:
+            logger.error(f"[Pharos LMP] Current prices: node={node_resp.status_code}, hub={hub_resp.status_code}")
+            return None
 
-# Cache for PJM hub prices (for Pharos basis calculation)
-PJM_HUB_CACHE_FILE = 'pjm_hub_prices.json'
-pjm_hub_price_cache = {}  # {timestamp_str: hub_lmp}
+        node_data = node_resp.json().get("current_lmp", [])
+        hub_data = hub_resp.json().get("current_lmp", [])
 
-def load_pjm_hub_cache():
-    """Load cached PJM hub prices from file."""
-    global pjm_hub_price_cache
-    try:
-        if os.path.exists(PJM_HUB_CACHE_FILE):
-            with open(PJM_HUB_CACHE_FILE, 'r') as f:
-                pjm_hub_price_cache = json.load(f)
-            logger.info(f"Loaded {len(pjm_hub_price_cache)} cached PJM hub prices")
-    except Exception as e:
-        logger.error(f"Error loading PJM hub cache: {e}")
-        pjm_hub_price_cache = {}
+        if not node_data or not hub_data:
+            logger.warning("[Pharos LMP] No current LMP data")
+            return None
 
-def save_pjm_hub_cache():
-    """Save PJM hub price cache to file."""
-    try:
-        with open(PJM_HUB_CACHE_FILE, 'w') as f:
-            json.dump(pjm_hub_price_cache, f)
-        logger.info(f"Saved {len(pjm_hub_price_cache)} PJM hub prices to cache")
-    except Exception as e:
-        logger.error(f"Error saving PJM hub cache: {e}")
+        node_rec = node_data[0]
+        hub_rec = hub_data[0]
 
-def fetch_pjm_hub_prices_for_date(date_str):
-    """
-    Fetch PJM hub (AEP-DAYTON) 5-minute prices for a specific date.
-    Returns dict of {timestamp_str: hub_lmp}.
-    """
-    try:
-        key = get_pjm_subscription_key()
-        if not key:
-            logger.warning("[PJM HUB] Could not get PJM subscription key")
-            return {}
+        node_rt = float(node_rec.get("rt_lmp") or node_rec.get("da_lmp") or 0)
+        hub_rt = float(hub_rec.get("rt_lmp") or hub_rec.get("da_lmp") or 0)
+        basis = node_rt - hub_rt
+        status = "safe" if basis > 0 else ("caution" if basis >= -30 else "alert")
 
-        headers = {
-            "Ocp-Apim-Subscription-Key": key,
-            "User-Agent": PJM_USER_AGENT,
+        return {
+            "node_price": round(node_rt, 2),
+            "hub_price": round(hub_rt, 2),
+            "basis": round(basis, 2),
+            "status": status,
+            "time": node_rec.get("rt_timestamp") or node_rec.get("timestamp"),
         }
 
-        # Use direct feed URL for hub-only queries (smaller response)
-        feed_url = "https://api.pjm.com/api/v1/rt_unverified_fivemin_lmps"
-
-        start_time = f"{date_str}T00:00:00"
-        end_time = f"{date_str}T23:59:59"
-
-        params = {
-            'datetime_beginning_utc': f'{start_time} to {end_time}',
-            'pnode_id': PJM_HUB_ID,  # Only fetch hub prices (AEP-Dayton Hub)
-            'startRow': 1,
-            'rowCount': 500  # 288 intervals per day + buffer
-        }
-
-        response = requests.get(feed_url, headers=headers, params=params, timeout=30)
-
-        if response.status_code != 200:
-            logger.error(f"[PJM HUB] Status {response.status_code} for {date_str} | Response: {response.text[:300]}")
-            return {}
-        if not response.text.strip():
-            logger.error(f"[PJM HUB] API returned empty response for {date_str}")
-            return {}
-
-        data = response.json()
-        items = data.get('items', [])
-
-        logger.info(f"[PJM HUB] Got {len(items)} items from PJM API for {date_str}")
-
-        # Build lookup dict
-        hub_prices = {}
-        for item in items:
-            time_utc = item.get('datetime_beginning_utc', '')
-            hub_lmp = item.get('total_lmp_rt', 0)
-            if time_utc:
-                hub_prices[time_utc] = float(hub_lmp)
-
-        logger.info(f"[PJM HUB] Fetched {len(hub_prices)} hub prices for {date_str}")
-        return hub_prices
-
     except Exception as e:
-        logger.error(f"[PJM HUB] Error fetching hub prices for {date_str}: {e}")
-        return {}
+        logger.error(f"[Pharos LMP] Current prices error: {e}")
+        return None
+
+# Cache for PJM hub prices - sourced from Pharos /pjm/lmp/historic
+# Keyed by Pharos timestamp (EST with offset, e.g. "2026-02-10T00:00:00.000-05:00")
+pjm_hub_price_cache = {}  # {timestamp_str: hub_rt_lmp}
 
 def get_hub_price_for_timestamp(timestamp_str):
     """
     Get hub price for a Pharos timestamp.
-    Converts Pharos timestamp (EST) to UTC and looks up in cache.
+    Looks up in the Pharos-sourced hub price cache.
+    Pharos timestamps are like "2026-02-10T00:00:00.000-05:00".
     Returns hub LMP or None if not found.
     """
     try:
-        # Pharos timestamps are like "2026-02-10T00:00:00.000-05:00"
-        # PJM timestamps are like "2026-02-10T05:00:00"
         if not timestamp_str:
             return None
 
-        # Parse Pharos timestamp
-        dt = datetime.fromisoformat(timestamp_str.replace(".000", ""))
-        # Convert to UTC
-        dt_utc = dt.astimezone(ZoneInfo("UTC"))
-        # Format for PJM lookup (they store as UTC without timezone)
-        pjm_time_key = dt_utc.strftime("%Y-%m-%dT%H:%M:%S")
+        # Direct lookup first (exact match)
+        if timestamp_str in pjm_hub_price_cache:
+            return pjm_hub_price_cache[timestamp_str]
 
-        return pjm_hub_price_cache.get(pjm_time_key)
+        # Try matching by hour (YYYY-MM-DDTHH)
+        ts_hour = timestamp_str[:13]
+        for cache_ts, lmp in pjm_hub_price_cache.items():
+            if cache_ts[:13] == ts_hour:
+                return lmp
 
-    except Exception as e:
+        return None
+    except Exception:
         return None
 
 def ensure_hub_prices_cached(start_date, end_date):
     """
     Ensure we have hub prices cached for the given date range.
-    Fetches missing dates from PJM API.
+    Fetches from Pharos /pjm/lmp/historic in a SINGLE API call
+    (replaces old day-by-day PJM Data Miner approach which made 49+ calls).
     """
     global pjm_hub_price_cache
 
-    # Load existing cache
-    if not pjm_hub_price_cache:
-        load_pjm_hub_cache()
+    # Check if we already have data covering this range
+    if pjm_hub_price_cache:
+        cached_dates = set()
+        for ts in pjm_hub_price_cache:
+            cached_dates.add(ts[:10])
 
-    # Get list of dates we need
-    start_dt = datetime.strptime(start_date, "%Y-%m-%d")
-    end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+        start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+        end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+        all_covered = True
+        current = start_dt
+        while current <= end_dt:
+            if current.strftime("%Y-%m-%d") not in cached_dates:
+                all_covered = False
+                break
+            current += timedelta(days=1)
 
-    dates_to_fetch = []
-    current = start_dt
-    while current <= end_dt:
-        date_str = current.strftime("%Y-%m-%d")
-        # Check if we have any prices for this date
-        date_prefix = f"{date_str}T"
-        has_data = any(k.startswith(date_prefix) for k in pjm_hub_price_cache.keys())
-        if not has_data:
-            dates_to_fetch.append(date_str)
-        current += timedelta(days=1)
+        if all_covered:
+            logger.info(f"Hub price cache already covers {start_date} to {end_date}")
+            return
 
-    if dates_to_fetch:
-        logger.info(f"Fetching hub prices for {len(dates_to_fetch)} missing dates...")
-        for date_str in dates_to_fetch:
-            prices = fetch_pjm_hub_prices_for_date(date_str)
-            pjm_hub_price_cache.update(prices)
+    # Fetch from Pharos in one call
+    logger.info(f"[Pharos Hub] Fetching hourly hub prices {start_date} to {end_date}...")
+    try:
+        params = {
+            "organization_key": PHAROS_ORGANIZATION_KEY,
+            "pnode_id": PJM_HUB_ID,
+            "start_date": start_date,
+            "end_date": end_date,
+        }
 
-        # Save updated cache
-        save_pjm_hub_cache()
+        resp = requests.get(
+            f"{PHAROS_BASE_URL}/pjm/lmp/historic",
+            auth=get_pharos_auth(),
+            params=params,
+            timeout=60,
+        )
+
+        if resp.status_code != 200:
+            logger.error(f"[Pharos Hub] Status {resp.status_code}: {resp.text[:200]}")
+            return
+
+        data = resp.json()
+        records = data.get("lmp", [])
+
+        new_prices = {}
+        for rec in records:
+            ts = rec.get("timestamp", "")
+            rt_lmp = rec.get("rt_lmp")
+            if ts and rt_lmp is not None:
+                new_prices[ts] = float(rt_lmp)
+
+        pjm_hub_price_cache.update(new_prices)
+        logger.info(f"[Pharos Hub] Cached {len(new_prices)} hourly hub prices ({len(pjm_hub_price_cache)} total)")
+
+    except Exception as e:
+        logger.error(f"[Pharos Hub] Error fetching hub prices: {e}")
 
 # ============================================================================
 # TENASKA API FUNCTIONS
@@ -2370,44 +2315,54 @@ def fetch_pharos_today_generation():
 def fetch_pharos_today_rt_lmp():
     """
     Fetch today's RT LMP from Pharos lmp/historic endpoint.
+    Fetches both node (Haviland) and hub (AEP-Dayton) in separate calls.
     Returns dict keyed by hour ending with RT LMP values.
     """
     try:
         today = datetime.now().strftime("%Y-%m-%d")
         url = f"{PHAROS_BASE_URL}/pjm/lmp/historic"
-        params = {
+
+        # Fetch node LMP (default - Haviland)
+        node_params = {
             "organization_key": PHAROS_ORGANIZATION_KEY,
             "start_date": today,
             "end_date": today,
         }
+        node_response = requests.get(url, auth=get_pharos_auth(), params=node_params, timeout=60)
 
-        response = requests.get(url, auth=get_pharos_auth(), params=params, timeout=60)
+        # Fetch hub LMP (AEP-Dayton)
+        hub_params = {
+            "organization_key": PHAROS_ORGANIZATION_KEY,
+            "pnode_id": PJM_HUB_ID,
+            "start_date": today,
+            "end_date": today,
+        }
+        hub_response = requests.get(url, auth=get_pharos_auth(), params=hub_params, timeout=60)
 
-        if response.status_code == 200:
-            data = response.json()
-            lmps = data.get("lmp", [])
+        rt_lmp_by_he = {}
+        hub_lmp_by_he = {}
 
-            # Log first record fields to discover hub LMP field name
-            if lmps:
-                logger.info(f"[LMP API] First record keys: {list(lmps[0].keys())}")
-                logger.info(f"[LMP API] First record: {lmps[0]}")
-
-            rt_lmp_by_he = {}
-            hub_lmp_by_he = {}
-            for l in lmps:
+        if node_response.status_code == 200:
+            node_lmps = node_response.json().get("lmp", [])
+            for l in node_lmps:
                 hour = l.get("hour_beginning", 0)
                 he = hour + 1 if hour < 23 else 24
                 rt_lmp_by_he[he] = float(l.get("rt_lmp", 0) or 0)
-                # Try multiple possible field names for hub RT LMP
-                hub_val = (l.get("hub_rt_lmp") or l.get("hub_lmp") or
-                          l.get("hub_rt_total_lmp") or l.get("hub_total_lmp_rt") or
-                          l.get("total_lmp_rt_hub") or 0)
-                hub_lmp_by_he[he] = float(hub_val or 0)
-
-            return {"rt_lmp": rt_lmp_by_he, "hub_lmp": hub_lmp_by_he}
+            logger.info(f"[LMP API] Node: {len(node_lmps)} hourly records")
         else:
-            logger.warning(f"Failed to fetch today's RT LMP: {response.status_code}")
-            return {"rt_lmp": {}, "hub_lmp": {}}
+            logger.warning(f"Failed to fetch today's node LMP: {node_response.status_code}")
+
+        if hub_response.status_code == 200:
+            hub_lmps = hub_response.json().get("lmp", [])
+            for l in hub_lmps:
+                hour = l.get("hour_beginning", 0)
+                he = hour + 1 if hour < 23 else 24
+                hub_lmp_by_he[he] = float(l.get("rt_lmp", 0) or 0)
+            logger.info(f"[LMP API] Hub: {len(hub_lmps)} hourly records")
+        else:
+            logger.warning(f"Failed to fetch today's hub LMP: {hub_response.status_code}")
+
+        return {"rt_lmp": rt_lmp_by_he, "hub_lmp": hub_lmp_by_he}
 
     except Exception as e:
         logger.error(f"Error fetching today's RT LMP: {e}")
@@ -3043,8 +2998,8 @@ def background_data_fetch():
     logger.info("Loading existing PJM historical data from file...")
     stored_pjm_history = load_pjm_history()
 
-    # Fetch fresh PJM data from API (get 24 hours to build better initial chart)
-    logger.info("Fetching fresh PJM historical data from API...")
+    # Fetch fresh PJM data from Pharos (get 24 hours to build better initial chart)
+    logger.info("Fetching fresh PJM historical data from Pharos...")
     fresh_pjm_history = get_pjm_lmp_data(hours_back=24)
 
     # Merge stored and fresh data, avoiding duplicates
@@ -3301,20 +3256,18 @@ def background_data_fetch():
             else:
                 logger.warning("No ERCOT real-time data available")
 
-            # Fetch PJM data (fetches last 1 hour to get latest)
-            pjm_data = get_pjm_lmp_data(hours_back=1)
-            if pjm_data and len(pjm_data) > 0:
-                # Get the most recent PJM point
-                latest_pjm_point = pjm_data[-1]
-                latest_pjm_time = latest_pjm_point['time']
+            # Fetch PJM data from Pharos (current prices for cards)
+            pjm_current = get_pjm_current_prices()
+            if pjm_current:
+                latest_pjm_time = pjm_current['time']
 
                 if latest_pjm_time != last_pjm_time:
                     with data_lock:
-                        latest_data["pjm_node_price"] = latest_pjm_point['node_price']
-                        latest_data["pjm_hub_price"] = latest_pjm_point['hub_price']
-                        latest_data["pjm_basis"] = latest_pjm_point['basis']
-                        latest_data["pjm_status"] = latest_pjm_point['status']
-                        latest_data["pjm_history"].append(latest_pjm_point)
+                        latest_data["pjm_node_price"] = pjm_current['node_price']
+                        latest_data["pjm_hub_price"] = pjm_current['hub_price']
+                        latest_data["pjm_basis"] = pjm_current['basis']
+                        latest_data["pjm_status"] = pjm_current['status']
+                        latest_data["pjm_history"].append(pjm_current)
                         # Keep last 2000 points (about 7 days of 5-min data)
                         latest_data["pjm_history"] = latest_data["pjm_history"][-2000:]
                         latest_data["last_update"] = datetime.now().isoformat()
@@ -3323,50 +3276,9 @@ def background_data_fetch():
                         save_pjm_history(latest_data["pjm_history"])
 
                     last_pjm_time = latest_pjm_time
-                    logger.info(f"PJM update: {PJM_NODE}=${latest_pjm_point['node_price']}, {PJM_HUB}=${latest_pjm_point['hub_price']}, Basis=${latest_pjm_point['basis']}")
+                    logger.info(f"PJM update (Pharos): Node=${pjm_current['node_price']}, Hub=${pjm_current['hub_price']}, Basis=${pjm_current['basis']}")
             else:
-                # Fallback: Try to get latest data from Pharos unit_operations
-                logger.warning("No PJM API data available, trying Pharos fallback...")
-                try:
-                    today = datetime.now().strftime("%Y-%m-%d")
-                    url = f"{PHAROS_BASE_URL}/pjm/unit_operations/historic"
-                    params = {
-                        "organization_key": PHAROS_ORGANIZATION_KEY,
-                        "start_date": today,
-                        "end_date": today,
-                    }
-                    pharos_resp = requests.get(url, auth=get_pharos_auth(), params=params, timeout=30)
-                    if pharos_resp.status_code == 200:
-                        pharos_resp_data = pharos_resp.json()
-                        # Store unit_operations without overwriting the entire pharos_data dict
-                        if isinstance(pharos_resp_data, dict) and "unit_operations" in pharos_resp_data:
-                            pharos_data["unit_operations"] = pharos_resp_data["unit_operations"]
-                        ops = pharos_resp_data.get("unit_operations", pharos_resp_data) if isinstance(pharos_resp_data, dict) else pharos_resp_data
-                        if ops:
-                            # Get most recent record
-                            latest_op = ops[-1]
-                            rt_lmp = float(latest_op.get("rt_lmp", 0) or 0)
-                            timestamp = latest_op.get("timestamp", "")
-
-                            # Try to get hub price from cache
-                            hub_lmp = get_hub_price_for_timestamp(timestamp)
-                            if hub_lmp is None:
-                                # Use most recent hub price from cache
-                                if pjm_hub_price_cache:
-                                    hub_lmp = list(pjm_hub_price_cache.values())[-1]
-
-                            if hub_lmp:
-                                basis = hub_lmp - rt_lmp
-                                status = "safe" if basis > 0 else ("caution" if basis >= -30 else "alert")
-                                with data_lock:
-                                    latest_data["pjm_node_price"] = round(rt_lmp, 2)
-                                    latest_data["pjm_hub_price"] = round(hub_lmp, 2)
-                                    latest_data["pjm_basis"] = round(basis, 2)
-                                    latest_data["pjm_status"] = status
-                                    latest_data["last_update"] = datetime.now().isoformat()
-                                logger.info(f"PJM Pharos fallback: node=${rt_lmp:.2f}, hub=${hub_lmp:.2f}, basis=${basis:.2f}")
-                except Exception as e:
-                    logger.error(f"Pharos fallback failed: {e}")
+                logger.warning("No PJM data from Pharos /pjm/lmp/current")
 
             # Periodic Pharos API refresh for NWOH DA data (fast - single API call, do first)
             if PHAROS_AUTO_FETCH:
@@ -4217,18 +4129,19 @@ def get_nwoh_status():
                 tomorrow = (datetime.strptime(today, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
                 ensure_hub_prices_cached(today, tomorrow)
             except Exception as e:
-                logger.warning(f"Could not fetch hub prices from PJM API: {e}")
+                logger.warning(f"Could not fetch hub prices from Pharos: {e}")
 
             if pjm_hub_price_cache:
                 est_tz = ZoneInfo("America/New_York")
                 hourly_hub_sums = defaultdict(list)
                 for ts_str, price in pjm_hub_price_cache.items():
                     try:
-                        dt_utc = datetime.strptime(ts_str, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=ZoneInfo("UTC"))
-                        dt_est = dt_utc.astimezone(est_tz)
+                        # Pharos timestamps: "2026-02-18T00:00:00.000-05:00" (EST with offset)
+                        dt = datetime.fromisoformat(ts_str.replace(".000", ""))
+                        dt_est = dt.astimezone(est_tz)
                         day_str = dt_est.strftime("%Y-%m-%d")
                         if day_str == today:
-                            # 5-min interval beginning at hour X belongs to HE X+1
+                            # Hourly data: hour_beginning at hour X = HE X+1
                             he = dt_est.hour + 1
                             hourly_hub_sums[he].append(float(price))
                     except Exception:
@@ -5641,7 +5554,8 @@ def dashboard():
 
         // Initialize date picker with today's date
         function initDatePicker() {
-            const today = new Date().toISOString().split('T')[0];
+            const now = new Date();
+            const today = now.getFullYear() + '-' + String(now.getMonth()+1).padStart(2,'0') + '-' + String(now.getDate()).padStart(2,'0');
             const startPicker = document.getElementById('date-picker-start');
             const endPicker = document.getElementById('date-picker-end');
 
@@ -5690,7 +5604,8 @@ def dashboard():
         }
 
         function resetToToday() {
-            const today = new Date().toISOString().split('T')[0];
+            const now = new Date();
+            const today = now.getFullYear() + '-' + String(now.getMonth()+1).padStart(2,'0') + '-' + String(now.getDate()).padStart(2,'0');
             document.getElementById('date-picker-start').value = today;
             document.getElementById('date-picker-end').value = today;
             selectedDate = today;
@@ -5814,7 +5729,8 @@ def dashboard():
 
             // Update viewing date indicator
             const viewingDateEl = document.getElementById('nwoh-viewing-date');
-            const today = new Date().toISOString().split('T')[0];
+            const nowD = new Date();
+            const today = nowD.getFullYear() + '-' + String(nowD.getMonth()+1).padStart(2,'0') + '-' + String(nowD.getDate()).padStart(2,'0');
 
             // Helper to aggregate NWOH daily data across a date filter
             function aggregateNwohDays(dailyPnl, filterFn) {
@@ -6527,11 +6443,91 @@ def dashboard():
                 const response = await fetch('/api/nwoh/status');
                 nwohStatus = await response.json();
                 updateNwohPriceCapWarning();
+                // Sync nwohStatus.today into pnlData so all displays (PnL by Period, asset cards,
+                // Settlement Flow, Today PnL) use the same numbers for today
+                if (pnlData && nwohStatus?.today) {
+                    const nowSync = new Date();
+                    const todayStr = nowSync.getFullYear() + '-' + String(nowSync.getMonth()+1).padStart(2,'0') + '-' + String(nowSync.getDate()).padStart(2,'0');
+                    const t = nwohStatus.today;
+
+                    if (pnlData.assets?.NWOH) {
+                        if (!pnlData.assets.NWOH.daily_pnl) pnlData.assets.NWOH.daily_pnl = {};
+                        const existing = pnlData.assets.NWOH.daily_pnl[todayStr] || {};
+                        const oldPnl = existing.pnl || 0;
+                        const oldVol = existing.volume || 0;
+                        const newCount = t.hourly_breakdown ? t.hourly_breakdown.length : (existing.count || 0);
+
+                        pnlData.assets.NWOH.daily_pnl[todayStr] = Object.assign({}, existing, {
+                            pnl: t.total_pnl,
+                            volume: t.total_gen_mwh,
+                            da_revenue: t.da_revenue,
+                            da_mwh: t.total_da_mwh,
+                            rt_sales_revenue: t.rt_sales_revenue,
+                            rt_purchase_cost: t.rt_purchase_cost,
+                            rt_sales_mwh: t.rt_sales_mwh,
+                            rt_purchase_mwh: t.rt_purchase_mwh,
+                            gwa_basis: t.gwa_basis,
+                            ppa_fixed_payment: t.ppa_fixed_payment,
+                            ppa_floating_payment: t.ppa_floating_payment,
+                            ppa_net_settlement: t.ppa_net_settlement,
+                            avg_rt_price: t.avg_rt_price,
+                            avg_hub_price: t.avg_hub_price,
+                            avg_da_price: t.avg_da_price,
+                            count: newCount,
+                        });
+
+                        // Also sync NWOH monthly and annual so MTD/YTD views are consistent
+                        const pnlDelta = (t.total_pnl || 0) - oldPnl;
+                        const volDelta = (t.total_gen_mwh || 0) - oldVol;
+                        const curMonth = todayStr.slice(0, 7);
+                        const curYear = todayStr.slice(0, 4);
+
+                        if (pnlData.assets.NWOH.monthly_pnl?.[curMonth]) {
+                            pnlData.assets.NWOH.monthly_pnl[curMonth].pnl = (pnlData.assets.NWOH.monthly_pnl[curMonth].pnl || 0) + pnlDelta;
+                            pnlData.assets.NWOH.monthly_pnl[curMonth].volume = (pnlData.assets.NWOH.monthly_pnl[curMonth].volume || 0) + volDelta;
+                        }
+                        if (pnlData.assets.NWOH.annual_pnl?.[curYear]) {
+                            pnlData.assets.NWOH.annual_pnl[curYear].pnl = (pnlData.assets.NWOH.annual_pnl[curYear].pnl || 0) + pnlDelta;
+                            pnlData.assets.NWOH.annual_pnl[curYear].volume = (pnlData.assets.NWOH.annual_pnl[curYear].volume || 0) + volDelta;
+                        }
+                        // Update NWOH total_pnl and total_volume
+                        pnlData.assets.NWOH.total_pnl = (pnlData.assets.NWOH.total_pnl || 0) + pnlDelta;
+                        pnlData.assets.NWOH.total_volume = (pnlData.assets.NWOH.total_volume || 0) + volDelta;
+
+                        // Recalculate combined daily/monthly/annual for 'all' view
+                        [todayStr].forEach(key => {
+                            if (pnlData.daily_pnl) {
+                                let cp = 0, cv = 0, cc = 0, cvbp = 0;
+                                Object.values(pnlData.assets).forEach(a => {
+                                    const d = a.daily_pnl?.[key];
+                                    if (d) { cp += d.pnl || 0; cv += d.volume || 0; cc += d.count || 0; cvbp += d.volume_basis_product || 0; }
+                                });
+                                pnlData.daily_pnl[key] = Object.assign({}, pnlData.daily_pnl[key] || {}, {
+                                    pnl: cp, volume: cv, count: cc, volume_basis_product: cvbp,
+                                    gwa_basis: cv > 0 ? Math.round(cvbp / cv * 100) / 100 : null,
+                                });
+                            }
+                        });
+                        if (pnlData.monthly_pnl?.[curMonth]) {
+                            pnlData.monthly_pnl[curMonth].pnl = (pnlData.monthly_pnl[curMonth].pnl || 0) + pnlDelta;
+                            pnlData.monthly_pnl[curMonth].volume = (pnlData.monthly_pnl[curMonth].volume || 0) + volDelta;
+                        }
+                        if (pnlData.annual_pnl?.[curYear]) {
+                            pnlData.annual_pnl[curYear].pnl = (pnlData.annual_pnl[curYear].pnl || 0) + pnlDelta;
+                            pnlData.annual_pnl[curYear].volume = (pnlData.annual_pnl[curYear].volume || 0) + volDelta;
+                        }
+                        // Update combined totals
+                        pnlData.total_pnl = (pnlData.total_pnl || 0) + pnlDelta;
+                        pnlData.total_volume = (pnlData.total_volume || 0) + volDelta;
+                    }
+                }
                 // Re-run display updates now that nwohStatus is available
                 // (first run from fetchPnlData had nwohStatus=null, so NWOH today fallbacks didn't trigger)
                 if (pnlData) {
                     updateAssetCards();
                     updateFilteredDisplay();
+                    updatePnlTable();
+                    renderPnlChart();
                     if (currentAssetFilter === 'NWOH') {
                         updateNwohDetailCard();
                         updateNwohDaSection();
@@ -6568,13 +6564,15 @@ def dashboard():
             document.getElementById('total-volume').value = totalVolume;
 
             // Calculate today's PnL
-            const today = new Date().toISOString().split('T')[0];
+            const nowD2 = new Date();
+            const today = nowD2.getFullYear() + '-' + String(nowD2.getMonth()+1).padStart(2,'0') + '-' + String(nowD2.getDate()).padStart(2,'0');
             const todayData = pnlData.daily_pnl?.[today];
             const todayPnl = todayData?.pnl || 0;
             document.getElementById('today-pnl').value = todayPnl;
 
             // Calculate MTD PnL
-            const currentMonth = new Date().toISOString().slice(0, 7);
+            const nowMtd = new Date();
+            const currentMonth = nowMtd.getFullYear() + '-' + String(nowMtd.getMonth()+1).padStart(2,'0');
             const mtdData = pnlData.monthly_pnl?.[currentMonth];
             const mtdPnl = mtdData?.pnl || 0;
             document.getElementById('mtd-pnl').value = mtdPnl;
