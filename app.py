@@ -6494,20 +6494,12 @@ def dashboard():
                         pnlData.assets.NWOH.total_pnl = (pnlData.assets.NWOH.total_pnl || 0) + pnlDelta;
                         pnlData.assets.NWOH.total_volume = (pnlData.assets.NWOH.total_volume || 0) + volDelta;
 
-                        // Recalculate combined daily/monthly/annual for 'all' view
-                        [todayStr].forEach(key => {
-                            if (pnlData.daily_pnl) {
-                                let cp = 0, cv = 0, cc = 0, cvbp = 0;
-                                Object.values(pnlData.assets).forEach(a => {
-                                    const d = a.daily_pnl?.[key];
-                                    if (d) { cp += d.pnl || 0; cv += d.volume || 0; cc += d.count || 0; cvbp += d.volume_basis_product || 0; }
-                                });
-                                pnlData.daily_pnl[key] = Object.assign({}, pnlData.daily_pnl[key] || {}, {
-                                    pnl: cp, volume: cv, count: cc, volume_basis_product: cvbp,
-                                    gwa_basis: cv > 0 ? Math.round(cvbp / cv * 100) / 100 : null,
-                                });
-                            }
-                        });
+                        // Apply NWOH delta to combined daily/monthly/annual for 'all' view
+                        // (Don't re-sum from assets — backend excludes UNKNOWN elements from combined totals)
+                        if (pnlData.daily_pnl?.[todayStr]) {
+                            pnlData.daily_pnl[todayStr].pnl = (pnlData.daily_pnl[todayStr].pnl || 0) + pnlDelta;
+                            pnlData.daily_pnl[todayStr].volume = (pnlData.daily_pnl[todayStr].volume || 0) + volDelta;
+                        }
                         if (pnlData.monthly_pnl?.[curMonth]) {
                             pnlData.monthly_pnl[curMonth].pnl = (pnlData.monthly_pnl[curMonth].pnl || 0) + pnlDelta;
                             pnlData.monthly_pnl[curMonth].volume = (pnlData.monthly_pnl[curMonth].volume || 0) + volDelta;
