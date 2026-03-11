@@ -2627,18 +2627,28 @@ def aggregate_pharos_unit_operations(ops):
             d["avg_hub_price"] = None
 
         # Calculate PPA settlement for NWOH
-        # Fixed payment = Gen × $33.31 (revenue from GM)
-        # Floating payment = Gen × Hub LMP (cost to GM)
-        # Net PPA = Fixed - Floating (positive when hub < $33.31)
+        # Check for CES EMA report overrides (verified 5-min settlement data)
+        try:
+            ces_ppa = pharos_data.get("ces_ppa_overrides", {}).get(day_key, None)
+        except:
+            ces_ppa = None
+
         gen_mwh = d["volume"]
-        avg_hub = d.get("avg_hub_price") or d.get("avg_rt_price") or 0
-        if gen_mwh > 0:
+        if ces_ppa and gen_mwh > 0:
+            # Use CES verified PPA values (from 5-min weighted AEP-Dayton Hub RT LMP)
+            d["ppa_qty_mwh"] = ces_ppa.get("ppa_qty_mwh", gen_mwh)
+            d["ppa_fixed_payment"] = ces_ppa["ppa_fixed_payment"]
+            d["ppa_floating_payment"] = ces_ppa["ppa_floating_payment"]
+            d["ppa_net_settlement"] = ces_ppa["ppa_net_settlement"]
+            d["pnl"] = round(pjm_gross + d["ppa_net_settlement"], 2)
+            d["realized_price"] = round(d["pnl"] / gen_mwh, 2)
+            d["ppa_source"] = "ces_verified"
+        elif gen_mwh > 0:
+            avg_hub = d.get("avg_hub_price") or d.get("avg_rt_price") or 0
             d["ppa_fixed_payment"] = round(gen_mwh * PPA_PRICE, 2)
             d["ppa_floating_payment"] = round(gen_mwh * avg_hub, 2)
             d["ppa_net_settlement"] = round(d["ppa_fixed_payment"] - d["ppa_floating_payment"], 2)
-            # Total PnL = PJM revenue + PPA settlement
             d["pnl"] = round(pjm_gross + d["ppa_net_settlement"], 2)
-            # Realized price = total PnL / volume
             d["realized_price"] = round(d["pnl"] / gen_mwh, 2) if gen_mwh > 0 else None
         else:
             d["ppa_fixed_payment"] = 0
@@ -2647,7 +2657,17 @@ def aggregate_pharos_unit_operations(ops):
             d["pnl"] = round(pjm_gross, 2)
             d["realized_price"] = None
 
-    for d in monthly.values():
+    # Aggregate daily PPA values by month (ensures CES overrides carry through)
+    monthly_ppa_from_daily = {}
+    for day_key, d in daily.items():
+        month_key = day_key[:7]
+        if month_key not in monthly_ppa_from_daily:
+            monthly_ppa_from_daily[month_key] = {"fixed": 0, "floating": 0, "net": 0}
+        monthly_ppa_from_daily[month_key]["fixed"] += d.get("ppa_fixed_payment", 0)
+        monthly_ppa_from_daily[month_key]["floating"] += d.get("ppa_floating_payment", 0)
+        monthly_ppa_from_daily[month_key]["net"] += d.get("ppa_net_settlement", 0)
+
+    for month_key, d in monthly.items():
         # Store PJM-only revenue first
         pjm_gross = d["pnl"]
         d["pjm_gross_revenue"] = round(pjm_gross, 2)
@@ -2678,9 +2698,17 @@ def aggregate_pharos_unit_operations(ops):
             d["avg_hub_price"] = None
 
         # Calculate PPA settlement for NWOH
+        # Use sum of daily PPA values (which include CES overrides) for accuracy
+        ppa_agg = monthly_ppa_from_daily.get(month_key)
         gen_mwh = d["volume"]
-        avg_hub = d.get("avg_hub_price") or d.get("avg_rt_price") or 0
-        if gen_mwh > 0:
+        if ppa_agg and gen_mwh > 0:
+            d["ppa_fixed_payment"] = round(ppa_agg["fixed"], 2)
+            d["ppa_floating_payment"] = round(ppa_agg["floating"], 2)
+            d["ppa_net_settlement"] = round(ppa_agg["net"], 2)
+            d["pnl"] = round(pjm_gross + d["ppa_net_settlement"], 2)
+            d["realized_price"] = round(d["pnl"] / gen_mwh, 2)
+        elif gen_mwh > 0:
+            avg_hub = d.get("avg_hub_price") or d.get("avg_rt_price") or 0
             d["ppa_fixed_payment"] = round(gen_mwh * PPA_PRICE, 2)
             d["ppa_floating_payment"] = round(gen_mwh * avg_hub, 2)
             d["ppa_net_settlement"] = round(d["ppa_fixed_payment"] - d["ppa_floating_payment"], 2)
@@ -2693,7 +2721,17 @@ def aggregate_pharos_unit_operations(ops):
             d["pnl"] = round(pjm_gross, 2)
             d["realized_price"] = None
 
-    for d in annual.values():
+    # Aggregate monthly PPA values by year
+    annual_ppa_from_monthly = {}
+    for month_key, d in monthly.items():
+        year_key = month_key[:4]
+        if year_key not in annual_ppa_from_monthly:
+            annual_ppa_from_monthly[year_key] = {"fixed": 0, "floating": 0, "net": 0}
+        annual_ppa_from_monthly[year_key]["fixed"] += d.get("ppa_fixed_payment", 0)
+        annual_ppa_from_monthly[year_key]["floating"] += d.get("ppa_floating_payment", 0)
+        annual_ppa_from_monthly[year_key]["net"] += d.get("ppa_net_settlement", 0)
+
+    for year_key, d in annual.items():
         # Store PJM-only revenue first
         pjm_gross = d["pnl"]
         d["pjm_gross_revenue"] = round(pjm_gross, 2)
@@ -2724,9 +2762,17 @@ def aggregate_pharos_unit_operations(ops):
             d["avg_hub_price"] = None
 
         # Calculate PPA settlement for NWOH
+        # Use sum of monthly PPA values (which include CES overrides) for accuracy
+        ppa_agg = annual_ppa_from_monthly.get(year_key)
         gen_mwh = d["volume"]
-        avg_hub = d.get("avg_hub_price") or d.get("avg_rt_price") or 0
-        if gen_mwh > 0:
+        if ppa_agg and gen_mwh > 0:
+            d["ppa_fixed_payment"] = round(ppa_agg["fixed"], 2)
+            d["ppa_floating_payment"] = round(ppa_agg["floating"], 2)
+            d["ppa_net_settlement"] = round(ppa_agg["net"], 2)
+            d["pnl"] = round(pjm_gross + d["ppa_net_settlement"], 2)
+            d["realized_price"] = round(d["pnl"] / gen_mwh, 2)
+        elif gen_mwh > 0:
+            avg_hub = d.get("avg_hub_price") or d.get("avg_rt_price") or 0
             d["ppa_fixed_payment"] = round(gen_mwh * PPA_PRICE, 2)
             d["ppa_floating_payment"] = round(gen_mwh * avg_hub, 2)
             d["ppa_net_settlement"] = round(d["ppa_fixed_payment"] - d["ppa_floating_payment"], 2)
@@ -3105,6 +3151,24 @@ def background_data_fetch():
                 unit_ops = fetch_pharos_hourly_revenue(start_date=PHAROS_FETCH_START_DATE)
 
                 if unit_ops:
+                    # Preserve CES backfill/corrected records from cache
+                    with data_lock:
+                        existing_ops = pharos_data.get("unit_ops", [])
+                    ces_ops = [op for op in existing_ops if op.get("source") in ("ces_backfill", "ces_corrected")]
+                    if ces_ops:
+                        api_keys = set((op.get("date", ""), op.get("he", 0)) for op in unit_ops)
+                        corrected_keys = set((op.get("date", ""), op.get("he", 0))
+                                             for op in ces_ops if op.get("source") == "ces_corrected")
+                        if corrected_keys:
+                            unit_ops = [op for op in unit_ops
+                                        if (op.get("date", ""), op.get("he", 0)) not in corrected_keys]
+                        for op in ces_ops:
+                            key = (op.get("date", ""), op.get("he", 0))
+                            if key not in api_keys or op.get("source") == "ces_corrected":
+                                unit_ops.append(op)
+                        unit_ops.sort(key=lambda x: (x.get("date", ""), x.get("he", 0)))
+                        logger.info(f"Preserved {len(ces_ops)} CES backfill/corrected records on initial load")
+
                     ops_aggregated = aggregate_pharos_unit_operations(unit_ops)
                     with data_lock:
                         pharos_data["unit_ops"] = unit_ops
@@ -3324,6 +3388,24 @@ def background_data_fetch():
                         unit_ops = fetch_pharos_hourly_revenue(start_date=PHAROS_FETCH_START_DATE)
 
                         if unit_ops:
+                            # Preserve CES backfill/corrected records that the API doesn't cover
+                            with data_lock:
+                                existing_ops = pharos_data.get("unit_ops", [])
+                            ces_ops = [op for op in existing_ops if op.get("source") in ("ces_backfill", "ces_corrected")]
+                            if ces_ops:
+                                api_keys = set((op.get("date", ""), op.get("he", 0)) for op in unit_ops)
+                                corrected_keys = set((op.get("date", ""), op.get("he", 0))
+                                                     for op in ces_ops if op.get("source") == "ces_corrected")
+                                if corrected_keys:
+                                    unit_ops = [op for op in unit_ops
+                                                if (op.get("date", ""), op.get("he", 0)) not in corrected_keys]
+                                for op in ces_ops:
+                                    key = (op.get("date", ""), op.get("he", 0))
+                                    if key not in api_keys or op.get("source") == "ces_corrected":
+                                        unit_ops.append(op)
+                                unit_ops.sort(key=lambda x: (x.get("date", ""), x.get("he", 0)))
+                                logger.info(f"Preserved {len(ces_ops)} CES backfill/corrected records in unit_ops")
+
                             ops_aggregated = aggregate_pharos_unit_operations(unit_ops)
                             with data_lock:
                                 pharos_data["unit_ops"] = unit_ops
@@ -3970,6 +4052,24 @@ def reload_pharos():
         unit_ops = fetch_pharos_hourly_revenue(start_date=start_date)
 
         if unit_ops:
+            # Preserve CES backfill/corrected records
+            with data_lock:
+                existing_ops = pharos_data.get("unit_ops", [])
+            ces_ops = [op for op in existing_ops if op.get("source") in ("ces_backfill", "ces_corrected")]
+            if ces_ops:
+                api_keys = set((op.get("date", ""), op.get("he", 0)) for op in unit_ops)
+                corrected_keys = set((op.get("date", ""), op.get("he", 0))
+                                     for op in ces_ops if op.get("source") == "ces_corrected")
+                if corrected_keys:
+                    unit_ops = [op for op in unit_ops
+                                if (op.get("date", ""), op.get("he", 0)) not in corrected_keys]
+                for op in ces_ops:
+                    key = (op.get("date", ""), op.get("he", 0))
+                    if key not in api_keys or op.get("source") == "ces_corrected":
+                        unit_ops.append(op)
+                unit_ops.sort(key=lambda x: (x.get("date", ""), x.get("he", 0)))
+                logger.info(f"Preserved {len(ces_ops)} CES backfill/corrected records on reload")
+
             ops_aggregated = aggregate_pharos_unit_operations(unit_ops)
             with data_lock:
                 pharos_data["unit_ops"] = unit_ops
