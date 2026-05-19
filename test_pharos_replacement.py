@@ -19,10 +19,11 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 # TENASKA API CONFIGURATION
 # ============================================================================
-TENASKA_API_AUTH = (
-    os.getenv("TENASKA_API_USER", "tmartin@skyvest.com"),
-    os.getenv("TENASKA_API_PASSWORD", "REDACTED_TENASKA_PASSWORD")
-)
+TENASKA_API_USER = os.getenv("TENASKA_API_USER")
+TENASKA_API_PASSWORD = os.getenv("TENASKA_API_PASSWORD")
+if not TENASKA_API_USER or not TENASKA_API_PASSWORD:
+    raise RuntimeError("TENASKA_API_USER and TENASKA_API_PASSWORD must be set in the environment (.env)")
+TENASKA_API_AUTH = (TENASKA_API_USER, TENASKA_API_PASSWORD)
 TENASKA_TOKEN_URL = "https://api.ptp.energy/v1/token"
 TENASKA_ENERGY_IMBALANCE_URL = "https://api.ptp.energy/v1/markets/ERCOTNodal/endpoints/EnergySettlement/data"
 
@@ -43,7 +44,9 @@ HUB_SETTLEMENT_POINT = "HB_WEST"  # Hub for basis calculation
 # ============================================================================
 # PHAROS AMS API CONFIGURATION (for NWOH - PJM asset)
 # ============================================================================
-PHAROS_API_TOKEN = os.getenv("PHAROS_API_TOKEN", "REDACTED_PHAROS_TOKEN")
+PHAROS_API_TOKEN = os.getenv("PHAROS_API_TOKEN")
+if not PHAROS_API_TOKEN:
+    raise RuntimeError("PHAROS_API_TOKEN must be set in the environment (.env)")
 PHAROS_BASE_URL = "https://ams.pharos-ei.com/api"
 PHAROS_ORGANIZATION_KEY = "skyv-nwo"  # Northwest Ohio Wind
 PHAROS_AUTO_FETCH = True  # Set to True to fetch from Pharos API
@@ -155,7 +158,9 @@ WORST_BASIS_DISPLAY_COUNT = 10  # Show top 10 in dashboard
 
 app = Flask(__name__)
 CORS(app)
-app.secret_key = os.getenv('SECRET_KEY', 'your-secret-key-change-this')
+app.secret_key = os.getenv('SECRET_KEY')
+if not app.secret_key:
+    raise RuntimeError("SECRET_KEY must be set in the environment (.env)")
 
 # Configuration - ERCOT
 NODE_1 = "NBOHR_RN"
@@ -171,7 +176,9 @@ PJM_HUB_ID = 34497127
 # Thresholds
 ALERT_THRESHOLD = 100
 GREEN_THRESHOLD = -100
-DASHBOARD_PASSWORD = os.getenv('DASHBOARD_PASSWORD', 'REDACTED_DASHBOARD_PASSWORD')
+DASHBOARD_PASSWORD = os.getenv('DASHBOARD_PASSWORD')
+if not DASHBOARD_PASSWORD:
+    raise RuntimeError("DASHBOARD_PASSWORD must be set in the environment (.env)")
 
 # Storage file for PJM historical data
 PJM_HISTORY_FILE = 'pjm_history.json'

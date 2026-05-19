@@ -23,6 +23,8 @@ services:
         sync: false
       - key: TENASKA_API_PASSWORD
         sync: false
+      - key: PHAROS_API_TOKEN
+        sync: false
 
     # Service details
     healthCheckPath: /api/health
