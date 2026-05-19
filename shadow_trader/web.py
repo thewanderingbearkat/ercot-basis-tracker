@@ -1,0 +1,565 @@
+"""Shadow Trading dashboard, exposed as a Flask Blueprint.
+
+When mounted on the main ERCOT basis tracker app (see app.py's `register_blueprint`):
+    GET  /shadow                       -- HTML dashboard tab
+    GET  /api/shadow/strategy          -- recompute strategy at ?bid_fraction=X
+    GET  /api/shadow/asset_day         -- per-asset daily detail
+    GET  /api/shadow/ledger            -- ledger entries
+    GET  /api/shadow/health            -- cache age + ledger counts
+    POST /api/shadow/refresh           -- trigger cache refresh (background thread)
+
+When run standalone via `scripts/serve.py` (local-only dev mode), the
+`create_app()` helper at the bottom wraps the blueprint in a fresh Flask app
+with the same URL paths under `/api/...` for backwards compatibility.
+"""
+import logging
+import os
+import threading
+import time
+from datetime import datetime
+from typing import Any
+from zoneinfo import ZoneInfo
+
+from flask import Blueprint, Flask, jsonify, redirect, render_template, request, session, url_for
+from flask_cors import CORS
+
+from shadow_trader.aggregate import aggregate
+from shadow_trader.cache import cache_age_seconds, latest_cache_date, load_cache, merge_and_save_cache
+from shadow_trader.config import ASSET_CONFIG, DART_ASSETS
+from shadow_trader.ledger import entries_by_status
+from shadow_trader.risk import summarize
+from shadow_trader.strategy import simulate_shadow_da
+
+logger = logging.getLogger(__name__)
+
+# Blueprint that can be registered on any Flask app. Routes here use paths
+# WITHOUT the /shadow or /api/shadow prefix -- those get added at register time
+# in the host application (see app.py:register_blueprint).
+shadow_bp = Blueprint(
+    "shadow",
+    __name__,
+    template_folder=os.path.join(os.path.dirname(__file__), "templates"),
+)
+
+# In-memory raw-data cache. Loaded on first request, refreshed when client POSTs /api/refresh.
+_cache_lock = threading.Lock()
+_cache_blob: dict[str, Any] | None = None
+_refresh_thread: threading.Thread | None = None
+_refresh_status = {"running": False, "last_error": None, "last_finished_at": None}
+
+# Auto-refresh background thread (matches NWOH dashboard's background_data_fetch pattern).
+# Periodically calls the same refresh worker /api/refresh uses, so cached data tracks the
+# upstream APIs without anyone clicking buttons. Configurable via env vars; default 30 min.
+#   SHADOW_AUTO_REFRESH_INTERVAL  -- seconds between refresh ticks (default 1800)
+#   SHADOW_AUTO_REFRESH_DAYS_BACK -- how many days of history to refresh each tick. Default
+#                                   is the full BACKTEST_START_DATE window (slow but always
+#                                   complete). Set to e.g. "21" to only refresh the last
+#                                   three weeks each tick -- that way the refresh finishes
+#                                   well inside the interval.
+AUTO_REFRESH_INTERVAL_SECONDS = int(os.getenv("SHADOW_AUTO_REFRESH_INTERVAL", "1800"))
+# Incremental auto-refresh: only fetch dates not already in the cache, plus a small overlap
+# to catch late RT settlement updates on the most recent days. Default 2 days of overlap.
+# Set higher if your data is taking longer than that to fully settle upstream.
+AUTO_REFRESH_OVERLAP_DAYS = int(os.getenv("SHADOW_AUTO_REFRESH_OVERLAP_DAYS", "2"))
+# Refresh on startup if cache is older than this (so a stale overnight cache gets refreshed
+# immediately when the server comes up, instead of waiting up to AUTO_REFRESH_INTERVAL_SECONDS)
+AUTO_REFRESH_STALE_THRESHOLD_SECONDS = AUTO_REFRESH_INTERVAL_SECONDS
+_auto_refresh_thread: threading.Thread | None = None
+_auto_refresh_started = False
+
+
+def _ensure_cache_loaded():
+    global _cache_blob
+    with _cache_lock:
+        if _cache_blob is None:
+            _cache_blob = load_cache()
+
+
+def _common_forecast_window(forecasts: dict) -> dict | None:
+    """Return the date range where EVERY asset in DART_ASSETS has at least one non-zero
+    forecast. This is the only window where portfolio-level shadow-strategy numbers are
+    meaningful -- for any other dates, the wind assets contribute zero uplift and skew
+    the aggregates. Returns None if any asset has no forecasts at all.
+    """
+    per_asset_dates = {}
+    for asset in DART_ASSETS:
+        dates = {hk.split(" ")[0] for hk, v in forecasts.get(asset, {}).items() if (v or 0) > 0}
+        if not dates:
+            return None
+        per_asset_dates[asset] = dates
+    common = set.intersection(*per_asset_dates.values())
+    if not common:
+        return None
+    s = sorted(common)
+    return {"start": s[0], "end": s[-1], "days": len(s)}
+
+
+def _filter_to_window(market_prices, generation, forecasts, start, end):
+    """If user specifies a sub-window via the slider's date inputs, filter cached data."""
+    if not start and not end:
+        return market_prices, generation, forecasts
+
+    def in_window(date_str: str) -> bool:
+        if start and date_str < start:
+            return False
+        if end and date_str > end:
+            return False
+        return True
+
+    filt_gen = {
+        asset: {hk: v for hk, v in d.items() if in_window(hk.split(" ")[0])}
+        for asset, d in generation.items()
+    }
+    filt_fc = {
+        asset: {hk: v for hk, v in d.items() if in_window(hk.split(" ")[0])}
+        for asset, d in forecasts.items()
+    }
+    # Market prices are keyed by ISO timestamp; the date portion is the first 10 chars.
+    filt_mp = {}
+    for node, kinds in market_prices.items():
+        filt_mp[node] = {}
+        for kind, series in kinds.items():
+            filt_mp[node][kind] = {ts: v for ts, v in series.items() if in_window(ts[:10])}
+    return filt_mp, filt_gen, filt_fc
+
+
+@shadow_bp.route("/shadow")
+def index():
+    return render_template("dashboard.html")
+
+
+@shadow_bp.route("/api/shadow/health")
+def health():
+    _ensure_cache_loaded()
+    blob = _cache_blob
+    age = cache_age_seconds()
+    common = _common_forecast_window(blob["forecasts"]) if blob else None
+    return jsonify({
+        "auto_refresh_interval_seconds": AUTO_REFRESH_INTERVAL_SECONDS,
+        "auto_refresh_started": _auto_refresh_started,
+        "common_forecast_window": common,
+        "cache_loaded": blob is not None,
+        "cache_age_seconds": age,
+        "cache_saved_at": blob["saved_at"] if blob else None,
+        "cache_window": {"start": blob["start"], "end": blob["end"]} if blob else None,
+        "ledger_counts": {
+            "BID": len(entries_by_status("BID")),
+            "AWARDED": len(entries_by_status("AWARDED")),
+            "SETTLED": len(entries_by_status("SETTLED")),
+        },
+        "refresh": dict(_refresh_status),
+        "now": datetime.now(ZoneInfo("America/Chicago")).isoformat(),
+    })
+
+
+@shadow_bp.route("/api/shadow/strategy")
+def strategy():
+    """Recompute shadow strategy at the requested bid_fraction. All math in-process."""
+    _ensure_cache_loaded()
+    if _cache_blob is None:
+        return jsonify({"error": "No data cache. Run `python scripts/refresh_data.py` first."}), 503
+
+    bid_fraction = float(request.args.get("bid_fraction", 1.0))
+    start = request.args.get("start")
+    end = request.args.get("end")
+
+    # If the caller didn't pin a window, default to the intersection of all assets'
+    # real-forecast dates. Outside this window, BKI/BKII have no STWPF and contribute
+    # zero uplift, which skews portfolio aggregates / hit rates.
+    if not start and not end:
+        common = _common_forecast_window(_cache_blob["forecasts"])
+        if common:
+            start, end = common["start"], common["end"]
+
+    market_prices, generation, forecasts = _filter_to_window(
+        _cache_blob["market_prices"], _cache_blob["generation"], _cache_blob["forecasts"], start, end,
+    )
+
+    records = simulate_shadow_da(market_prices, generation, forecasts, "cached", bid_fraction=bid_fraction)
+    agg = aggregate(records)
+    risk = summarize(records)
+    risk_per_asset = {
+        asset: summarize([r for r in records if r["asset"] == asset])
+        for asset in DART_ASSETS
+    }
+
+    # Per-asset daily uplift series for the cumulative chart.
+    daily_by_asset: dict[str, dict[str, float]] = {a: {} for a in DART_ASSETS}
+    for date, asset_buckets in agg["daily_asset"].items():
+        for asset, b in asset_buckets.items():
+            daily_by_asset[asset][date] = b["uplift"]
+    dates = sorted({d for series in daily_by_asset.values() for d in series})
+    series = {
+        asset: [round(daily_by_asset[asset].get(d, 0), 2) for d in dates]
+        for asset in DART_ASSETS
+    }
+
+    # Asset-config metadata for the cards
+    assets_meta = {
+        a: {
+            "display_name": ASSET_CONFIG[a]["display_name"],
+            "tech": ASSET_CONFIG[a]["tech"],
+            "settlement_point": ASSET_CONFIG[a]["settlement_point"],
+            "ppa_percent": ASSET_CONFIG[a]["ppa_percent"],
+            "forecast_source": ASSET_CONFIG[a]["forecast_source"],
+        } for a in DART_ASSETS
+    }
+
+    return jsonify({
+        "bid_fraction": bid_fraction,
+        "window": {"start": start or _cache_blob["start"], "end": end or _cache_blob["end"]},
+        "assets_meta": assets_meta,
+        "summary": agg,
+        "risk_portfolio": risk,
+        "risk_per_asset": risk_per_asset,
+        "daily_dates": dates,
+        "daily_uplift_by_asset": series,
+    })
+
+
+@shadow_bp.route("/api/shadow/ledger")
+def ledger():
+    return jsonify({"entries": entries_by_status(None)})
+
+
+@shadow_bp.route("/api/shadow/asset_day")
+def asset_day():
+    """Return hour-by-hour bid/forecast/actual/prices/uplift for one asset on one date.
+
+    Powers the per-asset "Today's Performance" panel: DA bid vs actual MW bars with
+    over-gen / under-gen coloring, plus DA revenue + RT settlement summary.
+
+    Query params:
+        asset           required (BKI/BKII/HOLSTEIN)
+        date            required (YYYY-MM-DD)
+        bid_fraction    optional, default 1.0
+    """
+    from shadow_trader.strategy import _build_price_indexes
+
+    _ensure_cache_loaded()
+    if _cache_blob is None:
+        return jsonify({"error": "No data cache. Run scripts/refresh_data.py first."}), 503
+
+    asset = request.args.get("asset")
+    date = request.args.get("date")
+    if not asset or asset not in ASSET_CONFIG:
+        return jsonify({"error": "missing/unknown asset"}), 400
+    if not date:
+        return jsonify({"error": "missing date (YYYY-MM-DD)"}), 400
+    bid_fraction = float(request.args.get("bid_fraction", 1.0))
+
+    from shadow_trader.config import PPA_HUB_NODE
+    cfg = ASSET_CONFIG[asset]
+    node = cfg["settlement_point"]
+    da_idx, rt_idx = _build_price_indexes(_cache_blob["market_prices"])
+    node_da, node_rt = da_idx.get(node, {}), rt_idx.get(node, {})
+    hub_rt = rt_idx.get(PPA_HUB_NODE, {})
+
+    ppa_price = float(cfg.get("ppa_price", 0) or 0)
+    ppa_pct = float(cfg.get("ppa_percent", 0) or 0) / 100.0
+    basis_exposure = float(cfg.get("ppa_basis_exposure", 0) or 0)
+    if basis_exposure > 1:
+        basis_exposure = basis_exposure / 100.0
+
+    asset_gen = _cache_blob["generation"].get(asset, {})
+    asset_fc = _cache_blob["forecasts"].get(asset, {})
+
+    hourly = []
+    sum_da_bid = sum_actual = sum_da_rev = sum_rt_settle = sum_uplift = sum_rt_only = 0.0
+    sum_ppa_fixed = sum_ppa_floating = sum_net_ppa = 0.0
+    awarded_hours = 0
+    for he in range(1, 25):
+        hour = he - 1
+        hk = f"{date} HE{he:02d}"
+        forecast_mw = float(asset_fc.get(hk, 0))
+        gen_data = asset_gen.get(hk)
+        actual_mw = float(gen_data["gen_mwh"]) if gen_data else None
+        da_price = node_da.get((date, hour))
+        rt_price = node_rt.get((date, hour))
+        rt_hub_price = hub_rt.get((date, hour))
+        da_bid_mw = forecast_mw * bid_fraction
+
+        row = {
+            "he": he,
+            "forecast_mw": round(forecast_mw, 2),
+            "da_bid_mw": round(da_bid_mw, 2),
+            "actual_mw": round(actual_mw, 2) if actual_mw is not None else None,
+            "da_price": round(da_price, 2) if da_price is not None else None,
+            "rt_price": round(rt_price, 2) if rt_price is not None else None,
+            "rt_hub_price": round(rt_hub_price, 2) if rt_hub_price is not None else None,
+            "da_revenue": None,
+            "rt_deviation_mw": None,
+            "rt_settlement": None,
+            "shadow_total": None,
+            "rt_only_revenue": None,
+            "uplift": None,
+            "ppa_fixed": None,
+            "ppa_floating": None,
+            "net_ppa": None,
+            "direction": "future",
+        }
+
+        if da_price is not None and da_bid_mw > 0:
+            row["da_revenue"] = round(da_bid_mw * da_price, 2)
+            sum_da_rev += row["da_revenue"]
+            awarded_hours += 1
+
+        if actual_mw is not None and rt_price is not None:
+            deviation = actual_mw - da_bid_mw
+            rt_settle = deviation * rt_price
+            da_rev = row["da_revenue"] or 0.0
+            shadow = da_rev + rt_settle
+            rt_only = actual_mw * rt_price
+            row["rt_deviation_mw"] = round(deviation, 2)
+            row["rt_settlement"] = round(rt_settle, 2)
+            row["shadow_total"] = round(shadow, 2)
+            row["rt_only_revenue"] = round(rt_only, 2)
+            row["uplift"] = round(shadow - rt_only, 2)
+            sum_actual += actual_mw
+            sum_rt_settle += rt_settle
+            sum_uplift += (shadow - rt_only)
+            sum_rt_only += rt_only
+
+            # PPA fixed-for-floating swap, settled at RT prices (matches NWOH model)
+            if ppa_price > 0 and ppa_pct > 0:
+                hub_for_swap = rt_hub_price if rt_hub_price is not None else rt_price
+                ppa_volume = actual_mw * ppa_pct
+                floating_price = basis_exposure * hub_for_swap + (1.0 - basis_exposure) * rt_price
+                ppa_fixed = ppa_volume * ppa_price
+                ppa_floating = ppa_volume * floating_price
+                net_ppa = ppa_fixed - ppa_floating
+                row["ppa_fixed"] = round(ppa_fixed, 2)
+                row["ppa_floating"] = round(ppa_floating, 2)
+                row["net_ppa"] = round(net_ppa, 2)
+                sum_ppa_fixed += ppa_fixed
+                sum_ppa_floating += ppa_floating
+                sum_net_ppa += net_ppa
+
+            if deviation > 1:
+                row["direction"] = "over"
+            elif deviation < -1:
+                row["direction"] = "under"
+            else:
+                row["direction"] = "matched"
+        sum_da_bid += da_bid_mw
+
+        hourly.append(row)
+
+    shadow_market = sum_da_rev + sum_rt_settle
+    total_pnl_shadow = shadow_market + sum_net_ppa
+    total_pnl_rt_only = sum_rt_only + sum_net_ppa
+
+    return jsonify({
+        "asset": asset,
+        "asset_meta": {
+            "display_name": cfg["display_name"],
+            "tech": cfg["tech"],
+            "settlement_point": node,
+            "ppa_percent": cfg["ppa_percent"],
+            "forecast_source": cfg["forecast_source"],
+            "ppa_price": cfg.get("ppa_price"),
+            "ppa_basis_exposure": basis_exposure,
+        },
+        "date": date,
+        "bid_fraction": bid_fraction,
+        "hourly": hourly,
+        "summary": {
+            "total_da_bid_mw": round(sum_da_bid, 2),
+            "awarded_hours": awarded_hours,
+            "total_actual_mw": round(sum_actual, 2),
+            "total_rt_deviation_mw": round(sum_actual - sum_da_bid, 2),
+            # Market leg (ERCOT DA + RT)
+            "da_revenue": round(sum_da_rev, 2),
+            "rt_settlement": round(sum_rt_settle, 2),
+            "shadow_total": round(shadow_market, 2),
+            "rt_only_revenue": round(sum_rt_only, 2),
+            "uplift": round(sum_uplift, 2),
+            # PPA leg (fixed-for-floating swap)
+            "ppa_fixed": round(sum_ppa_fixed, 2),
+            "ppa_floating": round(sum_ppa_floating, 2),
+            "net_ppa": round(sum_net_ppa, 2),
+            # Bottom-line PnL = market + PPA
+            "total_pnl_shadow": round(total_pnl_shadow, 2),
+            "total_pnl_rt_only": round(total_pnl_rt_only, 2),
+        },
+    })
+
+
+def _refresh_worker(start: str | None, end: str | None, merge: bool = False):
+    """Fetch market_prices / generation / forecasts and update the cache.
+
+    merge=False (default): overwrite the cache with whatever was fetched in [start, end].
+                           Used by manual `/api/refresh` and one-shot `refresh_data.py`.
+    merge=True:            merge the new fetch into the existing cache so older days stay.
+                           Used by the auto-refresh loop to incrementally extend the cache
+                           without re-fetching settled history.
+    """
+    global _cache_blob
+    _refresh_status["running"] = True
+    _refresh_status["last_error"] = None
+    try:
+        # Import here so we don't pay the import cost on app startup.
+        from shadow_trader.config import ASSET_CONFIG, BACKTEST_START_DATE, DART_ASSETS
+        from shadow_trader.data import fetch_forecasts, fetch_generation, fetch_market_prices
+        from shadow_trader.tenaska import get_tenaska_token
+        from shadow_trader.wind_forecast import build_wind_forecast
+        from shadow_trader.cache import save_cache
+
+        s = start or BACKTEST_START_DATE
+        e = end or datetime.now(ZoneInfo("America/Chicago")).strftime("%Y-%m-%d")
+        logger.info("Refreshing data %s -> %s (merge=%s)", s, e, merge)
+        token = get_tenaska_token()
+        if not token:
+            raise RuntimeError("Could not obtain Tenaska token")
+        market_prices = fetch_market_prices(s, e, token)
+        generation = fetch_generation(s, e, token)
+        forecasts = {k: {} for k in DART_ASSETS}
+        tenaska_assets = [a for a in DART_ASSETS if ASSET_CONFIG[a]["forecast_source"] == "tenaska"]
+        ercot_assets = [a for a in DART_ASSETS if ASSET_CONFIG[a]["forecast_source"] == "ercot_regional"]
+        if tenaska_assets:
+            tf, _ = fetch_forecasts(s, e, token)
+            for a in tenaska_assets:
+                forecasts[a] = tf.get(a, {})
+        if ercot_assets:
+            # For the wind share factor we want the FULL recent generation history so the
+            # per-hour share factor is stable. If we're doing an incremental merge we only
+            # just fetched the recent window, so combine with what's already in the cache.
+            gen_for_share = generation
+            if merge:
+                existing = load_cache() or {}
+                merged_gen = {a: dict(existing.get("generation", {}).get(a, {})) for a in DART_ASSETS}
+                for a in DART_ASSETS:
+                    merged_gen[a].update(generation.get(a, {}))
+                gen_for_share = merged_gen
+            by_region: dict[str, list[str]] = {}
+            for a in ercot_assets:
+                by_region.setdefault(ASSET_CONFIG[a]["ercot_region"], []).append(a)
+            for region, assets in by_region.items():
+                wf = build_wind_forecast(asset_keys=assets, asset_gen_by_key=gen_for_share, region=region, target_date=None, lookback_days=30)
+                for a in assets:
+                    forecasts[a] = wf.get(a, {})
+        if merge:
+            merge_and_save_cache(market_prices, generation, forecasts, s, e)
+        else:
+            save_cache(s, e, market_prices, generation, forecasts)
+        with _cache_lock:
+            _cache_blob = load_cache()
+        _refresh_status["last_finished_at"] = datetime.now(ZoneInfo("America/Chicago")).isoformat()
+        logger.info("Cache refresh complete (merge=%s)", merge)
+    except Exception as ex:
+        _refresh_status["last_error"] = str(ex)
+        logger.exception("Refresh failed: %s", ex)
+    finally:
+        _refresh_status["running"] = False
+
+
+@shadow_bp.route("/api/shadow/refresh", methods=["POST"])
+def refresh():
+    global _refresh_thread
+    if _refresh_status["running"]:
+        return jsonify({"status": "already_running"}), 200
+    start = request.json.get("start") if request.is_json else None
+    end = request.json.get("end") if request.is_json else None
+    _refresh_thread = threading.Thread(target=_refresh_worker, args=(start, end), daemon=True)
+    _refresh_thread.start()
+    return jsonify({"status": "started"}), 202
+
+
+def _periodic_refresh_loop():
+    """Background loop: refresh the data cache every AUTO_REFRESH_INTERVAL_SECONDS.
+
+    Mirrors the NWOH dashboard's background_data_fetch pattern in ercot-basis-tracker
+    so users don't have to click 'Refresh data' to get fresh prices/forecasts each day.
+    """
+    logger.info("Auto-refresh loop starting (interval=%ds)", AUTO_REFRESH_INTERVAL_SECONDS)
+    # If the cache is fresh enough at startup, wait a full interval before the first
+    # refresh. Otherwise refresh right away so the dashboard isn't serving stale data.
+    age = cache_age_seconds()
+    if age is not None and age < AUTO_REFRESH_STALE_THRESHOLD_SECONDS:
+        logger.info("Cache is fresh (%ds old); first auto-refresh in %ds",
+                    int(age), AUTO_REFRESH_INTERVAL_SECONDS)
+        time.sleep(AUTO_REFRESH_INTERVAL_SECONDS)
+    else:
+        logger.info("Cache stale or missing -- refreshing immediately on startup")
+
+    while True:
+        if _refresh_status["running"]:
+            # A manual or previous auto-refresh is still in flight. Skip this tick and
+            # try again next interval rather than queueing a second concurrent refresh.
+            logger.info("Auto-refresh tick skipped (a refresh is already running)")
+        else:
+            try:
+                # Incremental refresh: only fetch dates that aren't already in the cache,
+                # plus a small overlap to catch late RT settlement updates on the most
+                # recent days. If the cache is empty, do a full seed from BACKTEST_START_DATE.
+                from datetime import timedelta
+                from shadow_trader.config import BACKTEST_START_DATE
+                today = datetime.now(ZoneInfo("America/Chicago")).date()
+                today_str = today.strftime("%Y-%m-%d")
+                latest = latest_cache_date()
+                if latest is None:
+                    start = BACKTEST_START_DATE
+                    logger.info("Auto-refresh: cache is empty, seeding from %s", start)
+                else:
+                    latest_dt = datetime.strptime(latest, "%Y-%m-%d").date()
+                    start_dt = latest_dt - timedelta(days=AUTO_REFRESH_OVERLAP_DAYS)
+                    start = start_dt.strftime("%Y-%m-%d")
+                    logger.info("Auto-refresh: latest cache date %s, fetching %s -> %s (overlap=%dd)",
+                                latest, start, today_str, AUTO_REFRESH_OVERLAP_DAYS)
+                _refresh_worker(start, today_str, merge=True)
+            except Exception as e:
+                logger.exception("Auto-refresh tick raised: %s", e)
+        time.sleep(AUTO_REFRESH_INTERVAL_SECONDS)
+
+
+def _start_auto_refresh():
+    """Idempotent: spawn the periodic refresh thread exactly once per process."""
+    global _auto_refresh_thread, _auto_refresh_started
+    if _auto_refresh_started:
+        return
+    _auto_refresh_started = True
+    _auto_refresh_thread = threading.Thread(target=_periodic_refresh_loop, daemon=True, name="auto-refresh")
+    _auto_refresh_thread.start()
+
+
+@shadow_bp.before_request
+def _require_login_for_shadow():
+    """All /shadow + /api/shadow/* routes require the same session-cookie login as
+    the host app's other protected views. Matches the behavior of `login_required`
+    in ercot-basis-tracker/app.py (session key 'authenticated', login route 'login').
+    Standalone mode (scripts/serve.py) has no login route registered, so we skip
+    the check there. We detect standalone mode by absence of the 'login' endpoint.
+    """
+    # If running under standalone create_app() the host hasn't registered a /login
+    # route, so don't try to redirect to it.
+    if "login" not in (request.url_rule.endpoint if request.url_rule else "") \
+       and not request.endpoint == "shadow.health" \
+       and not session.get("authenticated"):
+        # Only enforce if a /login endpoint exists in the app (i.e. host mode).
+        from flask import current_app
+        if "login" in current_app.view_functions:
+            return redirect(url_for("login"))
+
+
+@shadow_bp.before_app_request
+def _ensure_auto_refresh_running():
+    """Lazy-start the auto-refresh thread on the first request to the host app.
+    Works under gunicorn/uwsgi without explicit boot hooks."""
+    _start_auto_refresh()
+
+
+def create_app():
+    """Local-only standalone mode for scripts/serve.py. Wraps the blueprint in a
+    fresh Flask app and re-exposes the routes WITHOUT the /api/shadow prefix, so
+    the local dashboard's existing JS still works unchanged."""
+    app = Flask(
+        __name__,
+        template_folder=os.path.join(os.path.dirname(__file__), "templates"),
+    )
+    CORS(app)
+    # Standalone mode: register the blueprint at root so URLs like /api/shadow/strategy
+    # work as a superset of the old /api/strategy. The local dashboard template uses
+    # /api/shadow/... paths so this is consistent with how it runs inside ercot-basis-tracker.
+    app.register_blueprint(shadow_bp)
+    _start_auto_refresh()
+    return app

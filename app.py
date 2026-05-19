@@ -162,6 +162,11 @@ app.secret_key = os.getenv('SECRET_KEY')
 if not app.secret_key:
     raise RuntimeError("SECRET_KEY must be set in the environment (.env)")
 
+# Mount the Shadow Trading dashboard as a Blueprint -- adds /shadow + /api/shadow/* routes
+# without touching any existing /api/* logic. See shadow_trader/web.py for the full surface.
+from shadow_trader.web import shadow_bp
+app.register_blueprint(shadow_bp)
+
 # Configuration - ERCOT
 NODE_1 = "NBOHR_RN"
 NODE_2 = "HOLSTEIN_ALL"
@@ -4552,6 +4557,11 @@ def dashboard():
 <body style="background-color: #f8f9fa;">
     <div class="p-3 md:p-4" style="background: linear-gradient(135deg, #f8f9fa 0%, #ffffff 100%);">
         <div class="max-w-7xl mx-auto">
+            <!-- Tab nav linking to the Shadow Trading dashboard -->
+            <div style="display: flex; gap: 4px; margin-bottom: 12px; border-bottom: 2px solid #e5e7eb;">
+                <a href="/" style="padding: 8px 16px; font-size: 13px; color: var(--skyvest-navy); text-decoration: none; border-bottom: 2px solid var(--skyvest-navy); margin-bottom: -2px; font-weight: 600;">ERCOT Basis Tracker</a>
+                <a href="/shadow" style="padding: 8px 16px; font-size: 13px; color: #6b7280; text-decoration: none; border-bottom: 2px solid transparent; margin-bottom: -2px; font-weight: 500;">Shadow Trading</a>
+            </div>
             <!-- Header -->
             <div class="mb-3 pb-2" style="border-bottom: 2px solid var(--skyvest-navy);">
                 <div class="flex justify-between items-start">
