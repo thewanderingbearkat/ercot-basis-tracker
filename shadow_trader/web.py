@@ -61,6 +61,14 @@ AUTO_REFRESH_INTERVAL_SECONDS = int(os.getenv("SHADOW_AUTO_REFRESH_INTERVAL", "1
 # to catch late RT settlement updates on the most recent days. Default 2 days of overlap.
 # Set higher if your data is taking longer than that to fully settle upstream.
 AUTO_REFRESH_OVERLAP_DAYS = int(os.getenv("SHADOW_AUTO_REFRESH_OVERLAP_DAYS", "2"))
+# When the cache is completely empty (first deploy on Render, fresh local clone),
+# the auto-refresh would otherwise pull from BACKTEST_START_DATE all the way to today,
+# which is ~140 days x 3 endpoints x 1s/day -> 15-25 min before /shadow shows anything.
+# This env var caps the first seed to the last N days so the dashboard becomes usable
+# in ~1-2 min. For full historical backfill, run `python scripts/refresh_data.py --start ...`
+# manually after deploy, OR just wait several days for the cache to accumulate via the
+# normal incremental ticks.
+AUTO_REFRESH_INITIAL_SEED_DAYS = int(os.getenv("SHADOW_AUTO_REFRESH_INITIAL_SEED_DAYS", "21"))
 # Refresh on startup if cache is older than this (so a stale overnight cache gets refreshed
 # immediately when the server comes up, instead of waiting up to AUTO_REFRESH_INTERVAL_SECONDS)
 AUTO_REFRESH_STALE_THRESHOLD_SECONDS = AUTO_REFRESH_INTERVAL_SECONDS
@@ -491,15 +499,21 @@ def _periodic_refresh_loop():
             try:
                 # Incremental refresh: only fetch dates that aren't already in the cache,
                 # plus a small overlap to catch late RT settlement updates on the most
-                # recent days. If the cache is empty, do a full seed from BACKTEST_START_DATE.
+                # recent days. If the cache is empty (first deploy / fresh machine), seed
+                # just the last AUTO_REFRESH_INITIAL_SEED_DAYS days so the dashboard becomes
+                # responsive quickly. Full history can be backfilled later via refresh_data.py.
                 from datetime import timedelta
                 from shadow_trader.config import BACKTEST_START_DATE
                 today = datetime.now(ZoneInfo("America/Chicago")).date()
                 today_str = today.strftime("%Y-%m-%d")
                 latest = latest_cache_date()
                 if latest is None:
-                    start = BACKTEST_START_DATE
-                    logger.info("Auto-refresh: cache is empty, seeding from %s", start)
+                    seed_start = (today - timedelta(days=AUTO_REFRESH_INITIAL_SEED_DAYS)).strftime("%Y-%m-%d")
+                    # Don't go further back than BACKTEST_START_DATE (forecast/gen data
+                    # may not exist beyond that)
+                    start = max(seed_start, BACKTEST_START_DATE)
+                    logger.info("Auto-refresh: cache empty, seeding last %dd (%s -> %s)",
+                                AUTO_REFRESH_INITIAL_SEED_DAYS, start, today_str)
                 else:
                     latest_dt = datetime.strptime(latest, "%Y-%m-%d").date()
                     start_dt = latest_dt - timedelta(days=AUTO_REFRESH_OVERLAP_DAYS)
