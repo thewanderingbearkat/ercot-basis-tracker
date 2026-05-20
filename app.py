@@ -12,6 +12,11 @@ import logging
 import os
 import json
 
+# Load .env for local development. On Render, env vars are set in the service
+# dashboard and this is a no-op (no .env file present).
+from dotenv import load_dotenv
+load_dotenv()
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -161,6 +166,11 @@ CORS(app)
 app.secret_key = os.getenv('SECRET_KEY')
 if not app.secret_key:
     raise RuntimeError("SECRET_KEY must be set in the environment (.env)")
+
+# Mount the Shadow Trading dashboard as a Blueprint -- adds /shadow + /api/shadow/* routes
+# without touching any existing /api/* logic. See shadow_trader/web.py for the full surface.
+from shadow_trader.web import shadow_bp
+app.register_blueprint(shadow_bp)
 
 # Configuration - ERCOT
 NODE_1 = "NBOHR_RN"
@@ -3526,7 +3536,7 @@ def login():
         else:
             return '''<html><body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: linear-gradient(135deg, #f8f9fa 0%, #ffffff 100%); color: #0E2C51; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0;">
                 <div style="background: white; padding: 48px; border-radius: 2px; border: 1px solid #e5e5e5; box-shadow: 0 2px 8px rgba(0,0,0,0.08); max-width: 400px; width: 100%;">
-                    <h1 style="margin-top: 0; font-family: Georgia, serif; color: #0E2C51; font-weight: 700; letter-spacing: -0.02em;">ERCOT Basis Tracker</h1>
+                    <h1 style="margin-top: 0; font-family: Georgia, serif; color: #0E2C51; font-weight: 700; letter-spacing: -0.02em;">Dashboard</h1>
                     <p style="color: #ef4444; margin-bottom: 24px; font-size: 14px; background: #ffebee; padding: 12px; border-radius: 2px; border-left: 3px solid #ef4444;">Invalid password. Try again.</p>
                     <form method="post"><input type="password" name="password" placeholder="Enter password" autofocus style="padding: 12px; border: 1px solid #d0d0d0; border-radius: 2px; background: #ffffff; color: #0E2C51; width: 100%; box-sizing: border-box; margin-bottom: 12px; font-size: 14px;">
                     <button type="submit" style="padding: 12px; background: #2291EB; color: white; border: none; border-radius: 2px; cursor: pointer; width: 100%; font-weight: 600; font-size: 14px; transition: background 0.2s;" onmouseover="this.style.background='#0E2C51'" onmouseout="this.style.background='#2291EB'">Login</button></form>
@@ -3534,7 +3544,7 @@ def login():
 
     return '''<html><body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: linear-gradient(135deg, #f8f9fa 0%, #ffffff 100%); color: #0E2C51; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0;">
         <div style="background: white; padding: 48px; border-radius: 2px; border: 1px solid #e5e5e5; box-shadow: 0 2px 8px rgba(0,0,0,0.08); max-width: 400px; width: 100%;">
-            <h1 style="margin-top: 0; font-family: Georgia, serif; color: #0E2C51; font-weight: 700; letter-spacing: -0.02em;">ERCOT Basis Tracker</h1>
+            <h1 style="margin-top: 0; font-family: Georgia, serif; color: #0E2C51; font-weight: 700; letter-spacing: -0.02em;">Dashboard</h1>
             <p style="color: #666; margin-bottom: 24px; font-size: 14px;">Enter the password to access the dashboard</p>
             <form method="post"><input type="password" name="password" placeholder="Enter password" autofocus style="padding: 12px; border: 1px solid #d0d0d0; border-radius: 2px; background: #ffffff; color: #0E2C51; width: 100%; box-sizing: border-box; margin-bottom: 12px; font-size: 14px;">
             <button type="submit" style="padding: 12px; background: #2291EB; color: white; border: none; border-radius: 2px; cursor: pointer; width: 100%; font-weight: 600; font-size: 14px; transition: background 0.2s;" onmouseover="this.style.background='#0E2C51'" onmouseout="this.style.background='#2291EB'">Login</button></form>
@@ -4552,6 +4562,11 @@ def dashboard():
 <body style="background-color: #f8f9fa;">
     <div class="p-3 md:p-4" style="background: linear-gradient(135deg, #f8f9fa 0%, #ffffff 100%);">
         <div class="max-w-7xl mx-auto">
+            <!-- Tab nav linking to the Shadow Trading dashboard -->
+            <div style="display: flex; gap: 4px; margin-bottom: 12px; border-bottom: 2px solid #e5e7eb;">
+                <a href="/" style="padding: 8px 16px; font-size: 13px; color: var(--skyvest-navy); text-decoration: none; border-bottom: 2px solid var(--skyvest-navy); margin-bottom: -2px; font-weight: 600;">ERCOT Basis Tracker</a>
+                <a href="/shadow" style="padding: 8px 16px; font-size: 13px; color: #6b7280; text-decoration: none; border-bottom: 2px solid transparent; margin-bottom: -2px; font-weight: 500;">Shadow Trading</a>
+            </div>
             <!-- Header -->
             <div class="mb-3 pb-2" style="border-bottom: 2px solid var(--skyvest-navy);">
                 <div class="flex justify-between items-start">

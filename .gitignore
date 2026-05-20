@@ -135,3 +135,6 @@ Thumbs.db
 # Local environment variables
 .env.local
 *.secret
+
+# Shadow trading runtime cache + ledger (never commit)
+data/

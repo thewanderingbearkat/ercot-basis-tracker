@@ -1,0 +1,825 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Shadow Trading - ERCOT</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 20px; background: #f6f7f9; color: #1a1f2c; }
+  h1 { font-size: 18px; margin: 0 0 4px; color: #0E2C51; font-weight: 600; }
+  .subtitle { color: #6b7280; font-size: 12px; margin-bottom: 16px; }
+  .top-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; gap: 16px; flex-wrap: wrap; }
+  .health { font-size: 11px; color: #6b7280; }
+  .health .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #10b981; margin-right: 4px; vertical-align: middle; }
+  .health .dot.stale { background: #f59e0b; }
+  .health .dot.err { background: #ef4444; }
+  button { background: #0E2C51; color: white; border: none; padding: 6px 14px; border-radius: 3px; font-size: 12px; cursor: pointer; }
+  button:hover { background: #143562; }
+  button:disabled { background: #94a3b8; cursor: not-allowed; }
+
+  .control-panel { background: white; border: 1px solid #e5e7eb; border-radius: 4px; padding: 16px; margin-bottom: 16px; }
+  .slider-row { display: flex; align-items: center; gap: 16px; }
+  .slider-row label { font-size: 13px; font-weight: 500; color: #374151; min-width: 140px; }
+  .slider-row input[type="range"] { flex: 1; }
+  .slider-row .value-display { font-weight: 600; color: #0E2C51; font-size: 16px; min-width: 60px; text-align: right; }
+  .date-row { display: flex; align-items: center; gap: 16px; margin-top: 12px; font-size: 12px; color: #6b7280; }
+  .date-row input { padding: 4px 8px; border: 1px solid #d1d5db; border-radius: 3px; font-size: 12px; }
+  .date-presets { display: flex; gap: 4px; }
+  .date-presets button { background: #e5e7eb; color: #374151; padding: 3px 8px; font-size: 11px; }
+  .date-presets button:hover { background: #d1d5db; }
+
+  .summary-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 16px; }
+  .card { background: white; border: 1px solid #e5e7eb; border-radius: 4px; padding: 12px 16px; }
+  .card .label { font-size: 11px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
+  .card .value { font-size: 22px; font-weight: 600; color: #0E2C51; }
+  .card.positive .value { color: #10b981; }
+  .card.negative .value { color: #ef4444; }
+  .card .sub { font-size: 11px; color: #6b7280; margin-top: 2px; }
+
+  .asset-day-section { background: white; border: 1px solid #e5e7eb; border-radius: 4px; padding: 16px; margin-bottom: 16px; }
+  .asset-day-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; gap: 16px; flex-wrap: wrap; }
+  .asset-day-title { font-size: 14px; font-weight: 600; color: #0E2C51; }
+  .asset-day-title small { color: #6b7280; font-weight: 400; }
+  .asset-day-controls { display: flex; gap: 8px; align-items: center; font-size: 12px; }
+  .asset-day-controls select, .asset-day-controls input { padding: 4px 8px; border: 1px solid #d1d5db; border-radius: 3px; font-size: 12px; }
+  .asset-day-summary { display: flex; flex-wrap: wrap; gap: 24px; padding: 10px 12px; background: #f9fafb; border-radius: 4px; margin-bottom: 14px; font-size: 12px; }
+  .asset-day-summary .item .label { color: #6b7280; font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .asset-day-summary .item .val { font-size: 15px; font-weight: 600; color: #0E2C51; }
+  .asset-day-summary .item .val.positive { color: #10b981; }
+  .asset-day-summary .item .val.negative { color: #ef4444; }
+  /* Match NWOH dashboard exactly: flex row of 24 columns, light slate background,
+     two stacked absolute-positioned bars per hour (DA in back, gen with z-index:1 on top). */
+  .asset-day-bars { display: flex; gap: 1px; height: 80px; align-items: stretch;
+                    background: #f1f5f9; border-radius: 4px; padding: 2px; position: relative; }
+  .asset-day-bar-col { flex: 1; position: relative; cursor: pointer; min-width: 0; height: 100%; }
+  .asset-day-bar-da { width: 100%; border-radius: 2px 2px 0 0; position: absolute; bottom: 0; }
+  .asset-day-bar-gen { width: 100%; border-radius: 2px 2px 0 0; position: absolute; bottom: 0; z-index: 1; }
+  .asset-day-hour-label { font-size: 9px; color: #9ca3af; text-align: center; margin-top: 4px; }
+  .asset-day-legend { display: flex; gap: 16px; font-size: 11px; color: #6b7280; margin-top: 6px; }
+  .asset-day-legend .swatch { display: inline-block; width: 12px; height: 12px; border-radius: 2px; vertical-align: middle; margin-right: 4px; }
+  .asset-day-tabs { display: flex; gap: 2px; }
+  .asset-day-tabs button { background: #e5e7eb; color: #374151; padding: 4px 12px; font-size: 12px; border-radius: 3px; }
+  .asset-day-tabs button.active { background: #0E2C51; color: white; }
+
+  /* Per-hour P&L bars (uplift vs RT-only). Anchored at a horizontal zero line in the
+     middle of the chart. Positive uplift renders above the line (green), negative
+     below (red). Hourly uplift = bid_mw * (DA_price - RT_price), so the bar heights
+     scale linearly with the bid_fraction slider AND with the per-hour DA-RT spread. */
+  .asset-day-pnl-title { font-size: 11px; font-weight: 600; color: #6b7280; margin-top: 14px; margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.4px; }
+  .asset-day-pnl-bars { display: flex; gap: 1px; height: 80px; align-items: stretch;
+                        background: #f1f5f9; border-radius: 4px; padding: 2px; position: relative; }
+  .asset-day-pnl-zero { position: absolute; left: 0; right: 0; top: 50%; height: 1px; background: #94a3b8; pointer-events: none; }
+  .asset-day-pnl-col { flex: 1; position: relative; height: 100%; cursor: pointer; }
+  .asset-day-pnl-bar { width: 100%; position: absolute; left: 0; border-radius: 1px; }
+  .asset-day-pnl-bar.profit { background: #22c55e; bottom: 50%; }
+  .asset-day-pnl-bar.loss   { background: #ef4444; top: 50%; }
+  .asset-day-pnl-bar.zero   { background: #cbd5e1; top: 50%; height: 1px; }
+
+  /* Settlement Flow (NWOH-style three-step: Market -> PPA Swap -> Net Result) */
+  .settle-flow { display: grid; grid-template-columns: 1fr 24px 1fr 24px 1fr; gap: 0; align-items: stretch; margin-top: 14px; }
+  .settle-box { border: 1px solid #e5e7eb; border-radius: 6px; padding: 10px 12px; font-size: 12px; background: #f8fafc; }
+  .settle-box.market { background: #f1f5f9; }
+  .settle-box.ppa { background: #fef3c7; border-color: #fde68a; }
+  .settle-box.net { background: #d1fae5; border-color: #a7f3d0; }
+  .settle-box .step-num { display: inline-block; width: 18px; height: 18px; line-height: 18px; text-align: center; background: #0E2C51; color: white; border-radius: 3px; font-size: 10px; font-weight: 700; margin-right: 6px; vertical-align: middle; }
+  .settle-box.ppa .step-num { background: #92400e; }
+  .settle-box.net .step-num { background: #065f46; }
+  .settle-box .step-title { font-size: 12px; font-weight: 700; color: #0E2C51; margin-bottom: 8px; }
+  .settle-box.ppa .step-title { color: #92400e; }
+  .settle-box.net .step-title { color: #065f46; }
+  .settle-line { display: flex; justify-content: space-between; padding: 2px 0; font-size: 12px; }
+  .settle-line.total { border-top: 1px dashed #cbd5e1; margin-top: 6px; padding-top: 6px; font-weight: 700; }
+  .settle-line .pos { color: #10b981; }
+  .settle-line .neg { color: #ef4444; }
+  .settle-arrow { font-size: 18px; color: #cbd5e1; display: flex; align-items: center; justify-content: center; }
+  .settle-aux { font-size: 10px; color: #92400e; margin-top: 4px; }
+
+  .asset-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-bottom: 16px; }
+  .asset-card { background: white; border: 1px solid #e5e7eb; border-radius: 4px; padding: 12px 14px; }
+  .asset-card .asset-name { font-weight: 600; font-size: 13px; color: #0E2C51; margin-bottom: 2px; }
+  .asset-card .tag { display: inline-block; font-size: 10px; padding: 1px 6px; border-radius: 8px; background: #eef2ff; color: #4338ca; margin-left: 4px; }
+  .asset-card .tag.solar { background: #fef3c7; color: #92400e; }
+  .asset-card .uplift-line { font-size: 20px; font-weight: 600; color: #0E2C51; margin-top: 6px; }
+  .asset-card .uplift-line.positive { color: #10b981; }
+  .asset-card .uplift-line.negative { color: #ef4444; }
+  .asset-card .detail { font-size: 11px; color: #6b7280; margin-top: 6px; line-height: 1.5; }
+
+  .charts { display: grid; grid-template-columns: 1fr; gap: 16px; }
+  .chart-card { background: white; border: 1px solid #e5e7eb; border-radius: 4px; padding: 12px 16px; }
+  .chart-card .chart-title { font-size: 13px; font-weight: 600; color: #0E2C51; margin-bottom: 8px; }
+  .chart-card canvas { max-height: 280px; }
+
+  .risk-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .risk-table th, .risk-table td { padding: 6px 10px; border-bottom: 1px solid #f0f0f0; text-align: right; }
+  .risk-table th { color: #6b7280; font-weight: 500; text-transform: uppercase; font-size: 10px; letter-spacing: 0.4px; }
+  .risk-table td:first-child, .risk-table th:first-child { text-align: left; font-weight: 500; }
+  .risk-table tr.portfolio td { background: #f9fafb; font-weight: 600; }
+
+  .status-bar { background: white; border: 1px solid #e5e7eb; border-radius: 4px; padding: 8px 12px; font-size: 11px; color: #6b7280; margin-top: 12px; display: flex; justify-content: space-between; }
+  .err-msg { background: #fef2f2; border: 1px solid #fecaca; color: #b91c1c; padding: 12px; border-radius: 4px; margin-bottom: 16px; display: none; }
+  /* Top-level tab nav linking the two dashboard views */
+  .tab-nav { display: flex; gap: 4px; margin-bottom: 16px; border-bottom: 2px solid #e5e7eb; }
+  .tab-nav a { padding: 8px 16px; font-size: 13px; color: #6b7280; text-decoration: none; border-bottom: 2px solid transparent; margin-bottom: -2px; font-weight: 500; }
+  .tab-nav a:hover { color: #0E2C51; }
+  .tab-nav a.active { color: #0E2C51; border-bottom-color: #0E2C51; font-weight: 600; }
+</style>
+</head>
+<body>
+
+<div class="tab-nav">
+  <a href="/">ERCOT Basis Tracker</a>
+  <a href="/shadow" class="active">Shadow Trading</a>
+</div>
+
+<div class="top-bar">
+  <div>
+    <h1>Shadow Trading - ERCOT Assets</h1>
+    <div class="subtitle">BKI, BKII (McCrae), Holstein - paper DA bidding strategy</div>
+  </div>
+  <div class="health" id="healthBar">
+    <span class="dot"></span><span id="healthText">loading...</span>
+    <button id="refreshDataBtn" style="margin-left: 12px;">Refresh data</button>
+  </div>
+</div>
+
+<div class="err-msg" id="errMsg"></div>
+
+<div class="control-panel">
+  <div class="slider-row">
+    <label for="bidFraction">Bid fraction (% of forecast)</label>
+    <input type="range" id="bidFraction" min="0" max="100" step="5" value="100">
+    <span class="value-display" id="bidFractionValue">100%</span>
+  </div>
+  <div class="date-row">
+    <label>Window:</label>
+    <input type="date" id="startDate">
+    <span>to</span>
+    <input type="date" id="endDate">
+    <div class="date-presets">
+      <button data-preset="ytd">YTD</button>
+      <button data-preset="mtd">MTD</button>
+      <button data-preset="30d">Last 30d</button>
+      <button data-preset="7d">Last 7d</button>
+    </div>
+  </div>
+</div>
+
+<div class="summary-cards">
+  <div class="card" id="totalUpliftCard">
+    <div class="label">Total uplift</div>
+    <div class="value" id="totalUplift">$0</div>
+    <div class="sub" id="totalUpliftSub">vs RT-only</div>
+  </div>
+  <div class="card">
+    <div class="label">DA revenue</div>
+    <div class="value" id="daRevenue">$0</div>
+    <div class="sub" id="daRevenueSub">at this bid fraction</div>
+  </div>
+  <div class="card">
+    <div class="label">Days covered</div>
+    <div class="value" id="daysCovered">0</div>
+    <div class="sub" id="hoursCovered">0 hourly records</div>
+  </div>
+  <div class="card" id="sharpeCard">
+    <div class="label">Sharpe-like</div>
+    <div class="value" id="sharpe">--</div>
+    <div class="sub">daily mean / daily std</div>
+  </div>
+  <div class="card" id="drawdownCard">
+    <div class="label">Max drawdown</div>
+    <div class="value" id="maxDrawdown">$0</div>
+    <div class="sub">peak-to-trough cumulative</div>
+  </div>
+  <div class="card">
+    <div class="label">Hit rate (days)</div>
+    <div class="value" id="hitRate">--</div>
+    <div class="sub">days with positive uplift</div>
+  </div>
+</div>
+
+<div class="asset-grid" id="assetGrid"></div>
+
+<div class="asset-day-section">
+  <div class="asset-day-header">
+    <div class="asset-day-title">Daily detail <small>- hourly DA bid vs actual generation</small></div>
+    <div class="asset-day-controls">
+      <div class="asset-day-tabs" id="assetDayTabs"></div>
+      <label>Date</label>
+      <input type="date" id="assetDayDate">
+    </div>
+  </div>
+  <div class="asset-day-summary" id="assetDaySummary"></div>
+  <div class="asset-day-bars" id="assetDayBars"></div>
+  <div style="display: grid; grid-template-columns: repeat(24, 1fr); gap: 2px;">
+    <div class="asset-day-hour-label" style="grid-column: span 4;">HE1</div>
+    <div class="asset-day-hour-label" style="grid-column: span 4;">5</div>
+    <div class="asset-day-hour-label" style="grid-column: span 4;">9</div>
+    <div class="asset-day-hour-label" style="grid-column: span 4;">13</div>
+    <div class="asset-day-hour-label" style="grid-column: span 4;">17</div>
+    <div class="asset-day-hour-label" style="grid-column: span 4;">21</div>
+  </div>
+  <div class="asset-day-legend">
+    <span><span class="swatch" style="background:#22c55e"></span>Over-gen</span>
+    <span><span class="swatch" style="background:#3b82f6"></span>Matched</span>
+    <span><span class="swatch" style="background:#ef4444"></span>Under-gen</span>
+    <span><span class="swatch" style="background:#e2e8f0"></span>Future</span>
+  </div>
+
+  <!-- Per-hour P&L vs RT-only counterfactual.
+       This is the economic view: each hour's bar shows whether bidding at the current
+       bid_fraction made or lost money compared to selling everything at RT. The math:
+         hourly_uplift = bid_mw * (DA_price - RT_price)
+       so green bars = DA premium captured, red bars = DA discount paid. Moving the
+       slider scales every bar proportionally to bid_fraction. -->
+  <div class="asset-day-pnl-title">Per-hour P&amp;L vs RT-only  <span id="assetDayPnlTotal" style="float:right;color:#0E2C51;font-weight:700;text-transform:none;letter-spacing:0;"></span></div>
+  <div class="asset-day-pnl-bars" id="assetDayPnlBars">
+    <div class="asset-day-pnl-zero"></div>
+  </div>
+
+  <!-- Settlement Flow: Market -> PPA Swap -> Net Result (mirrors NWOH) -->
+  <div class="settle-flow" id="settleFlow"></div>
+</div>
+
+<!-- Hourly hover tooltip (hidden, shown on bar mouseenter). Matches NWOH dashboard style. -->
+<div id="hourTooltip" style="display:none; position:fixed; background:#1e293b; color:white; padding:8px 12px; border-radius:6px; font-size:11px; z-index:1000; pointer-events:none; box-shadow: 0 4px 12px rgba(0,0,0,0.3); line-height:1.5;"></div>
+
+<div class="charts">
+  <div class="chart-card">
+    <div class="chart-title">Cumulative uplift over time (per asset)</div>
+    <canvas id="cumChart"></canvas>
+  </div>
+  <div class="chart-card">
+    <div class="chart-title">Daily uplift by asset</div>
+    <canvas id="dailyChart"></canvas>
+  </div>
+  <div class="chart-card">
+    <div class="chart-title">Risk metrics</div>
+    <table class="risk-table" id="riskTable"></table>
+  </div>
+</div>
+
+<div class="status-bar">
+  <div id="cacheInfo">Cache: -</div>
+  <div id="ledgerInfo">Ledger: -</div>
+  <div id="autoRefreshInfo">Auto-refresh: -</div>
+</div>
+
+<script>
+const fmt = (v) => (v == null || isNaN(v)) ? '--' : v.toLocaleString('en-US', {minimumFractionDigits: 0, maximumFractionDigits: 0});
+const fmtDollar = (v) => (v == null || isNaN(v)) ? '--' : (v < 0 ? '-$' : '$') + Math.abs(Math.round(v)).toLocaleString();
+const fmtPct = (v) => (v == null || isNaN(v)) ? '--' : (v * 100).toFixed(1) + '%';
+
+let cumChart = null;
+let dailyChart = null;
+let currentBidFraction = 100;
+
+function setError(msg) {
+  const el = document.getElementById('errMsg');
+  if (msg) { el.textContent = msg; el.style.display = 'block'; }
+  else { el.style.display = 'none'; }
+}
+
+function pickColor(asset) {
+  return ({BKI: '#0E2C51', BKII: '#3b82f6', HOLSTEIN: '#f59e0b'})[asset] || '#888';
+}
+
+let datePickersInitialized = false;
+
+async function fetchHealth() {
+  try {
+    const resp = await fetch('/api/shadow/health');
+    const h = await resp.json();
+    const dot = document.querySelector('#healthBar .dot');
+    const age = h.cache_age_seconds;
+    const txt = document.getElementById('healthText');
+    if (!h.cache_loaded) {
+      dot.className = 'dot err';
+      txt.textContent = 'no cache - run refresh_data.py';
+    } else if (age != null && age > 3 * 3600) {
+      dot.className = 'dot stale';
+      txt.textContent = `cache ${Math.round(age / 3600)}h old`;
+    } else {
+      dot.className = 'dot';
+      txt.textContent = `cache fresh (${age != null ? Math.round(age/60) + 'm' : '?'})`;
+    }
+    // Initialize the date pickers to the common-forecast window on first load
+    // so the portfolio aggregates only span dates where every asset has a real forecast.
+    if (!datePickersInitialized && h.common_forecast_window) {
+      document.getElementById('startDate').value = h.common_forecast_window.start;
+      document.getElementById('endDate').value = h.common_forecast_window.end;
+      datePickersInitialized = true;
+    }
+    document.getElementById('cacheInfo').textContent = h.cache_window
+      ? `Cache: ${h.cache_window.start} -> ${h.cache_window.end}` + (h.common_forecast_window
+          ? `  |  Common forecast: ${h.common_forecast_window.start} -> ${h.common_forecast_window.end} (${h.common_forecast_window.days}d)`
+          : '')
+      : 'Cache: empty';
+    document.getElementById('ledgerInfo').textContent =
+      `Ledger: ${h.ledger_counts.BID} bid / ${h.ledger_counts.AWARDED} awarded / ${h.ledger_counts.SETTLED} settled`;
+    // Auto-refresh banner. Shows the data-refresh cadence (every N min, in-process) and
+    // the time of the last completed refresh, so the user knows when fresh data last landed.
+    const arInfo = document.getElementById('autoRefreshInfo');
+    if (h.auto_refresh_started && h.auto_refresh_interval_seconds) {
+      const mins = Math.round(h.auto_refresh_interval_seconds / 60);
+      const last = h.refresh.last_finished_at
+        ? ' (last: ' + new Date(h.refresh.last_finished_at).toLocaleTimeString() + ')'
+        : '';
+      arInfo.textContent = h.refresh.running
+        ? `Auto-refresh: every ${mins}m  -  REFRESHING NOW...`
+        : `Auto-refresh: every ${mins}m${last}`;
+    } else {
+      arInfo.textContent = 'Auto-refresh: off';
+    }
+    if (h.refresh.running) {
+      document.getElementById('refreshDataBtn').disabled = true;
+      document.getElementById('refreshDataBtn').textContent = 'Refreshing...';
+    } else {
+      document.getElementById('refreshDataBtn').disabled = false;
+      document.getElementById('refreshDataBtn').textContent = 'Refresh data';
+    }
+    if (h.refresh.last_error) setError('Refresh error: ' + h.refresh.last_error);
+  } catch (e) {
+    document.querySelector('#healthBar .dot').className = 'dot err';
+    document.getElementById('healthText').textContent = 'API unreachable';
+  }
+}
+
+async function fetchStrategy() {
+  const bf = currentBidFraction / 100.0;
+  const start = document.getElementById('startDate').value;
+  const end = document.getElementById('endDate').value;
+  const params = new URLSearchParams({bid_fraction: bf});
+  if (start) params.set('start', start);
+  if (end) params.set('end', end);
+  try {
+    const resp = await fetch('/api/shadow/strategy?' + params);
+    if (!resp.ok) {
+      const err = await resp.json();
+      setError(err.error || 'Strategy request failed');
+      return;
+    }
+    setError(null);
+    renderStrategy(await resp.json());
+  } catch (e) {
+    setError(e.message);
+  }
+}
+
+function renderStrategy(data) {
+  // Summary
+  const tu = data.summary.total_uplift || 0;
+  const upliftEl = document.getElementById('totalUpliftCard');
+  upliftEl.className = 'card ' + (tu > 0 ? 'positive' : tu < 0 ? 'negative' : '');
+  document.getElementById('totalUplift').textContent = fmtDollar(tu);
+  document.getElementById('totalUpliftSub').textContent = `vs RT-only (${data.window.start} -> ${data.window.end})`;
+  document.getElementById('daRevenue').textContent = fmtDollar(data.summary.total_da_revenue);
+  document.getElementById('daRevenueSub').textContent = `at ${Math.round(data.bid_fraction * 100)}% bid`;
+  document.getElementById('daysCovered').textContent = fmt(Object.keys(data.summary.daily).length);
+  document.getElementById('hoursCovered').textContent = `${fmt(data.risk_portfolio.hours)} hourly records`;
+  document.getElementById('sharpe').textContent = data.risk_portfolio.sharpe_like_daily.toFixed(2);
+  const dd = data.risk_portfolio.max_drawdown_daily;
+  document.getElementById('maxDrawdown').textContent = fmtDollar(dd);
+  document.getElementById('drawdownCard').className = 'card ' + (dd < 0 ? 'negative' : '');
+  document.getElementById('hitRate').textContent = fmtPct(data.risk_portfolio.hit_rate_daily);
+
+  // Asset cards
+  const grid = document.getElementById('assetGrid');
+  grid.innerHTML = '';
+  for (const asset of Object.keys(data.assets_meta)) {
+    const meta = data.assets_meta[asset];
+    const r = data.risk_per_asset[asset];
+    const upl = r.total_uplift || 0;
+    const card = document.createElement('div');
+    card.className = 'asset-card';
+    card.innerHTML = `
+      <div class="asset-name">${meta.display_name}<span class="tag ${meta.tech}">${meta.tech}</span></div>
+      <div class="detail">${meta.settlement_point}  /  ${meta.ppa_percent}% PPA  /  ${meta.forecast_source}</div>
+      <div class="uplift-line ${upl > 0 ? 'positive' : upl < 0 ? 'negative' : ''}">${fmtDollar(upl)}</div>
+      <div class="detail">
+        worst day ${fmtDollar(r.worst_day)}  /  hit rate ${fmtPct(r.hit_rate_daily)}<br>
+        ${fmt(r.hours)} hours  /  std ${fmtDollar(r.std_daily)}
+      </div>`;
+    grid.appendChild(card);
+  }
+
+  // Wire up the daily-detail tabs on first response (after we know which assets exist)
+  if (document.getElementById('assetDayTabs').children.length === 0) {
+    buildAssetDayTabs(data.assets_meta);
+  }
+  // Default the date picker to the last day with data, if not already set
+  if (!currentAssetDay.date && data.daily_dates && data.daily_dates.length) {
+    setAssetDayDate(data.daily_dates[data.daily_dates.length - 1]);
+  } else {
+    fetchAssetDay();  // slider moved or window changed; refresh the daily panel too
+  }
+
+  // Cumulative chart
+  const dates = data.daily_dates;
+  const cumDatasets = [];
+  for (const asset of Object.keys(data.daily_uplift_by_asset)) {
+    const daily = data.daily_uplift_by_asset[asset];
+    let acc = 0;
+    const cum = daily.map(d => acc += d);
+    cumDatasets.push({label: asset, data: cum, borderColor: pickColor(asset), backgroundColor: pickColor(asset) + '20', tension: 0.1, fill: false});
+  }
+  if (!cumChart) {
+    cumChart = new Chart(document.getElementById('cumChart'), {
+      type: 'line',
+      data: { labels: dates, datasets: cumDatasets },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { position: 'top' } },
+        scales: { y: { ticks: { callback: v => '$' + v.toLocaleString() } } },
+      }
+    });
+  } else {
+    cumChart.data.labels = dates;
+    cumChart.data.datasets = cumDatasets;
+    cumChart.update('none');
+  }
+
+  // Daily bar chart (stacked? grouped)
+  const dailyDatasets = [];
+  for (const asset of Object.keys(data.daily_uplift_by_asset)) {
+    dailyDatasets.push({label: asset, data: data.daily_uplift_by_asset[asset], backgroundColor: pickColor(asset)});
+  }
+  if (!dailyChart) {
+    dailyChart = new Chart(document.getElementById('dailyChart'), {
+      type: 'bar',
+      data: { labels: dates, datasets: dailyDatasets },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { position: 'top' } },
+        scales: { x: { stacked: true }, y: { stacked: true, ticks: { callback: v => '$' + v.toLocaleString() } } },
+      }
+    });
+  } else {
+    dailyChart.data.labels = dates;
+    dailyChart.data.datasets = dailyDatasets;
+    dailyChart.update('none');
+  }
+
+  // Risk table
+  const rt = document.getElementById('riskTable');
+  const cols = ['total_uplift', 'mean_daily', 'std_daily', 'sharpe_like_daily', 'worst_day', 'max_drawdown_daily', 'var_5_daily', 'cvar_5_daily', 'hit_rate_daily'];
+  const headers = ['asset', 'total', 'mean/day', 'std/day', 'sharpe', 'worst_day', 'max_dd', 'VaR(5%)', 'CVaR(5%)', 'hit'];
+  let html = '<thead><tr>' + headers.map(h => `<th>${h}</th>`).join('') + '</tr></thead><tbody>';
+  for (const asset of Object.keys(data.risk_per_asset)) {
+    const r = data.risk_per_asset[asset];
+    html += '<tr><td>' + asset + '</td>'
+      + `<td>${fmtDollar(r.total_uplift)}</td>`
+      + `<td>${fmtDollar(r.mean_daily)}</td>`
+      + `<td>${fmtDollar(r.std_daily)}</td>`
+      + `<td>${r.sharpe_like_daily.toFixed(2)}</td>`
+      + `<td>${fmtDollar(r.worst_day)}</td>`
+      + `<td>${fmtDollar(r.max_drawdown_daily)}</td>`
+      + `<td>${fmtDollar(r.var_5_daily)}</td>`
+      + `<td>${fmtDollar(r.cvar_5_daily)}</td>`
+      + `<td>${fmtPct(r.hit_rate_daily)}</td></tr>`;
+  }
+  const p = data.risk_portfolio;
+  html += `<tr class="portfolio"><td>PORTFOLIO</td>`
+    + `<td>${fmtDollar(p.total_uplift)}</td>`
+    + `<td>${fmtDollar(p.mean_daily)}</td>`
+    + `<td>${fmtDollar(p.std_daily)}</td>`
+    + `<td>${p.sharpe_like_daily.toFixed(2)}</td>`
+    + `<td>${fmtDollar(p.worst_day)}</td>`
+    + `<td>${fmtDollar(p.max_drawdown_daily)}</td>`
+    + `<td>${fmtDollar(p.var_5_daily)}</td>`
+    + `<td>${fmtDollar(p.cvar_5_daily)}</td>`
+    + `<td>${fmtPct(p.hit_rate_daily)}</td></tr>`;
+  html += '</tbody>';
+  rt.innerHTML = html;
+}
+
+// Daily detail
+let currentAssetDay = {asset: 'BKI', date: null};
+
+function setAssetDayDate(d) {
+  document.getElementById('assetDayDate').value = d;
+  currentAssetDay.date = d;
+  fetchAssetDay();
+}
+
+function buildAssetDayTabs(assets) {
+  const tabs = document.getElementById('assetDayTabs');
+  tabs.innerHTML = '';
+  Object.keys(assets).forEach(a => {
+    const btn = document.createElement('button');
+    btn.textContent = a;
+    if (a === currentAssetDay.asset) btn.classList.add('active');
+    btn.addEventListener('click', () => {
+      currentAssetDay.asset = a;
+      document.querySelectorAll('#assetDayTabs button').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      fetchAssetDay();
+    });
+    tabs.appendChild(btn);
+  });
+}
+
+async function fetchAssetDay() {
+  if (!currentAssetDay.date) return;
+  const bf = currentBidFraction / 100.0;
+  const params = new URLSearchParams({asset: currentAssetDay.asset, date: currentAssetDay.date, bid_fraction: bf});
+  try {
+    const resp = await fetch('/api/shadow/asset_day?' + params);
+    if (!resp.ok) { const e = await resp.json(); setError(e.error || 'asset_day failed'); return; }
+    renderAssetDay(await resp.json());
+  } catch (e) { setError(e.message); }
+}
+
+function renderAssetDay(d) {
+  const s = d.summary;
+  const summaryEl = document.getElementById('assetDaySummary');
+  const hasForecast = s.total_da_bid_mw > 0 || s.awarded_hours > 0;
+  const noForecastBanner = !hasForecast
+    ? `<div class="item" style="flex-basis:100%;background:#fef3c7;border-left:3px solid #f59e0b;padding:8px 12px;border-radius:3px;">
+         <div style="font-size:12px;color:#92400e;font-weight:600;">No real forecast available for ${d.asset_meta.display_name} on ${d.date}</div>
+         <div style="font-size:11px;color:#92400e;margin-top:2px;">
+           ${d.asset_meta.forecast_source === 'ercot_regional'
+              ? 'ERCOT publishes STWPF on a rolling ~10-day window. Older days fall outside it.'
+              : 'Tenaska did not return a forecast for this date.'} Bars below show actual generation only; no shadow bid would have been placed.
+         </div>
+       </div>` : '';
+  const upliftClass = s.uplift > 0 ? 'positive' : s.uplift < 0 ? 'negative' : '';
+  const rtClass = s.rt_settlement > 0 ? 'positive' : s.rt_settlement < 0 ? 'negative' : '';
+  summaryEl.innerHTML = `
+    ${noForecastBanner}
+    <div class="item"><div class="label">${d.asset_meta.display_name} - ${d.date}</div>
+        <div class="val">${d.asset_meta.settlement_point}</div></div>
+    <div class="item"><div class="label">Total DA bid</div><div class="val">${s.total_da_bid_mw.toFixed(1)} MWh</div></div>
+    <div class="item"><div class="label">Hours w/ DA bid</div><div class="val">${s.awarded_hours} / 24</div></div>
+    <div class="item"><div class="label">Actual gen</div><div class="val">${s.total_actual_mw.toFixed(1)} MWh</div></div>
+    <div class="item"><div class="label">RT deviation</div>
+        <div class="val ${s.total_rt_deviation_mw > 0 ? 'positive' : s.total_rt_deviation_mw < 0 ? 'negative' : ''}">${s.total_rt_deviation_mw > 0 ? '+' : ''}${s.total_rt_deviation_mw.toFixed(1)} MWh</div></div>
+    <div class="item"><div class="label">DA revenue</div><div class="val">${fmtDollar(s.da_revenue)}</div></div>
+    <div class="item"><div class="label">RT settlement</div><div class="val ${rtClass}">${s.rt_settlement >= 0 ? '+' : ''}${fmtDollar(s.rt_settlement)}</div></div>
+    <div class="item"><div class="label">Shadow total</div><div class="val">${fmtDollar(s.shadow_total)}</div></div>
+    <div class="item"><div class="label">vs RT-only uplift</div><div class="val ${upliftClass}">${s.uplift >= 0 ? '+' : ''}${fmtDollar(s.uplift)}</div></div>
+  `;
+
+  // NWOH-style bar rendering: ONE colored bar per hour at max(bid, actual) height,
+  // with a pink overlay sitting on top whose height = min(bid, actual). Color denotes
+  // direction. The visible coloured strip above the pink IS the deviation magnitude.
+  const maxMW = Math.max(1, ...d.hourly.flatMap(h => [h.da_bid_mw || 0, h.actual_mw || 0]));
+  // NWOH model (from ercot-basis-tracker app.py:6075-6118):
+  //   For each hour, render TWO bars both anchored at bottom:
+  //     DA bar (back, pale color)   height = bid / maxMW
+  //     gen bar (front, solid color, z-index:1) height = actual / maxMW
+  //   The gen bar covers the bottom portion of the DA bar; whatever DA color shows
+  //   *above* the gen represents the unfilled or extra bid.
+  //   Status -> color pair:
+  //     over    gen #22c55e / DA #bbf7d0   (solid green covers DA, extends past it)
+  //     matched gen #3b82f6 / DA #bfdbfe
+  //     under   gen #ef4444 / DA #fecaca   (red bottom, pink showing above)
+  //     future  gen transparent / DA #e2e8f0  (gray bid bar only)
+  const colorFor = (status) => {
+    switch (status) {
+      case 'over':    return { gen: '#22c55e', da: '#bbf7d0' };
+      case 'matched': return { gen: '#3b82f6', da: '#bfdbfe' };
+      case 'under':   return { gen: '#ef4444', da: '#fecaca' };
+      case 'future':  return { gen: 'transparent', da: '#e2e8f0' };
+      default:        return { gen: '#94a3b8', da: '#e2e8f0' };
+    }
+  };
+
+  const bars = document.getElementById('assetDayBars');
+  bars.innerHTML = '';
+  d.hourly.forEach(h => {
+    const col = document.createElement('div');
+    col.className = 'asset-day-bar-col';
+    const bid = h.da_bid_mw || 0;
+    const actual = h.actual_mw;
+    const dir = h.direction;
+    const c = colorFor(dir);
+    const daPct = (bid / maxMW) * 100;
+    const genPct = actual != null ? (actual / maxMW) * 100 : 0;
+
+    const da = document.createElement('div');
+    da.className = 'asset-day-bar-da';
+    da.style.background = c.da;
+    da.style.height = daPct + '%';
+    col.appendChild(da);
+
+    const gen = document.createElement('div');
+    gen.className = 'asset-day-bar-gen';
+    gen.style.background = c.gen;
+    gen.style.height = genPct + '%';
+    col.appendChild(gen);
+
+    // Tooltip - mirrors NWOH (ercot-basis-tracker app.py:6121-6147)
+    col.addEventListener('mouseenter', () => {
+      const tip = document.getElementById('hourTooltip');
+      const daPrice = h.da_price;
+      const rtPrice = h.rt_price;
+      const dev = h.rt_deviation_mw;
+      const rtRev = h.rt_settlement;
+      const daRev = h.da_revenue;
+      let html = `<strong>HE ${h.he}</strong>`;
+      if (dir === 'future') {
+        html += `<br>DA Award: ${bid.toFixed(1)} MW`;
+        if (daPrice != null) html += `<br>DA LMP: $${daPrice.toFixed(2)}`;
+        html += `<br><span style="color:#94a3b8">Awaiting generation</span>`;
+      } else if (bid === 0 && (actual == null || actual === 0)) {
+        html += `<br><span style="color:#94a3b8">No award / no gen</span>`;
+      } else {
+        html += `<br>DA Award: ${bid.toFixed(1)} MW${daPrice != null ? ' @ $' + daPrice.toFixed(2) : ''}`;
+        if (actual != null) html += `<br>Actual: ${actual.toFixed(1)} MW`;
+        if (dev != null) {
+          const devColor = dev >= 0 ? '#4ade80' : '#f87171';
+          const devSign = dev >= 0 ? '+' : '';
+          html += `<br>Deviation: <span style="color:${devColor}">${devSign}${dev.toFixed(1)} MW</span>`;
+        }
+        if (rtPrice != null) html += `<br>RT LMP: $${rtPrice.toFixed(2)}`;
+        if (daPrice != null && rtPrice != null) {
+          const spread = daPrice - rtPrice;
+          const sColor = spread >= 0 ? '#4ade80' : '#f87171';
+          html += `<br>DA - RT spread: <span style="color:${sColor}">${spread >= 0 ? '+' : '-'}$${Math.abs(spread).toFixed(2)}</span>`;
+        }
+        if (rtRev != null && Math.abs(rtRev) > 0.01) {
+          const rColor = rtRev >= 0 ? '#4ade80' : '#f87171';
+          const rSign = rtRev >= 0 ? '+' : '-';
+          html += `<br>RT $: <span style="color:${rColor}">${rSign}$${Math.abs(rtRev).toFixed(0)}</span>`;
+        }
+        if (daRev != null && Math.abs(daRev) > 0.01) {
+          html += `<br>DA $: $${Math.round(daRev).toLocaleString()}`;
+        }
+        if (h.uplift != null) {
+          const uColor = h.uplift >= 0 ? '#4ade80' : '#f87171';
+          html += `<br>Hourly P&amp;L vs RT-only: <span style="color:${uColor}">${h.uplift >= 0 ? '+' : '-'}$${Math.abs(h.uplift).toFixed(0)}</span>`;
+        }
+      }
+      tip.innerHTML = html;
+      tip.style.display = 'block';
+    });
+    col.addEventListener('mousemove', (e) => {
+      const tip = document.getElementById('hourTooltip');
+      tip.style.left = (e.clientX + 12) + 'px';
+      tip.style.top = (e.clientY - 10) + 'px';
+    });
+    col.addEventListener('mouseleave', () => {
+      document.getElementById('hourTooltip').style.display = 'none';
+    });
+
+    bars.appendChild(col);
+  });
+
+  // Per-hour P&L bars: scale to the max absolute uplift across the day so the curve is
+  // legible. Each hour's uplift = bid_mw * (DA - RT) -- positive bars (green) above zero
+  // mean bidding captured a DA premium that hour, negative bars (red) mean DA was below RT.
+  const pnlBars = document.getElementById('assetDayPnlBars');
+  // Clear all children except the zero line
+  Array.from(pnlBars.querySelectorAll('.asset-day-pnl-col')).forEach(c => c.remove());
+  const upliftValues = d.hourly.map(h => h.uplift ?? 0);
+  const pnlMaxAbs = Math.max(1, ...upliftValues.map(Math.abs));
+  let pnlTotal = 0;
+  d.hourly.forEach(h => {
+    const u = h.uplift ?? 0;
+    pnlTotal += u;
+    const col = document.createElement('div');
+    col.className = 'asset-day-pnl-col';
+    const bar = document.createElement('div');
+    if (h.uplift == null) {
+      // Future hour - no actual yet, can't compute uplift
+      // skip rendering a bar
+    } else if (Math.abs(u) < 0.5) {
+      bar.className = 'asset-day-pnl-bar zero';
+      col.appendChild(bar);
+    } else if (u > 0) {
+      bar.className = 'asset-day-pnl-bar profit';
+      bar.style.height = ((Math.abs(u) / pnlMaxAbs) * 48) + '%';
+      col.appendChild(bar);
+    } else {
+      bar.className = 'asset-day-pnl-bar loss';
+      bar.style.height = ((Math.abs(u) / pnlMaxAbs) * 48) + '%';
+      col.appendChild(bar);
+    }
+    col.title = `HE${h.he}: uplift ${u >= 0 ? '+' : '-'}$${Math.abs(u).toFixed(0)} (bid ${h.da_bid_mw.toFixed(1)} MW * (DA $${(h.da_price ?? 0).toFixed(2)} - RT $${(h.rt_price ?? 0).toFixed(2)}))`;
+    // Hover tooltip: reuse the existing hourTooltip with full hour context
+    col.addEventListener('mouseenter', () => {
+      const tip = document.getElementById('hourTooltip');
+      const daPrice = h.da_price, rtPrice = h.rt_price;
+      const spread = (daPrice != null && rtPrice != null) ? (daPrice - rtPrice) : null;
+      let html = `<strong>HE ${h.he}</strong> &mdash; P&amp;L view`;
+      if (h.uplift == null) {
+        html += `<br><span style="color:#94a3b8">Not yet settled</span>`;
+      } else {
+        const uColor = u >= 0 ? '#4ade80' : '#f87171';
+        html += `<br>Hourly P&amp;L: <span style="color:${uColor}">${u >= 0 ? '+' : '-'}$${Math.abs(u).toFixed(0)}</span>`;
+        html += `<br>= bid ${h.da_bid_mw.toFixed(1)} MW &times; (DA $${(daPrice ?? 0).toFixed(2)} - RT $${(rtPrice ?? 0).toFixed(2)})`;
+        if (spread != null) {
+          const sColor = spread >= 0 ? '#4ade80' : '#f87171';
+          html += `<br>DA-RT spread: <span style="color:${sColor}">${spread >= 0 ? '+' : '-'}$${Math.abs(spread).toFixed(2)}</span>`;
+        }
+        if (h.actual_mw != null) html += `<br>Actual gen: ${h.actual_mw.toFixed(1)} MW`;
+      }
+      tip.innerHTML = html;
+      tip.style.display = 'block';
+    });
+    col.addEventListener('mousemove', (e) => {
+      const tip = document.getElementById('hourTooltip');
+      tip.style.left = (e.clientX + 12) + 'px';
+      tip.style.top = (e.clientY - 10) + 'px';
+    });
+    col.addEventListener('mouseleave', () => {
+      document.getElementById('hourTooltip').style.display = 'none';
+    });
+    pnlBars.appendChild(col);
+  });
+  // Day total in the title (matches the summary uplift field)
+  const ptEl = document.getElementById('assetDayPnlTotal');
+  const ptColor = pnlTotal > 0 ? '#10b981' : pnlTotal < 0 ? '#ef4444' : '#6b7280';
+  ptEl.style.color = ptColor;
+  ptEl.textContent = `Day total: ${pnlTotal >= 0 ? '+' : '-'}$${Math.abs(pnlTotal).toFixed(0)}`;
+
+  // Settlement Flow: Market -> PPA Swap -> Net Result (mirrors NWOH dashboard)
+  const flow = document.getElementById('settleFlow');
+  const meta = d.asset_meta;
+  const ppaPrice = meta.ppa_price || 0;
+  const basisPct = Math.round((meta.ppa_basis_exposure || 0) * 100);
+  const ppaPct = meta.ppa_percent || 0;
+  const merchPct = +(100 - ppaPct).toFixed(1);
+  const cls = (v) => v == null ? '' : (v > 0 ? 'pos' : v < 0 ? 'neg' : '');
+  const signed = (v) => v == null ? '$--' : (v >= 0 ? '+' : '-') + '$' + Math.round(Math.abs(v)).toLocaleString();
+  flow.innerHTML = `
+    <div class="settle-box market">
+      <div class="step-title"><span class="step-num">1</span>ERCOT Market</div>
+      <div class="settle-line"><span>DA Energy</span><span class="${cls(s.da_revenue)}">${fmtDollar(s.da_revenue)}</span></div>
+      <div class="settle-line"><span>RT Settlement</span><span class="${cls(s.rt_settlement)}">${signed(s.rt_settlement)}</span></div>
+      <div class="settle-line total"><span>Market Total</span><span class="${cls(s.shadow_total)}">${fmtDollar(s.shadow_total)}</span></div>
+    </div>
+    <div class="settle-arrow">&#10142;</div>
+    <div class="settle-box ppa">
+      <div class="step-title"><span class="step-num">2</span>PPA Swap</div>
+      <div class="settle-line"><span>Fixed @ $${ppaPrice.toFixed(2)}</span><span class="${cls(s.ppa_fixed)}">${signed(s.ppa_fixed)}</span></div>
+      <div class="settle-line"><span>Floating leg</span><span class="${cls(-s.ppa_floating)}">${signed(-s.ppa_floating)}</span></div>
+      <div class="settle-line total"><span>Net PPA</span><span class="${cls(s.net_ppa)}">${signed(s.net_ppa)}</span></div>
+      <div class="settle-aux">${ppaPct}% PPA${merchPct > 0 ? ' / ' + merchPct + '% merchant' : ''} &middot; ${basisPct}% basis exposure (floating = ${basisPct}% hub + ${100 - basisPct}% node)</div>
+    </div>
+    <div class="settle-arrow">&#10142;</div>
+    <div class="settle-box net">
+      <div class="step-title"><span class="step-num">3</span>Net Result</div>
+      <div class="settle-line"><span>Market revenue</span><span class="${cls(s.shadow_total)}">${fmtDollar(s.shadow_total)}</span></div>
+      <div class="settle-line"><span>PPA settlement</span><span class="${cls(s.net_ppa)}">${signed(s.net_ppa)}</span></div>
+      <div class="settle-line total"><span>Total PnL</span><span class="${cls(s.total_pnl_shadow)}">${fmtDollar(s.total_pnl_shadow)}</span></div>
+    </div>
+  `;
+}
+
+document.getElementById('assetDayDate').addEventListener('change', e => {
+  currentAssetDay.date = e.target.value;
+  fetchAssetDay();
+});
+
+// Slider wiring
+const slider = document.getElementById('bidFraction');
+const sliderVal = document.getElementById('bidFractionValue');
+slider.addEventListener('input', () => {
+  currentBidFraction = parseInt(slider.value);
+  sliderVal.textContent = currentBidFraction + '%';
+});
+slider.addEventListener('change', fetchStrategy);
+
+// Date presets
+document.querySelectorAll('.date-presets button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const preset = btn.dataset.preset;
+    const today = new Date();
+    const fmtDate = (d) => d.toISOString().slice(0, 10);
+    if (preset === 'ytd') {
+      document.getElementById('startDate').value = today.getFullYear() + '-01-01';
+      document.getElementById('endDate').value = '';
+    } else if (preset === 'mtd') {
+      document.getElementById('startDate').value = fmtDate(new Date(today.getFullYear(), today.getMonth(), 1));
+      document.getElementById('endDate').value = '';
+    } else if (preset === '30d') {
+      const d = new Date(today); d.setDate(d.getDate() - 30);
+      document.getElementById('startDate').value = fmtDate(d);
+      document.getElementById('endDate').value = '';
+    } else if (preset === '7d') {
+      const d = new Date(today); d.setDate(d.getDate() - 7);
+      document.getElementById('startDate').value = fmtDate(d);
+      document.getElementById('endDate').value = '';
+    }
+    fetchStrategy();
+  });
+});
+
+document.getElementById('startDate').addEventListener('change', fetchStrategy);
+document.getElementById('endDate').addEventListener('change', fetchStrategy);
+
+document.getElementById('refreshDataBtn').addEventListener('click', async () => {
+  document.getElementById('refreshDataBtn').disabled = true;
+  document.getElementById('refreshDataBtn').textContent = 'Refreshing...';
+  await fetch('/api/shadow/refresh', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'});
+});
+
+// Initial + auto-refresh
+fetchHealth();
+fetchStrategy();
+setInterval(fetchHealth, 5000);
+setInterval(fetchStrategy, 30000);
+</script>
+</body>
+</html>

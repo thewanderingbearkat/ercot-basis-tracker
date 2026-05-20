@@ -4,3 +4,5 @@ gridstatus==0.29.1
 python-dotenv==1.0.0
 gunicorn==21.2.0
 requests>=2.32.2
+# Required for ZoneInfo("America/Chicago") on Windows-built containers; harmless on Linux
+tzdata>=2024.1
