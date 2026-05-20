@@ -4560,13 +4560,14 @@ def dashboard():
     </style>
 </head>
 <body style="background-color: #f8f9fa;">
+    <!-- Tab nav: full-width at the top of the body, matching the Shadow Trading layout.
+         Sits OUTSIDE the max-w-7xl content container so the nav spans the whole page. -->
+    <div style="display: flex; gap: 4px; padding: 20px 20px 0 20px; border-bottom: 2px solid #e5e7eb; background: #f8f9fa;">
+        <a href="/" style="padding: 8px 16px; font-size: 13px; color: var(--skyvest-navy); text-decoration: none; border-bottom: 2px solid var(--skyvest-navy); margin-bottom: -2px; font-weight: 600;">ERCOT Basis Tracker</a>
+        <a href="/shadow" style="padding: 8px 16px; font-size: 13px; color: #6b7280; text-decoration: none; border-bottom: 2px solid transparent; margin-bottom: -2px; font-weight: 500;">Shadow Trading</a>
+    </div>
     <div class="p-3 md:p-4" style="background: linear-gradient(135deg, #f8f9fa 0%, #ffffff 100%);">
         <div class="max-w-7xl mx-auto">
-            <!-- Tab nav linking to the Shadow Trading dashboard -->
-            <div style="display: flex; gap: 4px; margin-bottom: 12px; border-bottom: 2px solid #e5e7eb;">
-                <a href="/" style="padding: 8px 16px; font-size: 13px; color: var(--skyvest-navy); text-decoration: none; border-bottom: 2px solid var(--skyvest-navy); margin-bottom: -2px; font-weight: 600;">ERCOT Basis Tracker</a>
-                <a href="/shadow" style="padding: 8px 16px; font-size: 13px; color: #6b7280; text-decoration: none; border-bottom: 2px solid transparent; margin-bottom: -2px; font-weight: 500;">Shadow Trading</a>
-            </div>
             <!-- Header -->
             <div class="mb-3 pb-2" style="border-bottom: 2px solid var(--skyvest-navy);">
                 <div class="flex justify-between items-start">

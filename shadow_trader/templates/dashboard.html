@@ -117,8 +117,11 @@
 
   .status-bar { background: white; border: 1px solid #e5e7eb; border-radius: 4px; padding: 8px 12px; font-size: 11px; color: #6b7280; margin-top: 12px; display: flex; justify-content: space-between; }
   .err-msg { background: #fef2f2; border: 1px solid #fecaca; color: #b91c1c; padding: 12px; border-radius: 4px; margin-bottom: 16px; display: none; }
-  /* Top-level tab nav linking the two dashboard views */
-  .tab-nav { display: flex; gap: 4px; margin-bottom: 16px; border-bottom: 2px solid #e5e7eb; }
+  /* Top-level tab nav linking the two dashboard views.
+     Sits flush with the top of the body so it matches the layout of the
+     basis-tracker tab (which puts its nav outside its max-w-7xl container). */
+  body { padding-top: 0 !important; }
+  .tab-nav { display: flex; gap: 4px; padding: 20px 20px 0 20px; margin: -20px -20px 16px -20px; border-bottom: 2px solid #e5e7eb; background: #f6f7f9; }
   .tab-nav a { padding: 8px 16px; font-size: 13px; color: #6b7280; text-decoration: none; border-bottom: 2px solid transparent; margin-bottom: -2px; font-weight: 500; }
   .tab-nav a:hover { color: #0E2C51; }
   .tab-nav a.active { color: #0E2C51; border-bottom-color: #0E2C51; font-weight: 600; }
