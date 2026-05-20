@@ -532,8 +532,18 @@ def _start_auto_refresh():
     if _auto_refresh_started:
         return
     _auto_refresh_started = True
+    logger.info("Shadow auto-refresh: spawning daemon thread")
     _auto_refresh_thread = threading.Thread(target=_periodic_refresh_loop, daemon=True, name="auto-refresh")
     _auto_refresh_thread.start()
+
+
+# Start the auto-refresh thread EAGERLY at module import time, not on first request.
+# Lazy-start via @before_app_request is brittle: it depends on a request actually
+# routing through this blueprint before the host app's own before_request handlers
+# short-circuit (e.g. a login redirect). On Render with gunicorn workers, that
+# can fail to ever trigger the thread.
+logger.info("shadow_trader.web imported -- starting auto-refresh thread now")
+_start_auto_refresh()
 
 
 @shadow_bp.before_request
