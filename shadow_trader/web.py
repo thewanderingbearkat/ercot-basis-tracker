@@ -443,9 +443,19 @@ def _refresh_worker(start: str | None, end: str | None, merge: bool = False):
             for a in ercot_assets:
                 by_region.setdefault(ASSET_CONFIG[a]["ercot_region"], []).append(a)
             for region, assets in by_region.items():
-                wf = build_wind_forecast(asset_keys=assets, asset_gen_by_key=gen_for_share, region=region, target_date=None, lookback_days=30)
-                for a in assets:
-                    forecasts[a] = wf.get(a, {})
+                # Wind forecasts depend on gridstatus's ERCOT regional wind report, which
+                # has changed method names between versions. If the call fails for any
+                # reason (gridstatus version mismatch, ERCOT MIS outage, etc.), don't kill
+                # the whole refresh -- leave wind asset forecasts empty for this tick and
+                # let everything else (prices, generation, Holstein forecast) still cache.
+                try:
+                    wf = build_wind_forecast(asset_keys=assets, asset_gen_by_key=gen_for_share, region=region, target_date=None, lookback_days=30)
+                    for a in assets:
+                        forecasts[a] = wf.get(a, {})
+                except Exception as wf_err:
+                    logger.exception("Wind forecast for region %s failed; continuing with empty wind forecasts: %s", region, wf_err)
+                    for a in assets:
+                        forecasts[a] = {}
         if merge:
             merge_and_save_cache(market_prices, generation, forecasts, s, e)
         else:
