@@ -484,28 +484,41 @@ def refresh():
 
 
 def _periodic_refresh_loop():
-    """Background loop: refresh the data cache every AUTO_REFRESH_INTERVAL_SECONDS.
+    """Background loop: refresh the data cache when it crosses the staleness threshold.
 
-    Mirrors the NWOH dashboard's background_data_fetch pattern in ercot-basis-tracker
-    so users don't have to click 'Refresh data' to get fresh prices/forecasts each day.
+    Checks the on-disk cache age on every tick rather than scheduling refreshes from
+    process-start time. That way if Render recycles the worker (and kills this thread),
+    the new thread spawned by module import on the new worker sees the same on-disk
+    cache and picks up where the previous one left off. The previous pattern (sleep 30
+    min before first refresh) meant a worker that gets recycled every ~20 min would
+    never actually trigger a refresh.
+
+    Tick cadence: poll every CHECK_INTERVAL seconds (default 60s). On each tick, if
+    cache age > AUTO_REFRESH_INTERVAL_SECONDS, fire a refresh. Otherwise sleep and
+    re-check next tick.
     """
-    logger.info("Auto-refresh loop starting (interval=%ds)", AUTO_REFRESH_INTERVAL_SECONDS)
-    # If the cache is fresh enough at startup, wait a full interval before the first
-    # refresh. Otherwise refresh right away so the dashboard isn't serving stale data.
-    age = cache_age_seconds()
-    if age is not None and age < AUTO_REFRESH_STALE_THRESHOLD_SECONDS:
-        logger.info("Cache is fresh (%ds old); first auto-refresh in %ds",
-                    int(age), AUTO_REFRESH_INTERVAL_SECONDS)
-        time.sleep(AUTO_REFRESH_INTERVAL_SECONDS)
-    else:
-        logger.info("Cache stale or missing -- refreshing immediately on startup")
+    CHECK_INTERVAL = 60  # seconds between staleness checks; cheap because it's just a stat()
+    logger.info("Auto-refresh loop starting (interval=%ds, check=%ds)",
+                AUTO_REFRESH_INTERVAL_SECONDS, CHECK_INTERVAL)
 
     while True:
         if _refresh_status["running"]:
             # A manual or previous auto-refresh is still in flight. Skip this tick and
             # try again next interval rather than queueing a second concurrent refresh.
             logger.info("Auto-refresh tick skipped (a refresh is already running)")
-        else:
+            time.sleep(CHECK_INTERVAL)
+            continue
+
+        age = cache_age_seconds()
+        if age is not None and age < AUTO_REFRESH_INTERVAL_SECONDS:
+            # Cache still fresh. Sleep just long enough for it to potentially age out,
+            # then loop back to re-check. Bounded by CHECK_INTERVAL so we never sleep
+            # past a worker-recycle without checking.
+            time.sleep(min(CHECK_INTERVAL, AUTO_REFRESH_INTERVAL_SECONDS - age + 1))
+            continue
+
+        # Cache is stale (or missing) — refresh now.
+        if True:
             try:
                 # Incremental refresh: only fetch dates that aren't already in the cache,
                 # plus a small overlap to catch late RT settlement updates on the most
@@ -533,7 +546,10 @@ def _periodic_refresh_loop():
                 _refresh_worker(start, today_str, merge=True)
             except Exception as e:
                 logger.exception("Auto-refresh tick raised: %s", e)
-        time.sleep(AUTO_REFRESH_INTERVAL_SECONDS)
+        # After a refresh attempt (success or failure), sleep one CHECK_INTERVAL
+        # before re-evaluating. The age-based loop above handles further sleeping
+        # if the just-saved cache is fresh enough to wait on.
+        time.sleep(CHECK_INTERVAL)
 
 
 def _start_auto_refresh():
