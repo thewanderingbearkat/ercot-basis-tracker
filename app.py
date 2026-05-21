@@ -4559,12 +4559,12 @@ def dashboard():
         }
     </style>
 </head>
-<body style="background-color: #f8f9fa;">
-    <!-- Tab nav: full-width at the top of the body, matching the Shadow Trading layout.
-         Sits OUTSIDE the max-w-7xl content container so the nav spans the whole page. -->
-    <div style="display: flex; gap: 4px; padding: 20px 20px 0 20px; border-bottom: 2px solid #e5e7eb; background: #f8f9fa;">
-        <a href="/" style="padding: 8px 16px; font-size: 13px; color: var(--skyvest-navy); text-decoration: none; border-bottom: 2px solid var(--skyvest-navy); margin-bottom: -2px; font-weight: 600;">ERCOT Basis Tracker</a>
-        <a href="/shadow" style="padding: 8px 16px; font-size: 13px; color: #6b7280; text-decoration: none; border-bottom: 2px solid transparent; margin-bottom: -2px; font-weight: 500;">Shadow Trading</a>
+<body style="background-color: #f8f9fa; margin: 0;">
+    <!-- Tab nav: full-width at the top of the body, identical to the Shadow Trading layout.
+         All visual properties set inline so tailwind's CSS reset doesn't change the rendering. -->
+    <div style="display: flex; gap: 4px; padding: 20px 20px 0 20px; border-bottom: 2px solid #e5e7eb; background: #f8f9fa; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.25;">
+        <a href="/" style="display: inline-block; padding: 8px 16px; font-size: 13px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.25; color: #0E2C51; text-decoration: none; border-bottom: 2px solid #0E2C51; margin-bottom: -2px; font-weight: 600;">ERCOT Basis Tracker</a>
+        <a href="/shadow" style="display: inline-block; padding: 8px 16px; font-size: 13px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.25; color: #6b7280; text-decoration: none; border-bottom: 2px solid transparent; margin-bottom: -2px; font-weight: 500;">Shadow Trading</a>
     </div>
     <div class="p-3 md:p-4" style="background: linear-gradient(135deg, #f8f9fa 0%, #ffffff 100%);">
         <div class="max-w-7xl mx-auto">
