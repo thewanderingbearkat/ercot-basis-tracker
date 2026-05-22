@@ -45,7 +45,11 @@ shadow_bp = Blueprint(
 _cache_lock = threading.Lock()
 _cache_blob: dict[str, Any] | None = None
 _refresh_thread: threading.Thread | None = None
-_refresh_status = {"running": False, "last_error": None, "last_finished_at": None}
+_refresh_status = {"running": False, "last_error": None, "last_finished_at": None, "running_since": None}
+# If a refresh appears to have been running for longer than this, assume the worker
+# died mid-flight and the running=True flag got stuck. The auto-refresh loop and the
+# manual /api/refresh endpoint both ignore the flag in that case.
+REFRESH_STUCK_THRESHOLD_SECONDS = 15 * 60
 
 # Auto-refresh background thread (matches NWOH dashboard's background_data_fetch pattern).
 # Periodically calls the same refresh worker /api/refresh uses, so cached data tracks the
@@ -405,6 +409,7 @@ def _refresh_worker(start: str | None, end: str | None, merge: bool = False):
     global _cache_blob
     _refresh_status["running"] = True
     _refresh_status["last_error"] = None
+    _refresh_status["running_since"] = datetime.now(ZoneInfo("America/Chicago")).isoformat()
     try:
         # Import here so we don't pay the import cost on app startup.
         from shadow_trader.config import ASSET_CONFIG, BACKTEST_START_DATE, DART_ASSETS
@@ -469,12 +474,44 @@ def _refresh_worker(start: str | None, end: str | None, merge: bool = False):
         logger.exception("Refresh failed: %s", ex)
     finally:
         _refresh_status["running"] = False
+        _refresh_status["running_since"] = None
+
+
+def _refresh_is_actually_running() -> bool:
+    """Return True only if a refresh worker is genuinely in flight, not stuck.
+
+    A 'stuck' state happens when the worker process is killed mid-refresh (Render
+    worker recycle, container OOM, etc.) -- the in-memory running=True flag never
+    gets cleared because the finally block didn't execute. Without this check, both
+    the auto-refresh loop and the manual refresh button would be permanently blocked.
+    """
+    if not _refresh_status["running"]:
+        return False
+    started = _refresh_status.get("running_since")
+    if not started:
+        return True  # Flag is on but no timestamp -- treat as running (conservative)
+    try:
+        started_dt = datetime.fromisoformat(started)
+        age = (datetime.now(started_dt.tzinfo) - started_dt).total_seconds()
+        if age > REFRESH_STUCK_THRESHOLD_SECONDS:
+            logger.warning(
+                "Refresh has been 'running' for %.0fs (> %ds threshold) -- assuming the "
+                "worker died and clearing the stuck flag.",
+                age, REFRESH_STUCK_THRESHOLD_SECONDS,
+            )
+            _refresh_status["running"] = False
+            _refresh_status["running_since"] = None
+            _refresh_status["last_error"] = f"Previous refresh appears stuck (running {age:.0f}s); reset."
+            return False
+        return True
+    except Exception:
+        return True
 
 
 @shadow_bp.route("/api/shadow/refresh", methods=["POST"])
 def refresh():
     global _refresh_thread
-    if _refresh_status["running"]:
+    if _refresh_is_actually_running():
         return jsonify({"status": "already_running"}), 200
     start = request.json.get("start") if request.is_json else None
     end = request.json.get("end") if request.is_json else None
@@ -502,7 +539,7 @@ def _periodic_refresh_loop():
                 AUTO_REFRESH_INTERVAL_SECONDS, CHECK_INTERVAL)
 
     while True:
-        if _refresh_status["running"]:
+        if _refresh_is_actually_running():
             # A manual or previous auto-refresh is still in flight. Skip this tick and
             # try again next interval rather than queueing a second concurrent refresh.
             logger.info("Auto-refresh tick skipped (a refresh is already running)")
