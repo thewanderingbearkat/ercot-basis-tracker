@@ -510,14 +510,50 @@ def _refresh_is_actually_running() -> bool:
 
 @shadow_bp.route("/api/shadow/refresh", methods=["POST"])
 def refresh():
+    """Manual refresh trigger.
+
+    Default behavior (empty body / no start/end): incremental merge from
+    (latest_cache_date - overlap_days) through today. Same lightweight refresh
+    as the auto-loop -- finishes in ~30-60s.
+
+    To force a full historical rebuild, POST with explicit `start` (and optional
+    `end`) and `mode: 'overwrite'` in the JSON body. That uses save_cache (not
+    merge) and is much slower (~15-20 min for a YTD window) -- only useful when
+    you want to nuke and re-fetch the entire cache.
+    """
     global _refresh_thread
     if _refresh_is_actually_running():
         return jsonify({"status": "already_running"}), 200
-    start = request.json.get("start") if request.is_json else None
-    end = request.json.get("end") if request.is_json else None
-    _refresh_thread = threading.Thread(target=_refresh_worker, args=(start, end), daemon=True)
+
+    body = request.get_json(silent=True) or {}
+    explicit_start = body.get("start")
+    explicit_end = body.get("end")
+    overwrite_mode = body.get("mode") == "overwrite"
+
+    if explicit_start or overwrite_mode:
+        # Caller wants a custom window or a full overwrite rebuild. Use the explicit
+        # dates as-is (start defaults to BACKTEST_START_DATE inside the worker).
+        kwargs = {"start": explicit_start, "end": explicit_end, "merge": not overwrite_mode}
+    else:
+        # Default: same incremental merge the auto-loop does. Compute the window
+        # from the on-disk cache so this is cheap (~3-5 days).
+        from datetime import timedelta
+        from shadow_trader.config import BACKTEST_START_DATE
+        today = datetime.now(ZoneInfo("America/Chicago")).date()
+        latest = latest_cache_date()
+        if latest is None:
+            seed_start = (today - timedelta(days=AUTO_REFRESH_INITIAL_SEED_DAYS)).strftime("%Y-%m-%d")
+            start = max(seed_start, BACKTEST_START_DATE)
+        else:
+            latest_dt = datetime.strptime(latest, "%Y-%m-%d").date()
+            start = (latest_dt - timedelta(days=AUTO_REFRESH_OVERLAP_DAYS)).strftime("%Y-%m-%d")
+        kwargs = {"start": start, "end": today.strftime("%Y-%m-%d"), "merge": True}
+
+    _refresh_thread = threading.Thread(
+        target=lambda: _refresh_worker(**kwargs), daemon=True,
+    )
     _refresh_thread.start()
-    return jsonify({"status": "started"}), 202
+    return jsonify({"status": "started", **kwargs}), 202
 
 
 def _periodic_refresh_loop():
