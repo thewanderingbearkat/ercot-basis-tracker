@@ -117,19 +117,27 @@ def simulate_shadow_da(
     forecasts: dict,
     forecast_mode: str = "tenaska",
     bid_fraction: float = 1.0,
+    da_bid_threshold: float | None = None,
 ) -> list[dict]:
     """Simulate selling `bid_fraction × forecast_mw` into DA each hour, settling deviation in RT.
 
     Returns a list of hourly records, one per asset×hour. Pure function — no I/O.
 
     Math per hour:
-        da_bid_mw       = bid_fraction × forecast_mw
+        da_bid_mw       = bid_fraction × forecast_mw    (0 if da_node_price < da_bid_threshold)
         da_revenue      = da_bid_mw × da_node_price
         rt_deviation    = actual_gen_mw - da_bid_mw      (positive = over-generated, sold extra at RT)
         rt_settlement   = rt_deviation × rt_node_price
         shadow_total    = da_revenue + rt_settlement     (theoretical DART revenue)
         rt_only_revenue = actual_gen_mw × rt_node_price  (counterfactual: no DA bid)
         uplift          = shadow_total - rt_only_revenue (positive = strategy beats RT-only)
+
+    da_bid_threshold: when set, skip the DA bid (set da_bid_mw=0) on any hour where the
+        DA clearing price is below the threshold. Lets actual gen flow at RT instead of
+        committing MW to a low-DA print. NOTE: backtest uses the actual cleared DA price
+        as a perfect proxy for the threshold gate, which is optimistic — in live trading
+        you'd gate on the DA price FORECAST at bid time. So treat replayed savings as an
+        upper bound; the live savings depend on how accurately you can predict DA prices.
     """
     # Build O(1) price indexes once per call. Previous version did a linear scan of the
     # full DASPP/RTSPP dict for every (asset, hour, lookup) tuple -- 30s+ per /api/strategy.
@@ -163,6 +171,8 @@ def simulate_shadow_da(
             rt_hub_val = hub_rt.get(key, 0)
             forecast_mw = forecasts.get(asset, {}).get(hour_key, 0)
             da_bid_mw = forecast_mw * bid_fraction
+            if da_bid_threshold is not None and da_node < da_bid_threshold:
+                da_bid_mw = 0.0
 
             # ERCOT market leg (DA + RT)
             da_revenue = da_bid_mw * da_node

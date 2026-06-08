@@ -180,6 +180,9 @@ def strategy():
     bid_fraction = float(request.args.get("bid_fraction", 1.0))
     start = request.args.get("start")
     end = request.args.get("end")
+    # DA bid threshold: skip the DA bid when DA price < threshold. Empty/missing = no gate.
+    raw_thr = request.args.get("bid_threshold", "").strip()
+    da_bid_threshold = float(raw_thr) if raw_thr else None
 
     # If the caller didn't pin a window, default to the intersection of all assets'
     # real-forecast dates. Outside this window, BKI/BKII have no STWPF and contribute
@@ -193,7 +196,8 @@ def strategy():
         _cache_blob["market_prices"], _cache_blob["generation"], _cache_blob["forecasts"], start, end,
     )
 
-    records = simulate_shadow_da(market_prices, generation, forecasts, "cached", bid_fraction=bid_fraction)
+    records = simulate_shadow_da(market_prices, generation, forecasts, "cached",
+                                 bid_fraction=bid_fraction, da_bid_threshold=da_bid_threshold)
     agg = aggregate(records)
     risk = summarize(records)
     risk_per_asset = {
@@ -265,6 +269,8 @@ def asset_day():
     if not date:
         return jsonify({"error": "missing date (YYYY-MM-DD)"}), 400
     bid_fraction = float(request.args.get("bid_fraction", 1.0))
+    raw_thr = request.args.get("bid_threshold", "").strip()
+    da_bid_threshold = float(raw_thr) if raw_thr else None
 
     from shadow_trader.config import PPA_HUB_NODE
     cfg = ASSET_CONFIG[asset]
@@ -296,6 +302,13 @@ def asset_day():
         rt_price = node_rt.get((date, hour))
         rt_hub_price = hub_rt.get((date, hour))
         da_bid_mw = forecast_mw * bid_fraction
+        # Apply the same DA-bid threshold gate as simulate_shadow_da so the per-hour
+        # detail panel matches what the strategy view shows.
+        skipped_by_threshold = False
+        if (da_bid_threshold is not None and da_price is not None
+                and da_price < da_bid_threshold):
+            da_bid_mw = 0.0
+            skipped_by_threshold = True
 
         row = {
             "he": he,
@@ -315,6 +328,7 @@ def asset_day():
             "ppa_floating": None,
             "net_ppa": None,
             "direction": "future",
+            "skipped_by_threshold": skipped_by_threshold,
         }
 
         if da_price is not None and da_bid_mw > 0:
@@ -380,6 +394,7 @@ def asset_day():
         },
         "date": date,
         "bid_fraction": bid_fraction,
+        "da_bid_threshold": da_bid_threshold,
         "hourly": hourly,
         "summary": {
             "total_da_bid_mw": round(sum_da_bid, 2),
