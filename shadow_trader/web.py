@@ -146,6 +146,12 @@ def health():
     blob = _cache_blob
     age = cache_age_seconds()
     common = _common_forecast_window(blob["forecasts"]) if blob else None
+    # Route the running flag through the stuck-state self-heal helper so a refresh
+    # that was killed mid-flight (worker recycle, OOM, etc.) doesn't permanently
+    # grey out the dashboard's Refresh button. The helper clears the flag if it's
+    # been "running" longer than REFRESH_STUCK_THRESHOLD_SECONDS.
+    refresh_snapshot = dict(_refresh_status)
+    refresh_snapshot["running"] = _refresh_is_actually_running()
     return jsonify({
         "auto_refresh_interval_seconds": AUTO_REFRESH_INTERVAL_SECONDS,
         "auto_refresh_started": _auto_refresh_started,
@@ -159,7 +165,7 @@ def health():
             "AWARDED": len(entries_by_status("AWARDED")),
             "SETTLED": len(entries_by_status("SETTLED")),
         },
-        "refresh": dict(_refresh_status),
+        "refresh": refresh_snapshot,
         "now": datetime.now(ZoneInfo("America/Chicago")).isoformat(),
     })
 

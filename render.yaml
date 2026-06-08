@@ -7,7 +7,13 @@ services:
 
     # Build configuration
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn -w 2 -b 0.0.0.0:$PORT --timeout 120 app:app
+    # IMPORTANT: keep this at --workers 1. Shadow Trader's auto-refresh thread,
+    # `_refresh_status` flag, and in-memory cache all live in a single Python
+    # process. Running >1 worker means each process has its own refresh thread
+    # and they race to write data/raw_cache.json, leaving the dashboard showing
+    # inconsistent "Refreshing..." states depending on which worker handled the
+    # request. Use --threads to handle concurrent requests instead.
+    startCommand: gunicorn -w 1 --threads 4 -b 0.0.0.0:$PORT --timeout 120 app:app
 
     # Environment variables
     envVars:
