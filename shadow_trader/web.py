@@ -24,7 +24,7 @@ from flask import Blueprint, Flask, jsonify, redirect, render_template, request,
 from flask_cors import CORS
 
 from shadow_trader.aggregate import aggregate
-from shadow_trader.cache import cache_age_seconds, latest_cache_date, load_cache, merge_and_save_cache
+from shadow_trader.cache import CACHE_FILE, cache_age_seconds, latest_cache_date, load_cache, merge_and_save_cache
 from shadow_trader.config import ASSET_CONFIG, DART_ASSETS
 from shadow_trader.ledger import entries_by_status
 from shadow_trader.risk import summarize
@@ -81,9 +81,40 @@ _auto_refresh_started = False
 
 
 def _ensure_cache_loaded():
+    """Load the on-disk cache into _cache_blob if missing OR if disk is newer than memory.
+
+    On Render, the auto-refresh worker writes raw_cache.json to disk every ~30 min, then
+    reloads _cache_blob in the same worker. But if the worker is killed mid-flight (Render
+    recycle, OOM after writing the 800KB+ file), _cache_blob keeps pointing at whatever
+    was loaded at boot while the disk file silently advances. Strategy + asset_day endpoints
+    read _cache_blob, so the dashboard ends up showing hours-old actuals even though
+    cache_age_seconds (which stats the file) looks fresh.
+
+    Compare st_mtime to the in-memory saved_at and reload when disk is newer. Cheap (one
+    stat call per request) and self-correcting whether the refresh thread is alive or dead.
+    """
     global _cache_blob
     with _cache_lock:
         if _cache_blob is None:
+            _cache_blob = load_cache()
+            return
+        try:
+            disk_mtime = os.path.getmtime(CACHE_FILE)
+        except OSError:
+            return
+        in_mem_saved_at = _cache_blob.get("saved_at")
+        if not in_mem_saved_at:
+            _cache_blob = load_cache()
+            return
+        try:
+            in_mem_dt = datetime.fromisoformat(in_mem_saved_at).timestamp()
+        except ValueError:
+            _cache_blob = load_cache()
+            return
+        # Allow 1s slop for filesystem timestamp resolution.
+        if disk_mtime > in_mem_dt + 1:
+            logger.info("Reloading _cache_blob: disk is %.0fs newer than memory",
+                        disk_mtime - in_mem_dt)
             _cache_blob = load_cache()
 
 
