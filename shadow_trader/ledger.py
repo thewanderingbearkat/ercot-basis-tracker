@@ -60,10 +60,13 @@ def upsert_bid(
     forecast_source: str,
     hourly_bids: list[dict],
     overwrite: bool = False,
+    strategy: str = "naive",
 ) -> dict:
     """Create or replace a BID entry. Returns the saved entry.
 
     hourly_bids: list of {'he': int, 'forecast_mw': float, 'da_bid_mw': float}
+    Trader-strategy rows additionally carry 'level', 'reasons', and 'trailing_edge'
+    so the ledger doubles as a decision blotter.
     """
     ledger = load()
     eid = entry_id(operating_date, asset)
@@ -83,6 +86,7 @@ def upsert_bid(
             "generated_at": _now_iso(),
             "bid_fraction": bid_fraction,
             "forecast_source": forecast_source,
+            "strategy": strategy,
             "hourly": hourly_bids,
         },
         "awards": None,

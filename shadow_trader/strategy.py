@@ -118,6 +118,7 @@ def simulate_shadow_da(
     forecast_mode: str = "tenaska",
     bid_fraction: float = 1.0,
     da_bid_threshold: float | None = None,
+    bid_plan: dict | None = None,
 ) -> list[dict]:
     """Simulate selling `bid_fraction × forecast_mw` into DA each hour, settling deviation in RT.
 
@@ -138,6 +139,12 @@ def simulate_shadow_da(
         as a perfect proxy for the threshold gate, which is optimistic — in live trading
         you'd gate on the DA price FORECAST at bid time. So treat replayed savings as an
         upper bound; the live savings depend on how accurately you can predict DA prices.
+
+    bid_plan: when provided ({asset: {hour_key: decision_record}}, from
+        decision.build_bid_plan), the per-hour bid comes from the plan instead of
+        bid_fraction × forecast (da_bid_threshold is ignored — the plan already made the
+        in/out call); hours absent from the plan are treated as stay-out (bid 0), and the
+        plan's level/reasons/edge are carried onto the output records for auditing.
     """
     # Build O(1) price indexes once per call. Previous version did a linear scan of the
     # full DASPP/RTSPP dict for every (asset, hour, lookup) tuple -- 30s+ per /api/strategy.
@@ -170,9 +177,14 @@ def simulate_shadow_da(
                 continue
             rt_hub_val = hub_rt.get(key, 0)
             forecast_mw = forecasts.get(asset, {}).get(hour_key, 0)
-            da_bid_mw = forecast_mw * bid_fraction
-            if da_bid_threshold is not None and da_node < da_bid_threshold:
-                da_bid_mw = 0.0
+            decision = None
+            if bid_plan is not None:
+                decision = bid_plan.get(asset, {}).get(hour_key)
+                da_bid_mw = float(decision["bid_mw"]) if decision else 0.0
+            else:
+                da_bid_mw = forecast_mw * bid_fraction
+                if da_bid_threshold is not None and da_node < da_bid_threshold:
+                    da_bid_mw = 0.0
 
             # ERCOT market leg (DA + RT)
             da_revenue = da_bid_mw * da_node
@@ -197,7 +209,7 @@ def simulate_shadow_da(
             # to the same actual gen. Uplift = market_total - rt_only_market.
             uplift = market_total - rt_only_market
 
-            records.append({
+            record = {
                 "asset": asset,
                 "date": date_str,
                 "hour_ending": he,
@@ -231,5 +243,12 @@ def simulate_shadow_da(
                 "rt_only_revenue": round(rt_only_market, 2),
                 "uplift": round(uplift, 2),
                 "forecast_mode": forecast_mode,
-            })
+            }
+            if decision is not None:
+                record.update({
+                    "decision_level": decision.get("level"),
+                    "decision_reasons": decision.get("reasons", []),
+                    "trailing_edge": decision.get("edge"),
+                })
+            records.append(record)
     return records
