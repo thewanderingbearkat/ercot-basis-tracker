@@ -239,7 +239,7 @@ function render(data) {
 
   const t = new Date(data.generated_at).toLocaleTimeString();
   document.getElementById("health").innerHTML =
-    `updated ${t} &middot; ${data.cell_count} cells &middot; auto-refresh 60s`;
+    `updated ${t} &middot; ${data.cell_count} cells &middot; auto-refresh 5 min`;
 }
 
 async function refresh(fresh) {
@@ -258,7 +258,7 @@ async function refresh(fresh) {
 }
 
 refresh(false);
-setInterval(() => refresh(false), 60000);
+setInterval(() => refresh(false), 300000);   // 5 min, matched to the server-side cache TTL
 </script>
 </body>
 </html>

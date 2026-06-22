@@ -40,6 +40,9 @@ STATUS_INBOUND = "INBOUND"   # hail-bearing cell on track to reach the site soon
 STATUS_WATCH = "WATCH"       # hail-bearing cell nearby, or a point nowcast threat
 STATUS_CLEAR = "CLEAR"       # nothing of concern
 
-# Cache TTL for the live status fetch (seconds). The dashboard auto-refreshes; this
-# keeps us from hammering the trial API on every client poll.
-STATUS_CACHE_TTL = 45
+# Cache TTL for the live status fetch (seconds). Each status build costs 2 XWeather
+# calls (storm cells + point threats), and the trial allows only 1000 calls/day, shared
+# with everything else. At 300s, a continuously-open dashboard costs at most
+# 2 calls / 5 min = 576/day -- the authoritative server-side throttle, independent of
+# how many browsers are polling. Raise it further to spend even less of the daily cap.
+STATUS_CACHE_TTL = 300
