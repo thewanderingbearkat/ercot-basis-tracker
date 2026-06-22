@@ -31,6 +31,12 @@ services:
         sync: false
       - key: PHAROS_API_TOKEN
         sync: false
+      # Hail Monitor (Vaisala XWeather). Set the actual ID/secret in the Render
+      # dashboard -- the /hail tab returns an auth error until both are present.
+      - key: XWEATHER_CLIENT_ID
+        sync: false
+      - key: XWEATHER_CLIENT_SECRET
+        sync: false
 
     # Service details
     healthCheckPath: /api/health

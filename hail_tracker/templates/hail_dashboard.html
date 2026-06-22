@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hail Monitor - {{ site.name }}</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<style>
+  html, body { margin: 0; padding: 0; background: #f8f9fa; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: #0E2C51; }
+
+  /* Tab nav identical to the basis-tracker / shadow-trader tabs. */
+  .tab-nav { display: flex; gap: 4px; padding: 20px 20px 0 20px; border-bottom: 2px solid #e5e7eb; background: #f8f9fa; line-height: 1.25; }
+  .tab-nav a { display: inline-block; padding: 8px 16px; font-size: 13px; color: #6b7280; text-decoration: none; border-bottom: 2px solid transparent; margin-bottom: -2px; font-weight: 500; }
+  .tab-nav a:hover { color: #0E2C51; }
+  .tab-nav a.active { color: #0E2C51; border-bottom-color: #0E2C51; font-weight: 600; }
+
+  .page-wrap { padding: 12px; }
+  @media (min-width: 768px) { .page-wrap { padding: 16px; } }
+  .page-inner { max-width: 80rem; margin: 0 auto; }
+  h1 { font-size: 24px; line-height: 32px; margin: 0 0 4px; font-weight: 700; }
+  .subtitle { color: #2291EB; font-size: 12px; font-weight: 600; margin-bottom: 16px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .health { font-size: 11px; color: #6b7280; margin-left: auto; }
+
+  /* Status banner */
+  .banner { border-radius: 6px; padding: 16px 20px; margin-bottom: 16px; color: #fff; display: flex; align-items: center; gap: 18px; }
+  .banner .big { font-size: 26px; font-weight: 800; letter-spacing: 0.5px; }
+  .banner .detail { font-size: 13px; opacity: 0.95; line-height: 1.4; }
+  .banner.CLEAR { background: linear-gradient(135deg, #15803d, #16a34a); }
+  .banner.WATCH { background: linear-gradient(135deg, #b45309, #f59e0b); }
+  .banner.INBOUND { background: linear-gradient(135deg, #b91c1c, #ef4444); animation: pulse 1.6s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(239,68,68,0.6); } 50% { box-shadow: 0 0 24px 6px rgba(239,68,68,0.55); } }
+
+  .layout { display: grid; grid-template-columns: 1fr; gap: 16px; }
+  @media (min-width: 900px) { .layout { grid-template-columns: 1.7fr 1fr; } }
+
+  #map { height: 560px; border-radius: 6px; border: 1px solid #e5e7eb; }
+
+  .panel { background: #fff; border: 1px solid #e5e7eb; border-radius: 6px; padding: 14px 16px; }
+  .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px; color: #6b7280; margin: 0 0 10px; }
+
+  .cell { border: 1px solid #e5e7eb; border-left-width: 4px; border-radius: 4px; padding: 10px 12px; margin-bottom: 10px; }
+  .cell.INBOUND { border-left-color: #ef4444; }
+  .cell.WATCH { border-left-color: #f59e0b; }
+  .cell.CLEAR { border-left-color: #cbd5e1; }
+  .cell .row1 { display: flex; justify-content: space-between; align-items: baseline; }
+  .cell .name { font-weight: 700; font-size: 14px; }
+  .cell .tag { font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 10px; color: #fff; }
+  .tag.INBOUND { background: #ef4444; } .tag.WATCH { background: #f59e0b; } .tag.CLEAR { background: #94a3b8; }
+  .cell .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px 12px; margin-top: 8px; font-size: 12px; }
+  .cell .stats .k { color: #6b7280; font-size: 10px; text-transform: uppercase; letter-spacing: 0.3px; }
+  .cell .stats .v { font-weight: 600; }
+  .cell .v.danger { color: #ef4444; }
+  .empty { color: #6b7280; font-size: 13px; padding: 24px 8px; text-align: center; }
+
+  .legend { font-size: 11px; color: #6b7280; margin-top: 8px; line-height: 1.6; }
+  .legend .sw { display: inline-block; width: 10px; height: 10px; border-radius: 50%; vertical-align: middle; margin-right: 4px; }
+  button { background: #0E2C51; color: #fff; border: none; padding: 6px 14px; border-radius: 3px; font-size: 12px; cursor: pointer; }
+  button:hover { background: #143562; }
+</style>
+</head>
+<body>
+
+<div class="tab-nav">
+  <a href="/">ERCOT Basis Tracker</a>
+  <a href="/shadow">Shadow Trading</a>
+  <a href="/hail" class="active">Hail Monitor</a>
+</div>
+
+<div class="page-wrap"><div class="page-inner">
+
+  <div style="display:flex; align-items:flex-end; gap:16px; flex-wrap:wrap;">
+    <div>
+      <h1>Hail Monitor &mdash; {{ site.name }}</h1>
+      <div class="subtitle">Vaisala XWeather &middot; live storm-cell tracking</div>
+    </div>
+    <div class="health" id="health">loading&hellip;</div>
+  </div>
+
+  <div id="banner" class="banner CLEAR">
+    <div class="big" id="bannerStatus">&hellip;</div>
+    <div class="detail" id="bannerDetail">Fetching the latest storm picture&hellip;</div>
+    <button onclick="refresh(true)" style="margin-left:auto;">Refresh now</button>
+  </div>
+
+  <div class="layout">
+    <div>
+      <div id="map"></div>
+      <div class="legend">
+        <span class="sw" style="background:#ef4444;"></span> Inbound hail cell &nbsp;
+        <span class="sw" style="background:#f59e0b;"></span> Hail watch &nbsp;
+        <span class="sw" style="background:#60a5fa;"></span> Other cell &nbsp;
+        &nbsp;|&nbsp; arrows = forecast motion &middot; dashed ring = watch radius &middot; &#9733; = site
+      </div>
+    </div>
+    <div class="panel">
+      <h2>Storm cells &mdash; nearest first</h2>
+      <div id="cells"><div class="empty">Loading&hellip;</div></div>
+    </div>
+  </div>
+
+</div></div>
+
+<script>
+// Optional ?lat=&lon=(&name=) override lets us aim the monitor at live storms
+// anywhere for testing/demo; defaults to Holstein from the template.
+const QS = new URLSearchParams(location.search);
+const HAS_OVERRIDE = QS.has("lat") && QS.has("lon");
+const SITE = HAS_OVERRIDE
+  ? { lat: parseFloat(QS.get("lat")), lon: parseFloat(QS.get("lon")), name: QS.get("name") || "Custom location" }
+  : { lat: {{ site.lat }}, lon: {{ site.lon }}, name: {{ site.name|tojson }} };
+const STATUS_QS = HAS_OVERRIDE ? "&" + QS.toString() : "";
+const COLORS = { INBOUND: "#ef4444", WATCH: "#f59e0b", CLEAR: "#60a5fa" };
+
+// ---- Map setup ----------------------------------------------------------
+const map = L.map("map").setView([SITE.lat, SITE.lon], 6);
+L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  maxZoom: 18, attribution: "&copy; OpenStreetMap"
+}).addTo(map);
+
+// Optional XWeather radar overlay (proxied; off unless the trial includes Maps).
+const radar = L.tileLayer("/api/hail/radar/{z}/{x}/{y}.png", { opacity: 0.55, maxZoom: 12 });
+L.control.layers(null, { "XWeather radar": radar }, { collapsed: false }).addTo(map);
+
+// Site marker (a star-ish diamond) + watch-radius ring.
+L.marker([SITE.lat, SITE.lon], {
+  icon: L.divIcon({ className: "", html:
+    '<div style="font-size:22px; line-height:22px; transform:translate(-11px,-11px);">&#9733;</div>',
+    iconSize: [22,22] })
+}).addTo(map).bindPopup("<b>" + SITE.name + "</b>");
+let watchRing = null;
+
+let overlay = L.layerGroup().addTo(map);   // cleared & rebuilt each refresh
+
+// Project a point `miles` from (lat,lon) along compass bearing `deg`.
+function project(lat, lon, deg, miles) {
+  const R = 3958.8, br = deg * Math.PI/180, d = miles / R;
+  const la1 = lat*Math.PI/180, lo1 = lon*Math.PI/180;
+  const la2 = Math.asin(Math.sin(la1)*Math.cos(d) + Math.cos(la1)*Math.sin(d)*Math.cos(br));
+  const lo2 = lo1 + Math.atan2(Math.sin(br)*Math.sin(d)*Math.cos(la1),
+                               Math.cos(d) - Math.sin(la1)*Math.sin(la2));
+  return [la2*180/Math.PI, lo2*180/Math.PI];
+}
+
+function drawCells(data) {
+  overlay.clearLayers();
+  if (!watchRing) {
+    watchRing = L.circle([SITE.lat, SITE.lon], {
+      radius: (data.thresholds.watch_radius_mi || 60) * 1609.34,
+      color: "#0E2C51", weight: 1, dashArray: "5 6", fill: false, opacity: 0.5
+    }).addTo(map);
+  }
+  (data.cells || []).forEach(c => {
+    if (c.lat == null) return;
+    const color = COLORS[c.level] || COLORS.CLEAR;
+    const size = c.hail_max_size_in || 0;
+    const radiusPx = 7 + Math.min(18, size * 12);   // bigger stone -> bigger dot
+
+    L.circleMarker([c.lat, c.lon], {
+      radius: radiusPx, color: color, weight: 2, fillColor: color, fillOpacity: 0.45
+    }).addTo(overlay).bindPopup(cellPopup(c));
+
+    // Forecast motion arrow: project along heading a distance ~ 45 min of travel.
+    if (c.move_dir_deg != null && c.speed_mph > 0) {
+      const reach = Math.max(8, c.speed_mph * 0.75);   // miles in ~45 min
+      const tip = project(c.lat, c.lon, c.move_dir_deg, reach);
+      L.polyline([[c.lat, c.lon], tip], { color: color, weight: 2.5, opacity: 0.9 }).addTo(overlay);
+      // little arrowhead
+      const left = project(tip[0], tip[1], c.move_dir_deg + 150, reach*0.18);
+      const right = project(tip[0], tip[1], c.move_dir_deg - 150, reach*0.18);
+      L.polyline([left, tip, right], { color: color, weight: 2.5, opacity: 0.9 }).addTo(overlay);
+    }
+
+    // Inbound cells: draw the sight-line to the site.
+    if (c.level === "INBOUND") {
+      L.polyline([[c.lat, c.lon], [SITE.lat, SITE.lon]],
+        { color: "#ef4444", weight: 1.5, dashArray: "3 5", opacity: 0.8 }).addTo(overlay);
+    }
+
+    // XWeather-supplied forecast track points, if any.
+    if (c.forecast_locs && c.forecast_locs.length) {
+      const pts = c.forecast_locs.filter(p => p.lat != null).map(p => [p.lat, p.lon]);
+      if (pts.length) L.polyline([[c.lat, c.lon], ...pts],
+        { color: color, weight: 1, opacity: 0.6 }).addTo(overlay);
+    }
+  });
+}
+
+function cellPopup(c) {
+  const eta = c.eta_min != null ? c.eta_min + " min" : "&mdash;";
+  return `<b>${c.place || c.id || "cell"}</b> <span style="color:${COLORS[c.level]}">[${c.level}]</span><br>
+    Hail prob: <b>${c.hail_prob ?? "&mdash;"}%</b> (severe ${c.hail_prob_severe ?? "&mdash;"}%)<br>
+    Max stone: <b>${c.hail_max_size_in ?? "&mdash;"}"</b> &middot; ${c.dbz_max ?? "&mdash;"} dBZ<br>
+    Moving ${c.move_dir || "&mdash;"} @ ${c.speed_mph ?? "&mdash;"} mph<br>
+    Distance: <b>${c.distance_mi ?? "&mdash;"} mi</b> &middot; ETA: <b>${eta}</b>`;
+}
+
+function fmtCells(cells) {
+  if (!cells.length) return '<div class="empty">No active storm cells within range. ☀️</div>';
+  return cells.map(c => `
+    <div class="cell ${c.level}">
+      <div class="row1">
+        <span class="name">${c.place || c.id || "cell"}</span>
+        <span class="tag ${c.level}">${c.level}</span>
+      </div>
+      <div class="stats">
+        <div><div class="k">Hail prob</div><div class="v">${c.hail_prob ?? "—"}%</div></div>
+        <div><div class="k">Max stone</div><div class="v ${ (c.hail_max_size_in||0) >= 1 ? 'danger':''}">${c.hail_max_size_in ?? "—"}"</div></div>
+        <div><div class="k">Severe</div><div class="v">${c.hail_prob_severe ?? "—"}%</div></div>
+        <div><div class="k">Distance</div><div class="v">${c.distance_mi ?? "—"} mi</div></div>
+        <div><div class="k">Motion</div><div class="v">${c.move_dir || "—"} ${c.speed_mph ?? "—"}mph</div></div>
+        <div><div class="k">ETA</div><div class="v ${ c.level==='INBOUND' ? 'danger':''}">${c.eta_min != null ? c.eta_min+" min" : "—"}</div></div>
+      </div>
+    </div>`).join("");
+}
+
+function render(data) {
+  const banner = document.getElementById("banner");
+  banner.className = "banner " + data.status;
+  document.getElementById("bannerStatus").textContent = data.status;
+
+  let detail;
+  if (data.status === "INBOUND") {
+    const n = data.nearest_hail_cell;
+    detail = `Hail-bearing cell inbound &mdash; ${data.inbound_count} on track. ` +
+             (data.soonest_eta_min != null ? `Soonest impact ~${data.soonest_eta_min} min.` : "");
+  } else if (data.status === "WATCH") {
+    detail = `${data.cell_count} cell(s) in range; hail-bearing activity nearby. Keep watching.`;
+  } else {
+    detail = `No hail threat to ${SITE.name}. ${data.cell_count} cell(s) tracked in the wider region.`;
+  }
+  document.getElementById("bannerDetail").innerHTML = detail;
+
+  document.getElementById("cells").innerHTML = fmtCells(data.cells || []);
+  drawCells(data);
+
+  const t = new Date(data.generated_at).toLocaleTimeString();
+  document.getElementById("health").innerHTML =
+    `updated ${t} &middot; ${data.cell_count} cells &middot; auto-refresh 60s`;
+}
+
+async function refresh(fresh) {
+  try {
+    const r = await fetch("/api/hail/status?fresh=" + (fresh ? "1" : "0") + STATUS_QS);
+    const data = await r.json();
+    if (data.error) {
+      document.getElementById("bannerDetail").innerHTML =
+        "⚠️ " + data.error + " &mdash; check XWeather credentials in .env.";
+      return;
+    }
+    render(data);
+  } catch (e) {
+    document.getElementById("health").textContent = "fetch error: " + e;
+  }
+}
+
+refresh(false);
+setInterval(() => refresh(false), 60000);
+</script>
+</body>
+</html>

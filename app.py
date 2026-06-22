@@ -172,6 +172,11 @@ if not app.secret_key:
 from shadow_trader.web import shadow_bp
 app.register_blueprint(shadow_bp)
 
+# Hail Monitor tab (Holstein Solar, backed by Vaisala XWeather). Standalone from the
+# trading logic; shares only the Flask app. See hail_tracker/web.py for the surface.
+from hail_tracker.web import hail_bp
+app.register_blueprint(hail_bp)
+
 # Configuration - ERCOT
 NODE_1 = "NBOHR_RN"
 NODE_2 = "HOLSTEIN_ALL"
@@ -4582,6 +4587,7 @@ def dashboard():
     <div style="display: flex; gap: 4px; padding: 20px 20px 0 20px; border-bottom: 2px solid #e5e7eb; background: #f8f9fa; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.25;">
         <a href="/" style="display: inline-block; padding: 8px 16px; font-size: 13px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.25; color: #0E2C51; text-decoration: none; border-bottom: 2px solid #0E2C51; margin-bottom: -2px; font-weight: 600;">ERCOT Basis Tracker</a>
         <a href="/shadow" style="display: inline-block; padding: 8px 16px; font-size: 13px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.25; color: #6b7280; text-decoration: none; border-bottom: 2px solid transparent; margin-bottom: -2px; font-weight: 500;">Shadow Trading</a>
+        <a href="/hail" style="display: inline-block; padding: 8px 16px; font-size: 13px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.25; color: #6b7280; text-decoration: none; border-bottom: 2px solid transparent; margin-bottom: -2px; font-weight: 500;">Hail Monitor</a>
     </div>
     <div class="p-3 md:p-4" style="background: linear-gradient(135deg, #f8f9fa 0%, #ffffff 100%);">
         <div class="max-w-7xl mx-auto">
