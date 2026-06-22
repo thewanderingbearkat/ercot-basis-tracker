@@ -551,41 +551,58 @@ def fetch_energy_imbalance_data(start_date=None, days_back=30):
         # Calculate date range
         end_date = datetime.now(ZoneInfo("UTC"))
         if start_date:
-            begin_str = f"{start_date}T00:00:00Z"
+            begin_dt = datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=ZoneInfo("UTC"))
         else:
             begin_dt = end_date - timedelta(days=days_back)
-            begin_str = begin_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-        params = {
-            "begin": begin_str,
-            "end": end_date.strftime("%Y-%m-%dT%H:%M:%SZ")
-        }
-
-        logger.info(f"Fetching Tenaska energy imbalance data from {params['begin']} to {params['end']}")
-        response = requests.get(TENASKA_ENERGY_IMBALANCE_URL, headers=headers, params=params, timeout=120)
-
-        if response.status_code != 200:
-            logger.error(f"Tenaska API returned status {response.status_code}: {response.text[:200]}")
-            return []
-
-        data = response.json()
         cst_tz = ZoneInfo("America/Chicago")
 
-        # Debug: save raw API response to file
-        try:
-            with open("C:/Users/TylerMartin/tenaska_api_debug.json", "w") as f:
-                import json as json_module
-                json_module.dump(data, f, indent=2)
-            logger.info("Saved raw Tenaska API response to tenaska_api_debug.json")
+        # The API rejects any single request whose resulting dataset exceeds its
+        # max response size (validation statusCode 2104, "Resulting dataset
+        # potentially too large"). A full YTD window (~6 months across all
+        # elements) is over that limit and returns HTTP 400, which previously
+        # froze all Tenaska-sourced PnL (BKI/BKII/Holstein). Fetch the range in
+        # bounded windows and merge the results instead.
+        CHUNK_DAYS = 25
+        all_items = []
+        chunk_start = begin_dt
+        chunk_count = 0
+        while chunk_start < end_date:
+            chunk_end = min(chunk_start + timedelta(days=CHUNK_DAYS), end_date)
+            params = {
+                "begin": chunk_start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "end": chunk_end.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            }
+            logger.info(f"Fetching Tenaska energy imbalance chunk {params['begin']} to {params['end']}")
+            response = requests.get(TENASKA_ENERGY_IMBALANCE_URL, headers=headers, params=params, timeout=120)
 
-            # Log structure of first few items
-            items = data.get("data", [])
-            logger.info(f"API returned {len(items)} top-level data items")
-            for i, item in enumerate(items[:3]):
+            if response.status_code != 200:
+                # Don't abort the whole fetch on a single bad chunk - log and continue
+                # so the remaining (especially most recent) windows still load.
+                logger.error(f"Tenaska API returned status {response.status_code} for chunk "
+                             f"{params['begin']}..{params['end']}: {response.text[:200]}")
+                chunk_start = chunk_end
+                continue
+
+            chunk_items = response.json().get("data", [])
+            all_items.extend(chunk_items)
+            chunk_count += 1
+            chunk_start = chunk_end
+
+        if not all_items:
+            logger.error("Tenaska API returned no data for any chunk")
+            return []
+
+        logger.info(f"Fetched {chunk_count} chunk(s), {len(all_items)} total data items")
+
+        # Debug: log a small sample of the response structure (avoid dumping the
+        # full multi-hundred-MB payload to disk on every refresh).
+        try:
+            for i, item in enumerate(all_items[:3]):
                 logger.info(f"Item {i} keys: {list(item.keys())}")
                 logger.info(f"  parent={item.get('parent')}, element={item.get('element')}, name={item.get('name')}")
         except Exception as e:
-            logger.warning(f"Could not save debug API response: {e}")
+            logger.warning(f"Could not log debug API response: {e}")
 
         # Fields we want to extract
         target_fields = {
@@ -606,7 +623,7 @@ def fetch_energy_imbalance_data(start_date=None, days_back=30):
             "rtspp": 0,
         })
 
-        for item in data.get("data", []):
+        for item in all_items:
             # Use 'element' for asset name (e.g., "Bearkat Wind Energy II, LLC - Gen")
             # Fall back to 'parent' only if element is not available
             element_name = item.get("element") or item.get("parent", "Unknown")
