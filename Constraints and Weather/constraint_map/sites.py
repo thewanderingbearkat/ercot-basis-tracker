@@ -14,6 +14,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 
+# Default basis reference hub (site LMP - hub LMP). Sites can override per-asset
+# (e.g. Aviator is in West Texas but settles against HB_NORTH).
+HUB_NAME = "HB_HUBAVG"
+HUB_NODE_ID = 10000698382
+
+
 @dataclass(frozen=True)
 class Site:
     key: str
@@ -26,11 +32,8 @@ class Site:
     coords_approx: bool = True
     county: str = ""
     price_node_id: int = 0         # PRICE_NODES.OBJECTID -> DART_PRICES (RT/DA LMP)
-
-
-# ERCOT system hub used as the energy reference for basis (site LMP - hub LMP).
-HUB_NAME = "HB_HUBAVG"
-HUB_NODE_ID = 10000698382
+    hub_name: str = HUB_NAME       # basis reference hub (per-site override)
+    hub_node_id: int = HUB_NODE_ID
 
 
 # Keyed by site key. Note NBOHR_RN is shared by McCrae (BKII) and BKI.
@@ -85,6 +88,8 @@ SITES: dict[str, Site] = {
         # EIA-860: "Aviator Wind", Coke County (525 MW).
         lat=31.7926, lon=-100.6973, county="Coke", coords_approx=False,
         price_node_id=10016246152,
+        # Settles against the North hub, not West/HubAvg.
+        hub_name="HB_NORTH", hub_node_id=10000697078,
     ),
 }
 

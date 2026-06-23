@@ -22,7 +22,7 @@ from typing import Any
 
 from .constraints import active_constraints
 from .db import YES, query
-from .sites import HUB_NAME, HUB_NODE_ID, SITES
+from .sites import SITES
 
 
 def _latest_lmp(node_ids: list[int]) -> dict[int, dict[str, Any]]:
@@ -49,28 +49,29 @@ def price_bridge(at: str | None = None) -> dict[str, Any]:
         for sp, imp in c["impacts"].items():
             contrib.setdefault(sp, []).append({"name": c["name"], "impact": imp["impact"]})
 
-    px = _latest_lmp([s.price_node_id for s in SITES.values()] + [HUB_NODE_ID])
-    hub = px.get(HUB_NODE_ID)
-    hub_lmp = hub["rtlmp"] if hub else None
+    # Fetch every site node + every (possibly distinct) site hub.
+    px = _latest_lmp([s.price_node_id for s in SITES.values()]
+                     + [s.hub_node_id for s in SITES.values()])
 
     sites = []
     for s in SITES.values():
         cs = sorted(contrib.get(s.settlement_point, []), key=lambda x: x["impact"])
         modeled = sum(x["impact"] for x in cs)
         slmp = px.get(s.price_node_id)
+        hlmp = px.get(s.hub_node_id)
         site_lmp = slmp["rtlmp"] if slmp else None
+        hub_lmp = hlmp["rtlmp"] if hlmp else None
         basis = (site_lmp - hub_lmp) if (site_lmp is not None and hub_lmp is not None) else None
         sites.append({
             "key": s.key, "name": s.display_name, "settlement_point": s.settlement_point,
             "fuel": s.fuel,
-            "hub_lmp": hub_lmp, "site_lmp": site_lmp, "basis": basis,
+            "hub_name": s.hub_name, "hub_lmp": hub_lmp, "site_lmp": site_lmp, "basis": basis,
             "modeled_congestion": modeled,
             "residual": (basis - modeled) if basis is not None else None,
             "constraints": cs,                       # most-negative first
             "price_time": slmp["datetime"] if slmp else None,
         })
-    return {"interval": res["interval"], "hub_name": HUB_NAME,
-            "hub_time": hub["datetime"] if hub else None, "sites": sites}
+    return {"interval": res["interval"], "sites": sites}
 
 
 def historical_attribution(days: int = 30, top: int = 10) -> dict[str, Any]:

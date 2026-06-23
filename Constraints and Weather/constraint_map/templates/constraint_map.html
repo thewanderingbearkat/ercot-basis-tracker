@@ -340,7 +340,7 @@ function renderBridge() {
   const cons = s.constraints.slice().sort((a,b) => a.impact - b.impact);
   const shown = cons.slice(0, 6);
   const other = cons.slice(6).reduce((a,c) => a + c.impact, 0);
-  const steps = [{ label: "Hub (" + bridgeData.hub_name + ")", abs: s.hub_lmp }];
+  const steps = [{ label: "Hub (" + s.hub_name + ")", abs: s.hub_lmp }];
   shown.forEach(c => steps.push({ label: c.name, d: c.impact }));
   if (Math.abs(other) > 0.005) steps.push({ label: "Other constraints", d: other });
   if (s.residual != null && Math.abs(s.residual) > 0.005) steps.push({ label: "Losses / residual", d: s.residual });
