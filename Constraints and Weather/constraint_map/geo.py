@@ -265,18 +265,20 @@ def _single_feature_path(frm: dict, to: dict, tol_km: float = 3.0, path: str | N
     return None
 
 
-def _resolve_path(frm: dict, to: dict, path: str | None = None) -> list[list[float]] | None:
+def _resolve_path(frm: dict, to: dict, path: str | None = None, tol_km: float = 3.0) -> list[list[float]] | None:
     """Real basemap path for a constraint: graph route first, single feature
     second, else None (caller draws an approximate straight segment)."""
-    return _snap_path(frm, to, path=path) or _single_feature_path(frm, to, path=path)
+    return _snap_path(frm, to, tol_km=tol_km, path=path) or _single_feature_path(frm, to, tol_km=tol_km, path=path)
 
 
-def routed_path(frm: dict | None, to: dict | None, basemap_path: str | None = None) -> list[list[float]] | None:
+def routed_path(frm: dict | None, to: dict | None, basemap_path: str | None = None,
+                tol_km: float = 3.0) -> list[list[float]] | None:
     """Public: route between two endpoints along a basemap (defaults to TX/ERCOT).
-    Used by the PJM map to follow real conductors instead of straight segments."""
+    `tol_km` is how far an endpoint may sit from the network and still snap (PJM
+    uses a looser tolerance since some 115 kV taps sit a few km off the backbone)."""
     if not (frm and to):
         return None
-    return _resolve_path(frm, to, path=basemap_path)
+    return _resolve_path(frm, to, path=basemap_path, tol_km=tol_km)
 
 
 def attach_geometry(result: dict[str, Any], basemap_path: str | None = None) -> dict[str, Any]:

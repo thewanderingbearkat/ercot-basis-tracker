@@ -27,7 +27,7 @@ def driver_map(site_key: str, days: int = 30, top: int = 15) -> dict[str, Any]:
     for d in attr["drivers"]:
         g = geo.get(d["facility_id"]) or {}
         frm, to = g.get("from"), g.get("to")
-        path = routed_path(frm, to, PJM_BASEMAP)   # follow real conductor geometry
+        path = routed_path(frm, to, PJM_BASEMAP, tol_km=5.0)   # follow real conductor geometry
         drivers.append({
             **d,
             "from": frm, "to": to, "voltage": g.get("voltage"),
