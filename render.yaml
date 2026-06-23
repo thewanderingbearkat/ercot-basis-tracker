@@ -37,6 +37,18 @@ services:
         sync: false
       - key: XWEATHER_CLIENT_SECRET
         sync: false
+      # Snowflake (Yes Energy) for the Constraint Map. KEY-PAIR ONLY -- we do NOT
+      # set SNOWFLAKE_PASSWORD here, so Render never uses password auth and never
+      # triggers Snowflake MFA (Duo). Set SNOWFLAKE_PRIVATE_KEY to the full PEM
+      # contents of the private key in the Render dashboard.
+      - key: SNOWFLAKE_USER
+        sync: false
+      - key: SNOWFLAKE_ACCOUNT
+        sync: false
+      - key: SNOWFLAKE_WAREHOUSE
+        sync: false
+      - key: SNOWFLAKE_PRIVATE_KEY
+        sync: false
 
     # Service details
     healthCheckPath: /api/health

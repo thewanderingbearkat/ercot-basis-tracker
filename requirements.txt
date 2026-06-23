@@ -6,3 +6,6 @@ gunicorn==21.2.0
 requests>=2.32.2
 # Required for ZoneInfo("America/Chicago") on Windows-built containers; harmless on Linux
 tzdata>=2024.1
+# Constraint map: Snowflake (Yes Energy) access. [secure-local-storage] pulls in
+# cryptography, used for key-pair auth (no MFA / no Duo on Render).
+snowflake-connector-python[secure-local-storage]>=3.12.0

@@ -177,6 +177,14 @@ app.register_blueprint(shadow_bp)
 from hail_tracker.web import hail_bp
 app.register_blueprint(hail_bp)
 
+# West Texas Constraint Map tab. Lives under "Constraints and Weather/" (a path with
+# spaces), so we add that dir to sys.path before importing the package. Pulls binding
+# constraints + shift-factor impact + station geometry from Snowflake (Yes Energy).
+import sys as _sys
+_sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "Constraints and Weather"))
+from constraint_map.web import constraints_bp
+app.register_blueprint(constraints_bp)
+
 # Configuration - ERCOT
 NODE_1 = "NBOHR_RN"
 NODE_2 = "HOLSTEIN_ALL"
@@ -4588,6 +4596,7 @@ def dashboard():
         <a href="/" style="display: inline-block; padding: 8px 16px; font-size: 13px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.25; color: #0E2C51; text-decoration: none; border-bottom: 2px solid #0E2C51; margin-bottom: -2px; font-weight: 600;">ERCOT Basis Tracker</a>
         <a href="/shadow" style="display: inline-block; padding: 8px 16px; font-size: 13px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.25; color: #6b7280; text-decoration: none; border-bottom: 2px solid transparent; margin-bottom: -2px; font-weight: 500;">Shadow Trading</a>
         <a href="/hail" style="display: inline-block; padding: 8px 16px; font-size: 13px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.25; color: #6b7280; text-decoration: none; border-bottom: 2px solid transparent; margin-bottom: -2px; font-weight: 500;">Hail Monitor</a>
+        <a href="/constraints" style="display: inline-block; padding: 8px 16px; font-size: 13px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.25; color: #6b7280; text-decoration: none; border-bottom: 2px solid transparent; margin-bottom: -2px; font-weight: 500;">Constraint Map</a>
     </div>
     <div class="p-3 md:p-4" style="background: linear-gradient(135deg, #f8f9fa 0%, #ffffff 100%);">
         <div class="max-w-7xl mx-auto">

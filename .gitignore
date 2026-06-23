@@ -138,3 +138,9 @@ Thumbs.db
 
 # Shadow trading runtime cache + ledger (never commit)
 data/
+
+# ...but DO ship the constraint-map transmission basemap (the map needs it on
+# Render). Re-include only that file; keep the local 2015 backup out.
+!Constraints and Weather/data/
+Constraints and Weather/data/*
+!Constraints and Weather/data/tx_transmission_lines.geojson
