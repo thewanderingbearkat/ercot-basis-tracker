@@ -76,6 +76,16 @@ SITES: dict[str, Site] = {
         lat=32.2353, lon=-101.8367, county="Martin", coords_approx=False,
         price_node_id=10000698819,
     ),
+    "AVIATOR": Site(
+        key="AVIATOR",
+        display_name="Aviator Wind",
+        settlement_point="AVIAT_ALL",
+        resources=(),                # aggregate settlement point; unit RNs not enumerated
+        fuel="wind",
+        # EIA-860: "Aviator Wind", Coke County (525 MW).
+        lat=31.7926, lon=-100.6973, county="Coke", coords_approx=False,
+        price_node_id=10016246152,
+    ),
 }
 
 # Distinct settlement points we monitor (join key into the shift-factor table).
