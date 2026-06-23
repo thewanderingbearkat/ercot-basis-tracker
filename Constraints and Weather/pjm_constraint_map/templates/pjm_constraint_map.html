@@ -57,9 +57,10 @@
 <div class="page-wrap"><div class="page-inner">
   <div style="display:flex; align-items:flex-end; gap:16px; flex-wrap:wrap;">
     <div>
-      <h1>PJM Constraint Map &mdash; NWOH</h1>
+      <h1>PJM Constraint Map</h1>
       <div class="subtitle">Authoritative node congestion &middot; daily modeled constraint attribution</div>
     </div>
+    <div id="siteTabs" class="seg"></div>
     <div class="health" id="health">loading&hellip;</div>
   </div>
 
@@ -100,8 +101,10 @@ let curDays = 30;
 function fmt(v, d=2){ return (v>=0?"+":"") + v.toFixed(d); }
 
 // ---- Map ---------------------------------------------------------------
-const SITE0 = {{ sites|tojson }}[0];
-const map = L.map("map", { preferCanvas: true }).setView([SITE0.lat, SITE0.lon], 6);
+const SITES = {{ sites|tojson }};
+let curSite = SITES[0].key;
+const site = () => SITES.find(s => s.key === curSite);
+const map = L.map("map", { preferCanvas: true }).setView([SITES[0].lat, SITES[0].lon], 6);
 L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", {
   maxZoom: 19, subdomains: "abcd", attribution: "&copy; OpenStreetMap &copy; CARTO"
 }).addTo(map);
@@ -119,11 +122,21 @@ async function loadBasemap(){
   } catch(e){ console.warn("pjm basemap load failed", e); }
 }
 
-// NWOH site marker (star).
-L.marker([SITE0.lat, SITE0.lon], {
-  icon: L.divIcon({ className: "", iconSize:[22,22], html:
-    `<div style="font-size:22px;line-height:22px;transform:translate(-11px,-11px);color:#2291EB;text-shadow:0 0 2px #fff,0 0 2px #fff;">&#9733;</div>` })
-}).addTo(map).bindPopup(`<b>${SITE0.display_name}</b><br>${SITE0.pnode_name}`);
+// Site markers (stars) -- one per asset; the selected one shows brighter.
+const siteMarkers = {};
+function star(active){ return L.divIcon({ className:"", iconSize:[22,22], html:
+  `<div style="font-size:22px;line-height:22px;transform:translate(-11px,-11px);color:${active?'#2291EB':'#9bbcd6'};text-shadow:0 0 2px #fff,0 0 2px #fff;">&#9733;</div>` }); }
+SITES.forEach(s => { siteMarkers[s.key] = L.marker([s.lat, s.lon], { icon: star(s.key===curSite) })
+  .addTo(map).bindPopup(`<b>${s.display_name}</b><br>${s.pnode_name}<br>vs ${s.hub_name}`); });
+
+function renderSiteTabs(){
+  document.getElementById("siteTabs").innerHTML = SITES.map(s =>
+    `<button data-s="${s.key}" class="${s.key===curSite?'active':''}">${s.display_name.split(' ')[0]}</button>`).join("");
+  document.querySelectorAll("#siteTabs button").forEach(b =>
+    b.onclick = () => { curSite = b.dataset.s;
+      SITES.forEach(s => siteMarkers[s.key].setIcon(star(s.key===curSite)));
+      renderSiteTabs(); loadMap(); loadAttribution(); });
+}
 
 // Green->red ramp keyed to |attributed $/MWh|.
 function rampColor(v){
@@ -137,7 +150,7 @@ function rampColor(v){
 
 async function loadMap(){
   try {
-    const d = await (await fetch("/api/pjm/map?days=" + curDays)).json();
+    const d = await (await fetch(`/api/pjm/map?days=${curDays}&site=${curSite}`)).json();
     driverLayer.clearLayers();
     if (d.error){ document.getElementById("mapMeta").textContent = "⚠️ " + d.error; return; }
     const drawn = (d.drivers||[]).filter(x => x.drawable);
@@ -156,8 +169,9 @@ async function loadMap(){
     document.getElementById("mapMeta").textContent =
       `${drawn.length}/${(d.drivers||[]).length} located · ${routed} routed · last ${d.days}d`;
     // Fit to the drivers + site.
-    const all = drawn.flatMap(x => (x.path && x.path.length>1) ? x.path : [[x.from.lat,x.from.lon],[x.to.lat,x.to.lon]]).concat([[SITE0.lat,SITE0.lon]]);
+    const all = drawn.flatMap(x => (x.path && x.path.length>1) ? x.path : [[x.from.lat,x.from.lon],[x.to.lat,x.to.lon]]).concat([[site().lat, site().lon]]);
     if (all.length > 1) map.fitBounds(all, { padding:[30,30] });
+    else map.setView([site().lat, site().lon], 7);
   } catch(e){ document.getElementById("mapMeta").textContent = "fetch error: " + e; }
 }
 
@@ -173,7 +187,7 @@ async function loadAttribution(){
   const el = document.getElementById("drivers");
   el.innerHTML = '<div class="empty">Loading&hellip;</div>';
   try {
-    const d = await (await fetch("/api/pjm/attribution?days=" + curDays)).json();
+    const d = await (await fetch(`/api/pjm/attribution?days=${curDays}&site=${curSite}`)).json();
     if (d.error){ el.innerHTML = `<div class="empty">⚠️ ${d.error}</div>`; return; }
     if (!d.drivers.length){ el.innerHTML = '<div class="empty">No modeled constraints in window.</div>'; return; }
     const max = Math.max(...d.drivers.map(x=>Math.abs(x.attributed)), 0.01);
@@ -190,6 +204,7 @@ async function loadAttribution(){
   } catch(e){ el.innerHTML = `<div class="empty">fetch error: ${e}</div>`; }
 }
 
+renderSiteTabs();
 renderWinTabs();
 loadBasemap();
 loadAttribution();
