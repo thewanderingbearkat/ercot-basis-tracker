@@ -13,10 +13,14 @@ from dataclasses import asdict
 
 from flask import Blueprint, jsonify, render_template, request
 
+from constraint_map.geo import load_basemap
+
 from .attribution import daily_attribution
 from .congestion import node_congestion
 from .mapping import driver_map
 from .sites import SITES
+
+PJM_BASEMAP = os.path.join(os.path.dirname(__file__), "..", "data", "pjm_transmission_lines.geojson")
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +50,16 @@ def index():
 @pjm_constraints_bp.route("/api/pjm/sites")
 def api_sites():
     return jsonify({"sites": _sites_payload()})
+
+
+@pjm_constraints_bp.route("/api/pjm/basemap")
+def api_basemap():
+    """PJM-east transmission backbone (>=min_kv). Static file, no Snowflake."""
+    try:
+        min_kv = int(request.args.get("min_kv", 230))
+    except ValueError:
+        min_kv = 230
+    return jsonify(load_basemap(min_kv, path=PJM_BASEMAP))
 
 
 @pjm_constraints_bp.route("/api/pjm/congestion")

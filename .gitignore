@@ -144,3 +144,4 @@ data/
 !Constraints and Weather/data/
 Constraints and Weather/data/*
 !Constraints and Weather/data/tx_transmission_lines.geojson
+!Constraints and Weather/data/pjm_transmission_lines.geojson

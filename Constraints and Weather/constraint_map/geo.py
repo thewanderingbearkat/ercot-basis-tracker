@@ -34,22 +34,25 @@ STATIONS_GEO = "YES_GEODATA.GEO.STATIONS_GEO"
 # Static basemap shipped alongside the package (real HIFLD line geometry, TX).
 BASEMAP_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "tx_transmission_lines.geojson")
 
-# Cache of the trimmed basemap, keyed by min_kv (the raw file is ~19 MB; we never
-# ship that to the browser -- we filter by voltage and round coordinates first).
-_basemap_cache: dict[int, dict[str, Any]] = {}
+# Cache of the trimmed basemap, keyed by (path, min_kv) -- we never ship the raw
+# file to the browser; we filter by voltage and round coordinates first.
+_basemap_cache: dict[tuple, dict[str, Any]] = {}
 
 
-def load_basemap(min_kv: int = 100) -> dict[str, Any]:
-    """Return the TX transmission basemap as GeoJSON, trimmed for the browser.
+def load_basemap(min_kv: int = 100, path: str | None = None) -> dict[str, Any]:
+    """Return a HIFLD transmission basemap as GeoJSON, trimmed for the browser.
 
     Keeps only lines at/above `min_kv` (HIFLD VOLTAGE; -999999 = unknown is kept
     so we don't silently drop real lines), and rounds coordinates to 5 decimals
-    (~1 m) to cut payload. Result is cached per min_kv.
+    (~1 m) to cut payload. `path` selects the basemap file (defaults to the TX
+    one); result is cached per (path, min_kv) so ERCOT and PJM don't collide.
     """
-    if min_kv in _basemap_cache:
-        return _basemap_cache[min_kv]
+    p = path or BASEMAP_PATH
+    key = (p, min_kv)
+    if key in _basemap_cache:
+        return _basemap_cache[key]
 
-    with open(BASEMAP_PATH, encoding="utf-8") as fh:
+    with open(p, encoding="utf-8") as fh:
         raw = json.load(fh)
 
     def keep(props: dict[str, Any]) -> bool:
@@ -75,7 +78,7 @@ def load_basemap(min_kv: int = 100) -> dict[str, Any]:
         })
 
     fc = {"type": "FeatureCollection", "features": feats}
-    _basemap_cache[min_kv] = fc
+    _basemap_cache[key] = fc
     return fc
 
 
