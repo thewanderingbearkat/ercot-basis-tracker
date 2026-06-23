@@ -56,7 +56,13 @@ def _config() -> dict[str, Any]:
     if der is not None:
         cfg["private_key"] = der          # key-pair auth -> no MFA / no Duo push
     else:
-        cfg["password"] = os.environ["SNOWFLAKE_PASSWORD"]
+        pw = os.getenv("SNOWFLAKE_PASSWORD")
+        if not pw:
+            raise RuntimeError(
+                "No Snowflake auth configured. Set SNOWFLAKE_PRIVATE_KEY (key-pair, "
+                "no MFA -- needed on Render) or SNOWFLAKE_PASSWORD (triggers Duo)."
+            )
+        cfg["password"] = pw
     return cfg
 
 

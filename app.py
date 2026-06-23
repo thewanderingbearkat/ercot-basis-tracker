@@ -182,8 +182,13 @@ app.register_blueprint(hail_bp)
 # constraints + shift-factor impact + station geometry from Snowflake (Yes Energy).
 import sys as _sys
 _sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "Constraints and Weather"))
-from constraint_map.web import constraints_bp
-app.register_blueprint(constraints_bp)
+# Isolated so a constraint-map problem (e.g. Snowflake creds not yet set on Render)
+# can't take down the rest of the dashboard -- the tab just 404s until it's fixed.
+try:
+    from constraint_map.web import constraints_bp
+    app.register_blueprint(constraints_bp)
+except Exception as _cm_err:
+    logger.exception("Constraint Map blueprint failed to load; other tabs unaffected: %s", _cm_err)
 
 # Configuration - ERCOT
 NODE_1 = "NBOHR_RN"
