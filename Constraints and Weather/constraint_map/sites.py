@@ -14,10 +14,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 
-# Default basis reference hub (site LMP - hub LMP). Sites can override per-asset
-# (e.g. Aviator is in West Texas but settles against HB_NORTH).
-HUB_NAME = "HB_HUBAVG"
-HUB_NODE_ID = 10000698382
+# Default basis reference hub (site LMP - hub LMP) -- our West Texas sites settle
+# against HB_WEST. Sites can override per-asset (e.g. Aviator -> HB_NORTH).
+HUB_NAME = "HB_WEST"
+HUB_NODE_ID = 10000697080
 
 
 @dataclass(frozen=True)
