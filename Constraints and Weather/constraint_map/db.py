@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from contextlib import contextmanager
 from typing import Any, Iterator
 
@@ -59,22 +60,60 @@ def _config() -> dict[str, Any]:
     return cfg
 
 
+# One long-lived connection reused across queries, guarded by a lock. Each NEW
+# connection re-authenticates -- and with password+MFA that's a Duo push -- so
+# reusing one connection collapses "a push per query" down to ~one push per
+# process. client_session_keep_alive stops the session from idling out (and thus
+# re-authing) during a work session. (Key-pair auth, once set, has no push at
+# all; this still helps by avoiding repeated warehouse-resume latency.)
+_conn: "snowflake.connector.SnowflakeConnection | None" = None
+_lock = threading.Lock()
+
+
+def _get_conn() -> "snowflake.connector.SnowflakeConnection":
+    global _conn
+    if _conn is not None:
+        try:
+            if not _conn.is_closed():
+                return _conn
+        except Exception:
+            pass
+    _conn = snowflake.connector.connect(client_session_keep_alive=True, **_config())
+    return _conn
+
+
 @contextmanager
 def connect() -> Iterator["snowflake.connector.SnowflakeConnection"]:
-    conn = snowflake.connector.connect(**_config())
-    try:
-        yield conn
-    finally:
-        conn.close()
+    """Yield the shared connection (kept open for reuse; not closed on exit)."""
+    with _lock:
+        yield _get_conn()
 
 
 def query(sql: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-    """Run a read-only query and return rows as dicts keyed by column name."""
-    with connect() as conn:
-        cur = conn.cursor()
-        try:
-            cur.execute(sql, params or {})
-            cols = [d[0] for d in cur.description]
-            return [dict(zip(cols, row)) for row in cur.fetchall()]
-        finally:
-            cur.close()
+    """Run a read-only query and return rows as dicts keyed by column name.
+
+    Reuses the shared connection; if the session has dropped (idle timeout,
+    network blip), reconnects once and retries -- that single reconnect is the
+    only time a new auth (and any MFA push) can occur.
+    """
+    for attempt in (1, 2):
+        with _lock:
+            conn = _get_conn()
+            cur = conn.cursor()
+            try:
+                cur.execute(sql, params or {})
+                cols = [d[0] for d in cur.description]
+                return [dict(zip(cols, row)) for row in cur.fetchall()]
+            except snowflake.connector.errors.Error:
+                global _conn
+                try:
+                    if _conn is not None:
+                        _conn.close()
+                except Exception:
+                    pass
+                _conn = None
+                if attempt == 2:
+                    raise
+            finally:
+                cur.close()
+    return []
