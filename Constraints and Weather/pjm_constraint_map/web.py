@@ -81,22 +81,17 @@ def api_congestion():
 @pjm_constraints_bp.route("/api/pjm/attribution")
 def api_attribution():
     site = request.args.get("site", next(iter(SITES)))
-    try:
-        days = max(1, min(90, int(request.args.get("days", 30))))
-    except ValueError:
-        days = 30
-    key = (site, days)
-    hit = _attrib_cache.get(key)
+    hit = _attrib_cache.get(site)
     if hit and (time.time() - hit[0]) < ATTRIB_CACHE_TTL and request.args.get("fresh") != "1":
         return jsonify({**hit[1], "cache_age_seconds": round(time.time() - hit[0], 1)})
     if site not in SITES:
         return jsonify({"error": f"unknown site {site}"}), 400
     try:
-        data = daily_attribution(site, days)
+        data = daily_attribution(site)
     except Exception as e:
         logger.exception("pjm daily_attribution failed")
         return jsonify({"error": str(e)}), 502
-    _attrib_cache[key] = (time.time(), data)
+    _attrib_cache[site] = (time.time(), data)
     return jsonify({**data, "cache_age_seconds": 0})
 
 
@@ -106,18 +101,13 @@ _map_cache: dict = {}
 @pjm_constraints_bp.route("/api/pjm/map")
 def api_map():
     site = request.args.get("site", next(iter(SITES)))
-    try:
-        days = max(1, min(90, int(request.args.get("days", 30))))
-    except ValueError:
-        days = 30
-    key = (site, days)
-    hit = _map_cache.get(key)
+    hit = _map_cache.get(site)
     if hit and (time.time() - hit[0]) < ATTRIB_CACHE_TTL and request.args.get("fresh") != "1":
         return jsonify({**hit[1], "cache_age_seconds": round(time.time() - hit[0], 1)})
     if site not in SITES:
         return jsonify({"error": f"unknown site {site}"}), 400
     try:
-        data = driver_map(site, days)
+        data = driver_map(site)
     except Exception as e:
         logger.exception("pjm driver_map failed")
         return jsonify({"error": str(e)}), 502
