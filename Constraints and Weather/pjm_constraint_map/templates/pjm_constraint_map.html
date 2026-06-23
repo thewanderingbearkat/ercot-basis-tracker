@@ -4,6 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PJM Constraint Map &mdash; NWOH</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <style>
   html, body { margin:0; padding:0; background:#f8f9fa; }
   body { font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color:#0E2C51; }
@@ -34,6 +38,9 @@
   .drv .sub { color:#6b7280; font-size:10px; margin-top:1px; }
   .empty { color:#6b7280; font-size:13px; padding:24px 8px; text-align:center; }
   .note { font-size:11px; color:#6b7280; margin-top:8px; line-height:1.5; }
+  #map { height:460px; border-radius:6px; border:1px solid #e5e7eb; }
+  .legend { font-size:11px; color:#6b7280; margin-top:8px; line-height:1.6; }
+  .legend .dot { display:inline-block; width:10px; height:10px; border-radius:50%; vertical-align:middle; margin-right:4px; }
 </style>
 </head>
 <body>
@@ -52,6 +59,24 @@
       <div class="subtitle">Authoritative node congestion &middot; daily modeled constraint attribution</div>
     </div>
     <div class="health" id="health">loading&hellip;</div>
+  </div>
+
+  <div class="panel" style="margin-bottom:16px;">
+    <div style="display:flex; align-items:center; gap:10px;">
+      <h2 style="margin:0;">Where the congestion comes from</h2>
+      <span class="health" id="mapMeta" style="margin-left:auto;"></span>
+    </div>
+    <div id="map" style="margin-top:10px;"></div>
+    <div class="legend">
+      <span style="display:inline-flex; align-items:center; gap:6px; vertical-align:middle;">
+        <b style="font-weight:600;">Attributed congestion</b>
+        <span style="width:120px; height:9px; border-radius:5px; display:inline-block;
+          background:linear-gradient(90deg,#22c55e,#eab308,#f97316,#dc2626);"></span>
+        <span style="color:#16a34a;">low</span>&nbsp;&rarr;&nbsp;<span style="color:#dc2626;">high</span>
+      </span>
+      &nbsp;&middot;&nbsp; <span class="dot" style="background:#2291EB;"></span> NWOH site
+      &nbsp;&middot;&nbsp; lines = constraints driving NWOH's congestion (straight = endpoint-to-endpoint)
+    </div>
   </div>
 
   <div class="layout">
@@ -77,6 +102,53 @@
 let curDays = 30;
 
 function fmt(v, d=2){ return (v>=0?"+":"") + v.toFixed(d); }
+
+// ---- Map ---------------------------------------------------------------
+const SITE0 = {{ sites|tojson }}[0];
+const map = L.map("map", { preferCanvas: true }).setView([SITE0.lat, SITE0.lon], 6);
+L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", {
+  maxZoom: 19, subdomains: "abcd", attribution: "&copy; OpenStreetMap &copy; CARTO"
+}).addTo(map);
+const driverLayer = L.layerGroup().addTo(map);
+
+// NWOH site marker (star).
+L.marker([SITE0.lat, SITE0.lon], {
+  icon: L.divIcon({ className: "", iconSize:[22,22], html:
+    `<div style="font-size:22px;line-height:22px;transform:translate(-11px,-11px);color:#2291EB;text-shadow:0 0 2px #fff,0 0 2px #fff;">&#9733;</div>` })
+}).addTo(map).bindPopup(`<b>${SITE0.display_name}</b><br>${SITE0.pnode_name}`);
+
+// Green->red ramp keyed to |attributed $/MWh|.
+function rampColor(v){
+  const a = Math.abs(v), stops = [[0,[34,197,94]],[1,[234,179,8]],[3,[249,115,22]],[6,[220,38,38]]];
+  let lo=stops[0], hi=stops[stops.length-1];
+  for (let i=0;i<stops.length-1;i++){ if (a>=stops[i][0] && a<=stops[i+1][0]){ lo=stops[i]; hi=stops[i+1]; break; } }
+  const t = Math.max(0, Math.min(1, (a-lo[0])/((hi[0]-lo[0])||1)));
+  const ch = i => Math.round(lo[1][i] + (hi[1][i]-lo[1][i])*t);
+  return `rgb(${ch(0)},${ch(1)},${ch(2)})`;
+}
+
+async function loadMap(){
+  try {
+    const d = await (await fetch("/api/pjm/map?days=" + curDays)).json();
+    driverLayer.clearLayers();
+    if (d.error){ document.getElementById("mapMeta").textContent = "⚠️ " + d.error; return; }
+    const drawn = (d.drivers||[]).filter(x => x.drawable);
+    drawn.forEach(x => {
+      const color = rampColor(x.attributed);
+      const pts = [[x.from.lat, x.from.lon], [x.to.lat, x.to.lon]];
+      L.polyline(pts, { color, weight: 10, opacity: 0.22, lineCap:"round" }).addTo(driverLayer);
+      L.polyline(pts, { color, weight: 4, opacity: 0.95, lineCap:"round" }).addTo(driverLayer)
+        .bindPopup(`<b>${x.name}</b><br>${x.from.name} &rarr; ${x.to.name}` +
+          `${x.voltage ? " &middot; "+x.voltage+" kV":""}<br>Attributed: <b>${fmt(x.attributed)} $/MWh</b>` +
+          `<br>${(x.share*100).toFixed(0)}% of modeled &middot; bound ${x.days_bound} day(s)`);
+    });
+    document.getElementById("mapMeta").textContent =
+      `${drawn.length}/${(d.drivers||[]).length} drivers located · last ${d.days}d`;
+    // Fit to the drivers + site.
+    const all = drawn.flatMap(x => [[x.from.lat,x.from.lon],[x.to.lat,x.to.lon]]).concat([[SITE0.lat,SITE0.lon]]);
+    if (all.length > 1) map.fitBounds(all, { padding:[30,30] });
+  } catch(e){ document.getElementById("mapMeta").textContent = "fetch error: " + e; }
+}
 
 async function loadCongestion(){
   try {
@@ -115,7 +187,7 @@ function renderWinTabs(){
   document.getElementById("winTabs").innerHTML = [7,30,90].map(dy =>
     `<button data-d="${dy}" class="${dy===curDays?'active':''}">${dy}d</button>`).join("");
   document.querySelectorAll("#winTabs button").forEach(b =>
-    b.onclick = () => { curDays = +b.dataset.d; renderWinTabs(); loadAttribution(); });
+    b.onclick = () => { curDays = +b.dataset.d; renderWinTabs(); loadAttribution(); loadMap(); });
 }
 
 async function loadAttribution(){
@@ -139,6 +211,7 @@ async function loadAttribution(){
 renderWinTabs();
 loadCongestion();
 loadAttribution();
+loadMap();
 setInterval(loadCongestion, 300000);
 </script>
 </body>
