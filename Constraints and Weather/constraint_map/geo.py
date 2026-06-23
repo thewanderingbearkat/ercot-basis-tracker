@@ -123,15 +123,16 @@ def _endpoint(name: Any, lat: Any, lon: Any) -> dict[str, Any] | None:
 # We index every basemap line by its two endpoint coordinates, then match a
 # constraint (whose endpoints come from STATIONS_GEO) to the basemap line whose
 # ends sit on the same two substations. Pure geometry -- no names involved.
-_lines_index: list[tuple[tuple[float, float], tuple[float, float], list[list[float]]]] | None = None
+# Indexes + graphs are cached per basemap path so ERCOT (TX) and PJM don't collide.
+_lines_index_cache: dict[str, list] = {}
 
 
-def _line_index():
-    """Lazily build [(end_a, end_b, latlon_path), ...] over all basemap lines."""
-    global _lines_index
-    if _lines_index is not None:
-        return _lines_index
-    with open(BASEMAP_PATH, encoding="utf-8") as fh:
+def _line_index(path: str | None = None):
+    """Lazily build [(end_a, end_b, latlon_path), ...] over a basemap's lines."""
+    p = path or BASEMAP_PATH
+    if p in _lines_index_cache:
+        return _lines_index_cache[p]
+    with open(p, encoding="utf-8") as fh:
         raw = json.load(fh)
     idx = []
     for f in raw.get("features", []):
@@ -141,9 +142,9 @@ def _line_index():
         for ls in parts:
             if not ls or len(ls) < 2:
                 continue
-            path = [[p[1], p[0]] for p in ls]   # [lon,lat] -> [lat,lon]
-            idx.append((tuple(path[0]), tuple(path[-1]), path))
-    _lines_index = idx
+            seg = [[c[1], c[0]] for c in ls]   # [lon,lat] -> [lat,lon]
+            idx.append((tuple(seg[0]), tuple(seg[-1]), seg))
+    _lines_index_cache[p] = idx
     return idx
 
 
@@ -159,8 +160,7 @@ def _d2(a, b) -> float:
 # shared vertices, so a constraint rarely matches a single feature. We instead
 # build a graph (nodes = segment endpoints, edges = segments carrying their full
 # polyline) and route the shortest network path between the two substations.
-_graph: dict[tuple, list[tuple]] | None = None
-_nodes: list[tuple] | None = None
+_graph_cache: dict[str, tuple] = {}
 
 
 def _node_key(pt) -> tuple:
@@ -171,24 +171,24 @@ def _seg_len(path) -> float:
     return sum(_d2(path[i], path[i + 1]) ** 0.5 for i in range(len(path) - 1))
 
 
-def _build_graph():
-    global _graph, _nodes
-    if _graph is not None:
-        return _graph, _nodes
+def _build_graph(path: str | None = None):
+    p = path or BASEMAP_PATH
+    if p in _graph_cache:
+        return _graph_cache[p]
     adj: dict[tuple, list[tuple]] = {}
-    for _ea, _eb, path in _line_index():
-        a, b = _node_key(path[0]), _node_key(path[-1])
+    for _ea, _eb, seg in _line_index(p):
+        a, b = _node_key(seg[0]), _node_key(seg[-1])
         if a == b:
             continue
-        w = _seg_len(path)
-        adj.setdefault(a, []).append((b, w, path))
-        adj.setdefault(b, []).append((a, w, list(reversed(path))))
-    _graph, _nodes = adj, list(adj.keys())
-    return _graph, _nodes
+        w = _seg_len(seg)
+        adj.setdefault(a, []).append((b, w, seg))
+        adj.setdefault(b, []).append((a, w, list(reversed(seg))))
+    _graph_cache[p] = (adj, list(adj.keys()))
+    return _graph_cache[p]
 
 
-def _nearest_node(pt, tol_km: float):
-    adj, nodes = _build_graph()
+def _nearest_node(pt, tol_km: float, path: str | None = None):
+    adj, nodes = _build_graph(path)
     tol = (tol_km / 111.0) ** 2
     best, best_d = None, None
     for n in nodes:
@@ -198,15 +198,15 @@ def _nearest_node(pt, tol_km: float):
     return best if (best is not None and best_d <= tol) else None
 
 
-def _snap_path(frm: dict, to: dict, tol_km: float = 3.0) -> list[list[float]] | None:
+def _snap_path(frm: dict, to: dict, tol_km: float = 3.0, path: str | None = None) -> list[list[float]] | None:
     """Shortest network path between the two substations along basemap geometry,
     oriented from->to. None if either endpoint isn't near the network or the two
     are not connected within a sane distance."""
     import heapq
 
-    adj, _ = _build_graph()
-    src = _nearest_node((frm["lat"], frm["lon"]), tol_km)
-    dst = _nearest_node((to["lat"], to["lon"]), tol_km)
+    adj, _ = _build_graph(path)
+    src = _nearest_node((frm["lat"], frm["lon"]), tol_km, path)
+    dst = _nearest_node((to["lat"], to["lon"]), tol_km, path)
     if src is None or dst is None or src == dst:
         return None
 
@@ -243,7 +243,7 @@ def _snap_path(frm: dict, to: dict, tol_km: float = 3.0) -> list[list[float]] | 
     return chain or None
 
 
-def _single_feature_path(frm: dict, to: dict, tol_km: float = 3.0) -> list[list[float]] | None:
+def _single_feature_path(frm: dict, to: dict, tol_km: float = 3.0, path: str | None = None) -> list[list[float]] | None:
     """Fallback: a single basemap feature whose two endpoints land on both
     substations. Catches lines that exist as one segment but whose endpoints the
     graph snapped to the wrong coincident node (common in dense metros)."""
@@ -251,12 +251,12 @@ def _single_feature_path(frm: dict, to: dict, tol_km: float = 3.0) -> list[list[
     t = (to["lat"], to["lon"])
     tol = (tol_km / 111.0) ** 2
     best, best_cost, fwd = None, None, True
-    for ea, eb, path in _line_index():
+    for ea, eb, seg in _line_index(path):
         c_fwd = _d2(f, ea) + _d2(t, eb)
         c_rev = _d2(f, eb) + _d2(t, ea)
         cost = c_fwd if c_fwd <= c_rev else c_rev
         if best_cost is None or cost < best_cost:
-            best_cost, best, fwd = cost, path, c_fwd <= c_rev
+            best_cost, best, fwd = cost, seg, c_fwd <= c_rev
     if best is None:
         return None
     a, b = (best[0], best[-1]) if fwd else (best[-1], best[0])
@@ -265,17 +265,26 @@ def _single_feature_path(frm: dict, to: dict, tol_km: float = 3.0) -> list[list[
     return None
 
 
-def _resolve_path(frm: dict, to: dict) -> list[list[float]] | None:
+def _resolve_path(frm: dict, to: dict, path: str | None = None) -> list[list[float]] | None:
     """Real basemap path for a constraint: graph route first, single feature
     second, else None (caller draws an approximate straight segment)."""
-    return _snap_path(frm, to) or _single_feature_path(frm, to)
+    return _snap_path(frm, to, path=path) or _single_feature_path(frm, to, path=path)
 
 
-def attach_geometry(result: dict[str, Any]) -> dict[str, Any]:
+def routed_path(frm: dict | None, to: dict | None, basemap_path: str | None = None) -> list[list[float]] | None:
+    """Public: route between two endpoints along a basemap (defaults to TX/ERCOT).
+    Used by the PJM map to follow real conductors instead of straight segments."""
+    if not (frm and to):
+        return None
+    return _resolve_path(frm, to, path=basemap_path)
+
+
+def attach_geometry(result: dict[str, Any], basemap_path: str | None = None) -> dict[str, Any]:
     """Enrich an active_constraints() result in place with endpoint geometry.
 
-    Adds a `geometry` key to each constraint: {from, to, voltage, drawable}.
-    `drawable` is True only when both endpoints resolved (a full segment).
+    Adds a `geometry` key to each constraint: {from, to, voltage, drawable, path,
+    snapped}. `drawable` means both endpoints resolved; `path` is the routed
+    conductor geometry (along `basemap_path`, default TX) or None.
     """
     constraints = result.get("constraints", [])
     geo = facility_geometry(c.get("facility_id") for c in constraints)
@@ -286,6 +295,6 @@ def attach_geometry(result: dict[str, Any]) -> dict[str, Any]:
                              "path": None, "snapped": False}
             continue
         drawable = bool(g["from"] and g["to"])
-        path = _resolve_path(g["from"], g["to"]) if drawable else None
+        path = _resolve_path(g["from"], g["to"], path=basemap_path) if drawable else None
         c["geometry"] = {**g, "drawable": drawable, "path": path, "snapped": path is not None}
     return result

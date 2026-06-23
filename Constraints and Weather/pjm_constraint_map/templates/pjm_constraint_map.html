@@ -143,17 +143,20 @@ async function loadMap(){
     const drawn = (d.drivers||[]).filter(x => x.drawable);
     drawn.forEach(x => {
       const color = rampColor(x.attributed);
-      const pts = [[x.from.lat, x.from.lon], [x.to.lat, x.to.lon]];
-      L.polyline(pts, { color, weight: 10, opacity: 0.22, lineCap:"round" }).addTo(driverLayer);
-      L.polyline(pts, { color, weight: 4, opacity: 0.95, lineCap:"round" }).addTo(driverLayer)
+      // Follow the real conductor path when routed; else a straight segment.
+      const pts = (x.path && x.path.length > 1) ? x.path
+                : [[x.from.lat, x.from.lon], [x.to.lat, x.to.lon]];
+      L.polyline(pts, { color, weight: 10, opacity: 0.22, lineCap:"round", lineJoin:"round" }).addTo(driverLayer);
+      L.polyline(pts, { color, weight: 4, opacity: 0.95, lineCap:"round", lineJoin:"round" }).addTo(driverLayer)
         .bindPopup(`<b>${x.name}</b><br>${x.from.name} &rarr; ${x.to.name}` +
           `${x.voltage ? " &middot; "+x.voltage+" kV":""}<br>Attributed: <b>${fmt(x.attributed)} $/MWh</b>` +
           `<br>${(x.share*100).toFixed(0)}% of modeled &middot; bound ${x.days_bound} day(s)`);
     });
+    const routed = drawn.filter(x => x.snapped).length;
     document.getElementById("mapMeta").textContent =
-      `${drawn.length}/${(d.drivers||[]).length} drivers located · last ${d.days}d`;
+      `${drawn.length}/${(d.drivers||[]).length} located · ${routed} routed · last ${d.days}d`;
     // Fit to the drivers + site.
-    const all = drawn.flatMap(x => [[x.from.lat,x.from.lon],[x.to.lat,x.to.lon]]).concat([[SITE0.lat,SITE0.lon]]);
+    const all = drawn.flatMap(x => (x.path && x.path.length>1) ? x.path : [[x.from.lat,x.from.lon],[x.to.lat,x.to.lon]]).concat([[SITE0.lat,SITE0.lon]]);
     if (all.length > 1) map.fitBounds(all, { padding:[30,30] });
   } catch(e){ document.getElementById("mapMeta").textContent = "fetch error: " + e; }
 }
