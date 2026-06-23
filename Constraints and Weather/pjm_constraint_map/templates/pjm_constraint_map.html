@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PJM Constraint Map &mdash; NWOH</title>
+<style>
+  html, body { margin:0; padding:0; background:#f8f9fa; }
+  body { font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color:#0E2C51; }
+  .tab-nav { display:flex; gap:4px; padding:20px 20px 0 20px; border-bottom:2px solid #e5e7eb; background:#f8f9fa; line-height:1.25; }
+  .tab-nav a { display:inline-block; padding:8px 16px; font-size:13px; color:#6b7280; text-decoration:none; border-bottom:2px solid transparent; margin-bottom:-2px; font-weight:500; }
+  .tab-nav a:hover { color:#0E2C51; }
+  .tab-nav a.active { color:#0E2C51; border-bottom-color:#0E2C51; font-weight:600; }
+  .page-wrap { padding:16px; } .page-inner { max-width:80rem; margin:0 auto; }
+  h1 { font-size:24px; line-height:32px; margin:0 0 4px; font-weight:700; }
+  .subtitle { color:#2291EB; font-size:12px; font-weight:600; margin-bottom:16px; text-transform:uppercase; letter-spacing:.5px; }
+  .health { font-size:11px; color:#6b7280; margin-left:auto; }
+  .layout { display:grid; grid-template-columns:1fr; gap:16px; }
+  @media (min-width:900px){ .layout { grid-template-columns:1fr 1fr; } }
+  .panel { background:#fff; border:1px solid #e5e7eb; border-radius:6px; padding:14px 16px; }
+  .panel h2 { font-size:13px; text-transform:uppercase; letter-spacing:.5px; color:#6b7280; margin:0 0 10px; }
+  .big { font-size:30px; font-weight:800; }
+  .kv { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-top:10px; }
+  .kv .k { font-size:10px; color:#6b7280; text-transform:uppercase; letter-spacing:.3px; }
+  .kv .v { font-size:18px; font-weight:700; }
+  .v.neg { color:#b91c1c; } .v.pos { color:#15803d; }
+  .seg { display:inline-flex; gap:2px; background:#eef1f4; border-radius:6px; padding:2px; }
+  .seg button { background:transparent; color:#6b7280; padding:3px 9px; font-size:11px; font-weight:600; border:none; border-radius:4px; cursor:pointer; }
+  .seg button.active { background:#0E2C51; color:#fff; }
+  .drv { margin-bottom:9px; }
+  .drv .drow { display:flex; justify-content:space-between; font-size:12px; }
+  .drv .nm { font-weight:600; } .drv .v { font-weight:700; }
+  .drv .bar { height:7px; border-radius:3px; background:#dc2626; margin-top:2px; min-width:2px; }
+  .drv .sub { color:#6b7280; font-size:10px; margin-top:1px; }
+  .empty { color:#6b7280; font-size:13px; padding:24px 8px; text-align:center; }
+  .note { font-size:11px; color:#6b7280; margin-top:8px; line-height:1.5; }
+</style>
+</head>
+<body>
+<div class="tab-nav">
+  <a href="/">ERCOT Basis Tracker</a>
+  <a href="/shadow">Shadow Trading</a>
+  <a href="/hail">Hail Monitor</a>
+  <a href="/constraints">ERCOT Constraint Map</a>
+  <a href="/pjm-constraints" class="active">PJM Constraint Map</a>
+</div>
+
+<div class="page-wrap"><div class="page-inner">
+  <div style="display:flex; align-items:flex-end; gap:16px; flex-wrap:wrap;">
+    <div>
+      <h1>PJM Constraint Map &mdash; NWOH</h1>
+      <div class="subtitle">Authoritative node congestion &middot; daily modeled constraint attribution</div>
+    </div>
+    <div class="health" id="health">loading&hellip;</div>
+  </div>
+
+  <div class="layout">
+    <div class="panel">
+      <h2>Live node congestion &mdash; HAVILAND (NWOH)</h2>
+      <div id="cong"><div class="empty">Loading&hellip;</div></div>
+      <svg id="spark" viewBox="0 0 520 90" style="width:100%; height:90px; margin-top:10px;"></svg>
+      <div class="note">Congestion component of RT LMP (authoritative, hourly). Basis = node &minus; AEP-Dayton hub.</div>
+    </div>
+    <div class="panel">
+      <div style="display:flex; align-items:center; gap:10px;">
+        <h2 style="margin:0;">Top congestion drivers</h2>
+        <span id="winTabs" class="seg" style="margin-left:auto;"></span>
+      </div>
+      <div id="drivers" style="margin-top:10px;"><div class="empty">Loading&hellip;</div></div>
+      <div class="note">Real congestion ($/MWh, avg over window) apportioned across constraints by modeled
+        shift-factor shares (Yes Energy BETA). Shares validated r=0.70 vs actual; magnitude is the authoritative RTCONG.</div>
+    </div>
+  </div>
+</div></div>
+
+<script>
+let curDays = 30;
+
+function fmt(v, d=2){ return (v>=0?"+":"") + v.toFixed(d); }
+
+async function loadCongestion(){
+  try {
+    const d = await (await fetch("/api/pjm/congestion")).json();
+    if (d.error){ document.getElementById("cong").innerHTML = `<div class="empty">⚠️ ${d.error}</div>`; return; }
+    const s = d.sites[0];
+    const cong = s.rt_cong, basis = s.basis;
+    document.getElementById("cong").innerHTML = `
+      <div class="big ${cong!=null && cong<0 ? 'neg':''}">${cong!=null ? fmt(cong)+" $/MWh" : "—"}</div>
+      <div class="kv">
+        <div><div class="k">RT LMP</div><div class="v">${s.rt_lmp!=null ? "$"+s.rt_lmp.toFixed(2) : "—"}</div></div>
+        <div><div class="k">${d.hub_name}</div><div class="v">${s.hub_lmp!=null ? "$"+s.hub_lmp.toFixed(2) : "—"}</div></div>
+        <div><div class="k">Basis vs hub</div><div class="v ${basis!=null ? (basis<0?'neg':'pos'):''}">${basis!=null ? fmt(basis) : "—"}</div></div>
+      </div>`;
+    drawSpark(s.series || []);
+    const t = s.last_time ? new Date(s.last_time).toLocaleString() : "—";
+    document.getElementById("health").innerHTML = `node congestion as of ${t}`;
+  } catch(e){ document.getElementById("cong").innerHTML = `<div class="empty">fetch error: ${e}</div>`; }
+}
+
+function drawSpark(series){
+  const svg = document.getElementById("spark");
+  const pts = series.filter(p => p.cong != null);
+  if (pts.length < 2){ svg.innerHTML = ""; return; }
+  const W=520, H=90, vals = pts.map(p=>p.cong);
+  const lo=Math.min(...vals,0), hi=Math.max(...vals,0);
+  const x=i=> i/(pts.length-1)*W;
+  const y=v=> H - (v-lo)/((hi-lo)||1)*H;
+  const path = pts.map((p,i)=> (i?"L":"M")+x(i).toFixed(1)+" "+y(p.cong).toFixed(1)).join(" ");
+  const zero = y(0).toFixed(1);
+  svg.innerHTML = `<line x1="0" y1="${zero}" x2="${W}" y2="${zero}" stroke="#cbd5e1" stroke-width="1"/>
+    <path d="${path}" fill="none" stroke="#dc2626" stroke-width="1.5"/>`;
+}
+
+function renderWinTabs(){
+  document.getElementById("winTabs").innerHTML = [7,30,90].map(dy =>
+    `<button data-d="${dy}" class="${dy===curDays?'active':''}">${dy}d</button>`).join("");
+  document.querySelectorAll("#winTabs button").forEach(b =>
+    b.onclick = () => { curDays = +b.dataset.d; renderWinTabs(); loadAttribution(); });
+}
+
+async function loadAttribution(){
+  const el = document.getElementById("drivers");
+  el.innerHTML = '<div class="empty">Loading&hellip;</div>';
+  try {
+    const d = await (await fetch("/api/pjm/attribution?days=" + curDays)).json();
+    if (d.error){ el.innerHTML = `<div class="empty">⚠️ ${d.error}</div>`; return; }
+    if (!d.drivers.length){ el.innerHTML = '<div class="empty">No modeled constraints in window.</div>'; return; }
+    const max = Math.max(...d.drivers.map(x=>Math.abs(x.attributed)), 0.01);
+    el.innerHTML = `<div class="note" style="margin:0 0 10px;">Avg node congestion: <b>${fmt(d.avg_congestion)} $/MWh</b> over ${d.days}d</div>` +
+      d.drivers.map(x => `
+        <div class="drv">
+          <div class="drow"><span class="nm">${x.name}</span><span class="v neg">${fmt(x.attributed)} $/MWh</span></div>
+          <div class="bar" style="width:${Math.max(2, Math.abs(x.attributed)/max*100)}%"></div>
+          <div class="sub">${(x.share*100).toFixed(0)}% of modeled congestion &middot; bound ${x.days_bound} day(s)</div>
+        </div>`).join("");
+  } catch(e){ el.innerHTML = `<div class="empty">fetch error: ${e}</div>`; }
+}
+
+renderWinTabs();
+loadCongestion();
+loadAttribution();
+setInterval(loadCongestion, 300000);
+</script>
+</body>
+</html>

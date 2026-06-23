@@ -190,6 +190,13 @@ try:
 except Exception as _cm_err:
     logger.exception("Constraint Map blueprint failed to load; other tabs unaffected: %s", _cm_err)
 
+# PJM Constraint Map tab (NWOH). Same isolation; reuses constraint_map.db/geo.
+try:
+    from pjm_constraint_map.web import pjm_constraints_bp
+    app.register_blueprint(pjm_constraints_bp)
+except Exception as _pjm_err:
+    logger.exception("PJM Constraint Map blueprint failed to load; other tabs unaffected: %s", _pjm_err)
+
 # Configuration - ERCOT
 NODE_1 = "NBOHR_RN"
 NODE_2 = "HOLSTEIN_ALL"
@@ -4602,6 +4609,7 @@ def dashboard():
         <a href="/shadow" style="display: inline-block; padding: 8px 16px; font-size: 13px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.25; color: #6b7280; text-decoration: none; border-bottom: 2px solid transparent; margin-bottom: -2px; font-weight: 500;">Shadow Trading</a>
         <a href="/hail" style="display: inline-block; padding: 8px 16px; font-size: 13px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.25; color: #6b7280; text-decoration: none; border-bottom: 2px solid transparent; margin-bottom: -2px; font-weight: 500;">Hail Monitor</a>
         <a href="/constraints" style="display: inline-block; padding: 8px 16px; font-size: 13px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.25; color: #6b7280; text-decoration: none; border-bottom: 2px solid transparent; margin-bottom: -2px; font-weight: 500;">ERCOT Constraint Map</a>
+        <a href="/pjm-constraints" style="display: inline-block; padding: 8px 16px; font-size: 13px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.25; color: #6b7280; text-decoration: none; border-bottom: 2px solid transparent; margin-bottom: -2px; font-weight: 500;">PJM Constraint Map</a>
     </div>
     <div class="p-3 md:p-4" style="background: linear-gradient(135deg, #f8f9fa 0%, #ffffff 100%);">
         <div class="max-w-7xl mx-auto">
