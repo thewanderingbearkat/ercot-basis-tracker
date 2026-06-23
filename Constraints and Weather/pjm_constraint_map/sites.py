@@ -34,7 +34,8 @@ SITES: dict[str, Site] = {
         key="NWOH", display_name="NWOH (Northwest Ohio)",
         pnode_name="HAVILAND 34.5 KV NTHWSTWF", node_id=1318144721,
         hub_name="AEP-DAYTON HUB", hub_node_id=34497127,
-        fuel="wind", lat=41.022, lon=-84.585, county="Paulding", state="OH",
+        fuel="wind", lat=41.044, lon=-84.583, county="Paulding", state="OH",
+        coords_approx=False,
     ),
     "LORDSTOWN": Site(
         key="LORDSTOWN", display_name="Lordstown Energy Center",
