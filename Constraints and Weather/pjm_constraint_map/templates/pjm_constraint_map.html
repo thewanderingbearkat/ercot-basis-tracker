@@ -55,6 +55,11 @@
   @media (min-width:760px){ .twosided { grid-template-columns:1fr 1fr; } }
   .side-h { font-size:12px; font-weight:700; margin:0 0 7px; padding-bottom:5px; border-bottom:1px solid #eef1f4; }
   .side-h .v { float:right; font-weight:700; }
+  .checkbox { margin-top:14px; padding:10px 12px; background:#f1f5f9; border:1px solid #e5e7eb; border-radius:6px; text-align:center; font-size:14px; }
+  .checkbox .ck-lab { color:#6b7280; font-size:10px; text-transform:uppercase; letter-spacing:.3px; }
+  .checkbox .ck-op { color:#9ca3af; margin:0 8px; font-weight:700; }
+  .checkbox .v { font-weight:800; margin-left:4px; }
+  .checkbox .ck-foot { color:#9ca3af; font-size:11px; margin-top:3px; }
   .drv.clk { cursor:pointer; border-radius:4px; }
   .drv.clk:hover { background:#f1f5f9; }
   .badge { font-size:10px; font-weight:700; color:#15803d; background:#dcfce7; border-radius:4px; padding:2px 7px; text-transform:uppercase; letter-spacing:.3px; }
@@ -326,10 +331,16 @@ async function loadMap(fresh){
     const col = (title, val, drivers, focus) =>
       `<div class="side"><div class="side-h">${title} <span class="v ${val<0?'neg':'pos'}">${fmt(val)} $/MWh</span></div>` +
       ((drivers||[]).map(x => row(x, focus)).join("") || '<div class="empty">none</div>') + `</div>`;
+    const bc = d.avg_congestion - d.hub_avg_congestion;
+    const part = (lab, v) => `<span class="ck-lab">${lab}</span> <span class="v ${v<0?'neg':'pos'}">${fmt(v)}</span>`;
     drvEl.innerHTML = `<div class="twosided">` +
       col("Congesting the node", d.avg_congestion, d.drivers, "focusDriver") +
       col(`Congesting the hub (${d.hub_name})`, d.hub_avg_congestion, d.hub_drivers, "focusHub") +
-      `</div>`;
+      `</div>` +
+      `<div class="checkbox">${part("Node congestion", d.avg_congestion)}<span class="ck-op">&minus;</span>` +
+      `${part("Hub congestion", d.hub_avg_congestion)}<span class="ck-op">=</span>` +
+      `${part("Basis congestion", bc)} <span style="color:#6b7280;">$/MWh</span>` +
+      `<div class="ck-foot">ties to the <b>Congestion</b> line in the basis breakdown above</div></div>`;
   } catch(e){ document.getElementById("mapMeta").textContent = "fetch error: " + e; drvEl.innerHTML = `<div class="empty">fetch error: ${e}</div>`; }
 }
 
