@@ -41,6 +41,16 @@
   #map { height:460px; border-radius:6px; border:1px solid #e5e7eb; }
   #drvgrid { display:grid; grid-template-columns:1fr; gap:2px 28px; }
   @media (min-width:760px){ #drvgrid { grid-template-columns:1fr 1fr; } }
+  .basis-head { font-size:14px; margin-bottom:12px; }
+  .basis-head b { font-size:24px; font-weight:800; }
+  .basis-head .sub { color:#6b7280; font-size:12px; margin-left:6px; }
+  .brow { display:flex; align-items:center; gap:10px; padding:3px 0; font-size:13px; }
+  .brow .blabel { width:210px; flex:none; }
+  .brow .bval { width:74px; flex:none; text-align:right; font-weight:700; }
+  .brow .btrack { flex:1; height:14px; background:#f3f4f6; border-radius:3px; position:relative; }
+  .brow .bbar { position:absolute; top:2px; height:10px; border-radius:2px; }
+  .bbar.neg { background:#b91c1c; } .bbar.pos { background:#15803d; }
+  .bval.neg, .basis-head b.neg { color:#b91c1c; } .bval.pos, .basis-head b.pos { color:#15803d; } .bval.zero { color:#94a3b8; }
   .legend { font-size:11px; color:#6b7280; margin-top:8px; line-height:1.6; }
   .legend .dot { display:inline-block; width:10px; height:10px; border-radius:50%; vertical-align:middle; margin-right:4px; }
 </style>
@@ -62,6 +72,17 @@
     </div>
     <div id="siteTabs" class="seg"></div>
     <div class="health" id="health">loading&hellip;</div>
+  </div>
+
+  <div class="panel" style="margin-bottom:16px;">
+    <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+      <h2 style="margin:0;">Basis breakdown</h2>
+      <span class="health" id="basisMeta" style="margin-left:auto;"></span>
+    </div>
+    <div id="basis" style="margin-top:10px;"><div class="empty">Loading&hellip;</div></div>
+    <div class="note">Basis = node LMP &minus; hub LMP, split into LMP components. <b>System energy</b> is identical at
+      node and hub, so it cancels. <b>Congestion</b> is constraint-driven (drivers below); <b>losses</b> are
+      topology-driven. Authoritative (RTCONG/RTLOSS) &mdash; ties to settlement.</div>
   </div>
 
   <div class="panel" style="margin-bottom:16px;">
@@ -141,7 +162,32 @@ function renderSiteTabs(){
   document.querySelectorAll("#siteTabs button").forEach(b =>
     b.onclick = () => { curSite = b.dataset.s;
       SITES.forEach(s => siteMarkers[s.key].setIcon(star(s.key===curSite)));
-      renderSiteTabs(); loadMap(); loadAttribution(); });
+      renderSiteTabs(); loadBasis(); loadMap(); loadAttribution(); });
+}
+
+async function loadBasis(){
+  const el = document.getElementById("basis");
+  try {
+    const d = await (await fetch(`/api/pjm/basis?site=${curSite}&days=${curDays}`)).json();
+    if (d.error){ el.innerHTML = `<div class="empty">⚠️ ${d.error}</div>`; return; }
+    const parts = [
+      { label:"Congestion (constraints)", v:d.congestion_basis },
+      { label:"Losses (topology)",        v:d.loss_basis },
+      { label:"System energy (cancels)",  v:d.energy_basis },
+    ];
+    const max = Math.max(...parts.map(p=>Math.abs(p.v)), Math.abs(d.basis), 0.01);
+    document.getElementById("basisMeta").innerHTML = `vs ${d.hub_name} &middot; ${fmtWindow(d)}`;
+    const cls = v => v < -0.005 ? "neg" : v > 0.005 ? "pos" : "zero";
+    el.innerHTML =
+      `<div class="basis-head">Basis <b class="${cls(d.basis)}">${fmt(d.basis)} $/MWh</b>` +
+      `<span class="sub">(node ${d.node_lmp.toFixed(2)} &minus; hub ${d.hub_lmp.toFixed(2)})</span></div>` +
+      parts.map(p => `
+        <div class="brow">
+          <span class="blabel">${p.label}</span>
+          <span class="bval ${cls(p.v)}">${fmt(p.v)}</span>
+          <div class="btrack"><div class="bbar ${p.v<0?'neg':'pos'}" style="width:${Math.abs(p.v)/max*100}%"></div></div>
+        </div>`).join("");
+  } catch(e){ el.innerHTML = `<div class="empty">fetch error: ${e}</div>`; }
 }
 
 // Green->red ramp keyed to |attributed $/MWh|.
@@ -186,7 +232,7 @@ function renderWinTabs(){
   document.getElementById("winTabs").innerHTML = WINDOWS.map(w =>
     `<button data-d="${w.d}" class="${w.d===curDays?'active':''}">${w.label}</button>`).join("");
   document.querySelectorAll("#winTabs button").forEach(b =>
-    b.onclick = () => { curDays = +b.dataset.d; renderWinTabs(); loadAttribution(); loadMap(); });
+    b.onclick = () => { curDays = +b.dataset.d; renderWinTabs(); loadBasis(); loadAttribution(); loadMap(); });
 }
 
 async function loadAttribution(){
@@ -214,6 +260,7 @@ async function loadAttribution(){
 renderSiteTabs();
 renderWinTabs();
 loadBasemap();
+loadBasis();
 loadAttribution();
 loadMap();
 </script>

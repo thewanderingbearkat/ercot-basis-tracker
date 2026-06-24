@@ -16,6 +16,7 @@ from flask import Blueprint, jsonify, render_template, request
 from constraint_map.geo import load_basemap
 
 from .attribution import daily_attribution
+from .basis import basis_decomposition
 from .congestion import node_congestion
 from .mapping import driver_map
 from .sites import SITES
@@ -105,6 +106,28 @@ def api_attribution():
         logger.exception("pjm daily_attribution failed")
         return jsonify({"error": str(e)}), 502
     _attrib_cache[key] = (time.time(), data)
+    return jsonify({**data, "cache_age_seconds": 0})
+
+
+_basis_cache: dict = {}
+
+
+@pjm_constraints_bp.route("/api/pjm/basis")
+def api_basis():
+    site = request.args.get("site", next(iter(SITES)))
+    days = _days_arg()
+    key = (site, days)
+    hit = _basis_cache.get(key)
+    if hit and (time.time() - hit[0]) < ATTRIB_CACHE_TTL and request.args.get("fresh") != "1":
+        return jsonify({**hit[1], "cache_age_seconds": round(time.time() - hit[0], 1)})
+    if site not in SITES:
+        return jsonify({"error": f"unknown site {site}"}), 400
+    try:
+        data = basis_decomposition(site, days=days)
+    except Exception as e:
+        logger.exception("pjm basis_decomposition failed")
+        return jsonify({"error": str(e)}), 502
+    _basis_cache[key] = (time.time(), data)
     return jsonify({**data, "cache_age_seconds": 0})
 
 
