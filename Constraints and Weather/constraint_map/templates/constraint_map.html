@@ -416,8 +416,10 @@ function renderBasis(d) {
   const red = "#b91c1c", grn = "#15803d";
   document.getElementById("basisMeta").innerHTML = `vs ${d.hub_name} &middot; ${d.as_of}`;
   document.getElementById("basisHead").innerHTML =
-    `<span style="font-size:14px;">Basis <b style="font-size:22px;color:${d.basis<0?red:grn};">${sgn(d.basis)} $/MWh</b>` +
-    ` <span style="color:#6b7280;font-size:12px;">= congestion ${sgn(d.congestion_basis)} + residual ${sgn(d.residual)} (loss/timing)</span></span>`;
+    `<div style="display:flex;align-items:baseline;gap:9px;flex-wrap:wrap;">` +
+    `<span style="font-size:12px;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;font-weight:600;">Basis</span>` +
+    `<b style="font-size:26px;font-weight:700;line-height:1;color:${d.basis<0?red:grn};">${sgn(d.basis)} $/MWh</b>` +
+    `<span style="color:#6b7280;font-size:12px;">= congestion ${sgn(d.congestion_basis)} + residual ${sgn(d.residual)} (loss/timing)</span></div>`;
   const drv = (d.drivers || []).filter(x => Math.abs(x.contrib) >= 0.01);
   const el = document.getElementById("basisDrivers");
   if (!drv.length) { el.innerHTML = '<div class="empty">No constraints on this node for the day.</div>'; return; }

@@ -41,9 +41,10 @@
   #map { height:460px; border-radius:6px; border:1px solid #e5e7eb; }
   #drvgrid { display:grid; grid-template-columns:1fr; gap:2px 28px; }
   @media (min-width:760px){ #drvgrid { grid-template-columns:1fr 1fr; } }
-  .basis-head { font-size:14px; margin-bottom:12px; }
-  .basis-head b { font-size:24px; font-weight:800; }
-  .basis-head .sub { color:#6b7280; font-size:12px; margin-left:6px; }
+  .basis-head { display:flex; align-items:baseline; gap:9px; flex-wrap:wrap; margin-bottom:12px; }
+  .basis-head .lab { font-size:12px; color:#6b7280; text-transform:uppercase; letter-spacing:.5px; font-weight:600; }
+  .basis-head b { font-size:26px; font-weight:700; line-height:1; }
+  .basis-head .sub { color:#6b7280; font-size:12px; }
   .brow { display:flex; align-items:center; gap:10px; padding:3px 0; font-size:13px; }
   .brow .blabel { width:210px; flex:none; }
   .brow .bval { width:74px; flex:none; text-align:right; font-weight:700; }
@@ -179,8 +180,8 @@ async function loadBasis(){
     document.getElementById("basisMeta").innerHTML = `vs ${d.hub_name} &middot; ${fmtWindow(d)}`;
     const cls = v => v < -0.005 ? "neg" : v > 0.005 ? "pos" : "zero";
     el.innerHTML =
-      `<div class="basis-head">Basis <b class="${cls(d.basis)}">${fmt(d.basis)} $/MWh</b>` +
-      `<span class="sub">(node ${d.node_lmp.toFixed(2)} &minus; hub ${d.hub_lmp.toFixed(2)})</span></div>` +
+      `<div class="basis-head"><span class="lab">Basis</span><b class="${cls(d.basis)}">${fmt(d.basis)} $/MWh</b>` +
+      `<span class="sub">node ${d.node_lmp.toFixed(2)} &minus; hub ${d.hub_lmp.toFixed(2)}</span></div>` +
       parts.map(p => `
         <div class="brow">
           <span class="blabel">${p.label}</span>
