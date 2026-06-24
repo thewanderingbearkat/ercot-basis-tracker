@@ -39,8 +39,11 @@
   .empty { color:#6b7280; font-size:13px; padding:24px 8px; text-align:center; }
   .note { font-size:11px; color:#6b7280; margin-top:8px; line-height:1.5; }
   #map { height:460px; border-radius:6px; border:1px solid #e5e7eb; }
-  #drvgrid { display:grid; grid-template-columns:1fr; gap:2px 28px; }
-  @media (min-width:760px){ #drvgrid { grid-template-columns:1fr 1fr; } }
+  #drvgrid, #bindgrid { display:grid; grid-template-columns:1fr; gap:2px 28px; }
+  @media (min-width:760px){ #drvgrid, #bindgrid { grid-template-columns:1fr 1fr; } }
+  .drv.clk { cursor:pointer; border-radius:4px; }
+  .drv.clk:hover { background:#f1f5f9; }
+  .badge { font-size:10px; font-weight:700; color:#15803d; background:#dcfce7; border-radius:4px; padding:2px 7px; text-transform:uppercase; letter-spacing:.3px; }
   .basis-head { display:flex; align-items:baseline; gap:9px; flex-wrap:wrap; margin-bottom:12px; }
   .basis-head .lab { font-size:12px; color:#6b7280; text-transform:uppercase; letter-spacing:.5px; font-weight:600; }
   .basis-head b { font-size:26px; font-weight:700; line-height:1; }
@@ -116,6 +119,20 @@
       constraints by modeled shift-factor shares (Yes Energy BETA). Shares validated r=0.70 vs actual; the
       magnitude is the authoritative RTCONG. Live basis &amp; node congestion live on the Basis Tracker / PnL tab.</div>
   </div>
+
+  <div class="panel" style="margin-top:16px;">
+    <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+      <h2 style="margin:0;">Biggest PJM binding constraints</h2>
+      <span class="badge">authoritative &middot; system-wide</span>
+      <span id="bindMeta" class="health" style="margin-left:auto;"></span>
+    </div>
+    <div id="binding" style="margin-top:12px;"><div class="empty">Loading&hellip;</div></div>
+    <div class="note">From PJM's published binding constraints (real shadow prices) over the window, ranked by
+      <b>persistence-weighted shadow price</b> = time-averaged $/MWh (binds often &times; binds hard). This is the
+      constraint's own marginal value &mdash; the real congestion landscape, <b>not</b> the $/MWh hit to our node
+      (that needs the per-node shift factor PJM doesn't publish). Independent of the selected site. Click a row to
+      locate it on the map.</div>
+  </div>
 </div></div>
 
 <script>
@@ -138,6 +155,8 @@ L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", {
 }).addTo(map);
 const basemapLayer = L.layerGroup().addTo(map);   // green transmission grid (under drivers)
 const driverLayer = L.layerGroup().addTo(map);
+const highlightLayer = L.layerGroup().addTo(map);  // transient highlight for click-to-locate
+const bindGeom = {};   // binding-row uid -> geometry, for click-to-locate on the map
 
 async function loadBasemap(){
   try {
@@ -233,7 +252,7 @@ function renderWinTabs(){
   document.getElementById("winTabs").innerHTML = WINDOWS.map(w =>
     `<button data-d="${w.d}" class="${w.d===curDays?'active':''}">${w.label}</button>`).join("");
   document.querySelectorAll("#winTabs button").forEach(b =>
-    b.onclick = () => { curDays = +b.dataset.d; renderWinTabs(); loadBasis(); loadAttribution(); loadMap(); });
+    b.onclick = () => { curDays = +b.dataset.d; renderWinTabs(); loadBasis(); loadAttribution(); loadMap(); loadBinding(); });
 }
 
 async function loadAttribution(){
@@ -258,12 +277,57 @@ async function loadAttribution(){
   } catch(e){ el.innerHTML = `<div class="empty">fetch error: ${e}</div>`; }
 }
 
+// ---- Authoritative system-wide binding constraints ---------------------
+async function loadBinding(){
+  const el = document.getElementById("binding");
+  el.innerHTML = '<div class="empty">Loading&hellip;</div>';
+  try {
+    const d = await (await fetch(`/api/pjm/binding?days=${curDays}`)).json();
+    if (d.error){ el.innerHTML = `<div class="empty">⚠️ ${d.error}</div>`; return; }
+    if (!d.drivers || !d.drivers.length){ el.innerHTML = '<div class="empty">No binding constraints for the window.</div>'; return; }
+    document.getElementById("bindMeta").innerHTML = `${fmtWindow(d)} &middot; ${d.intervals} intervals`;
+    Object.keys(bindGeom).forEach(k => delete bindGeom[k]);
+    d.drivers.forEach((x,i) => { x._uid = "k"+i; if (x.drawable || x.from || x.to) bindGeom[x._uid] = x; });
+    const max = Math.max(...d.drivers.map(x => Math.abs(x.atc_sp)), 0.01);
+    el.innerHTML = `<div id="bindgrid">` + d.drivers.map(x => {
+      const clk = !!(x.drawable || x.from || x.to);
+      const desc = x.drawable ? `${x.from.name} → ${x.to.name}${x.voltage ? " · " + Math.round(x.voltage) + " kV" : ""}`
+                 : (x.from || x.to) ? `near ${(x.from || x.to).name}` : "location n/a";
+      return `<div class="drv${clk?' clk':''}"${clk?` onclick="focusBind('${x._uid}')"`:''}>
+        <div class="drow"><span class="nm">${x.name}</span><span class="v neg">${x.atc_sp.toFixed(2)} $/MWh</span></div>
+        <div class="bar" style="width:${Math.max(2, Math.abs(x.atc_sp)/max*100)}%"></div>
+        <div class="sub">${desc}</div>
+        <div class="sub">${x.pct_time.toFixed(0)}% of intervals bound &middot; avg $${x.avg_sp.toFixed(0)}/MWh when binding &middot; ${x.hours_bound.toFixed(0)} hrs${x.n_contingencies>1 ? " &middot; "+x.n_contingencies+" contingencies" : ""}</div>
+      </div>`;
+    }).join("") + `</div>`;
+  } catch(e){ el.innerHTML = `<div class="empty">fetch error: ${e}</div>`; }
+}
+
+function focusBind(uid){
+  highlightLayer.clearLayers();
+  const x = bindGeom[uid];
+  if (!x) return;
+  if ((x.path && x.path.length > 1) || x.drawable){
+    const pts = (x.path && x.path.length > 1) ? x.path : [[x.from.lat,x.from.lon],[x.to.lat,x.to.lon]];
+    L.polyline(pts, { color:"#7c3aed", weight:6, opacity:0.95,
+      dashArray:(x.path && x.path.length > 1) ? null : "4 7", lineCap:"round" })
+      .addTo(highlightLayer).bindPopup(`<b>${x.name}</b><br>${x.from.name} &rarr; ${x.to.name}` +
+        `${x.voltage ? " &middot; "+Math.round(x.voltage)+" kV" : ""}<br>ATC shadow: <b>${x.atc_sp.toFixed(2)} $/MWh</b>`).openPopup();
+    map.fitBounds(pts, { padding:[40,40] });
+  } else if (x.from || x.to){
+    const e = x.from || x.to;
+    L.circleMarker([e.lat,e.lon], { radius:7, color:"#7c3aed", weight:2, fillColor:"#7c3aed", fillOpacity:0.8 }).addTo(highlightLayer);
+    map.setView([e.lat,e.lon], 8);
+  }
+}
+
 renderSiteTabs();
 renderWinTabs();
 loadBasemap();
 loadBasis();
 loadAttribution();
 loadMap();
+loadBinding();
 </script>
 </body>
 </html>

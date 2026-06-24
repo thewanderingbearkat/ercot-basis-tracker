@@ -17,6 +17,7 @@ from constraint_map.geo import load_basemap
 
 from .attribution import daily_attribution
 from .basis import basis_decomposition
+from .binding import binding_constraints
 from .congestion import node_congestion
 from .mapping import driver_map
 from .sites import SITES
@@ -128,6 +129,26 @@ def api_basis():
         logger.exception("pjm basis_decomposition failed")
         return jsonify({"error": str(e)}), 502
     _basis_cache[key] = (time.time(), data)
+    return jsonify({**data, "cache_age_seconds": 0})
+
+
+# Authoritative system-wide binding constraints (not node-specific). Keyed by
+# window only -- doesn't depend on the selected site.
+_binding_cache: dict = {}
+
+
+@pjm_constraints_bp.route("/api/pjm/binding")
+def api_binding():
+    days = _days_arg()
+    hit = _binding_cache.get(days)
+    if hit and (time.time() - hit[0]) < ATTRIB_CACHE_TTL and request.args.get("fresh") != "1":
+        return jsonify({**hit[1], "cache_age_seconds": round(time.time() - hit[0], 1)})
+    try:
+        data = binding_constraints(days=days)
+    except Exception as e:
+        logger.exception("pjm binding_constraints failed")
+        return jsonify({"error": str(e)}), 502
+    _binding_cache[days] = (time.time(), data)
     return jsonify({**data, "cache_age_seconds": 0})
 
 
