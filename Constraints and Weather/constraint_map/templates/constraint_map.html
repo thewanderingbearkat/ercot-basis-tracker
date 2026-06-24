@@ -28,6 +28,12 @@
   .btn:hover { background:#143562; } .btn.sm { padding:3px 9px; font-size:11px; }
   .dwin { display:inline-flex; align-items:center; gap:5px; font-size:11px; color:#6b7280; }
   .dwin input { font-size:11px; padding:2px 4px; border:1px solid #d1d5db; border-radius:3px; color:#0E2C51; }
+  .map-details { margin-top:8px; border:1px solid #e5e7eb; border-radius:6px; padding:9px 12px; background:#f9fafb; min-height:20px; }
+  .map-details .md-hint { color:#9ca3af; font-size:12px; }
+  .map-details .md-t { font-weight:700; font-size:14px; }
+  .map-details .md-kv { font-size:11px; color:#fff; background:#2563eb; border-radius:4px; padding:1px 6px; vertical-align:middle; font-weight:600; }
+  .map-details .md-s { color:#6b7280; font-size:12px; margin-top:1px; }
+  .map-details .md-v { margin-top:5px; font-size:13px; } .map-details .md-v.neg b { color:#b91c1c; } .map-details .md-v.pos b { color:#15803d; }
   .empty { color:#6b7280; font-size:13px; padding:24px 8px; text-align:center; }
   .note { font-size:11px; color:#6b7280; margin-top:8px; line-height:1.5; }
   #map { height:520px; border-radius:6px; border:1px solid #e5e7eb; }
@@ -97,6 +103,7 @@
       <span class="health" id="mapMeta" style="margin-left:auto;"></span>
     </div>
     <div id="map" style="margin-top:10px;"></div>
+    <div id="mapDetails" class="map-details"><span class="md-hint">Click a line on the map or a driver above to see its details here.</span></div>
     <div class="legend">
       <span style="display:inline-flex; align-items:center; gap:6px; vertical-align:middle;">
         <b style="font-weight:600;">Basis contribution</b>
@@ -158,13 +165,27 @@ function lineDesc(g){
   return e ? `near ${e.name}` : "location n/a";
 }
 
+const dataByUid = {};   // uid -> driver object, for the details box
+function showDetails(x){
+  const el = document.getElementById("mapDetails");
+  if (!el) return;
+  if (!x){ el.innerHTML = '<span class="md-hint">Click a line on the map or a driver above to see its details here.</span>'; return; }
+  const g = x.geometry || {};
+  const p2p = g.drawable ? `${g.from.name} → ${g.to.name}` : (g.from||g.to) ? `near ${(g.from||g.to).name}` : "location n/a";
+  const kv = g.voltage ? Math.round(g.voltage) + " kV" : "";
+  el.innerHTML =
+    `<div class="md-t">${p2p}${kv ? ` <span class="md-kv">${kv}</span>` : ""}</div>` +
+    `<div class="md-s">${x.name || ""}</div>` +
+    `<div class="md-v ${x.contrib<0?'neg':'pos'}">Basis contribution &nbsp;<b>${fmt(x.contrib)} $/MWh</b></div>`;
+}
+
 function focusDriver(id){
   highlightLayer.clearLayers();
+  showDetails(dataByUid[id]);
   const layer = driverById[id];
-  if (layer){                                  // already drawn on the map: zoom + popup
+  if (layer){                                  // already drawn on the map: zoom
     if (layer.getBounds) map.fitBounds(layer.getBounds().pad(0.6));
     else map.setView(layer.getLatLng(), 10);
-    layer.openPopup();
     return;
   }
   const g = geomById[id];                       // not drawn (e.g. an ATC line): highlight it
@@ -315,7 +336,7 @@ function drawMap(d){
   driverLayer.clearLayers(); highlightLayer.clearLayers();
   Object.keys(driverById).forEach(k => delete driverById[k]);
   const drivers = (d.drivers||[]).filter(x => x.geometry);
-  drivers.forEach(x => { geomById[x._uid] = x.geometry; });
+  drivers.forEach(x => { geomById[x._uid] = x.geometry; dataByUid[x._uid] = x; });
   const drawn = drivers.filter(x => { const g=x.geometry; return (g.path&&g.path.length>1) || g.drawable || g.from || g.to; });
   drawn.forEach(x => {
     const g = x.geometry, color = rampColor(x.contrib);
@@ -329,7 +350,7 @@ function drawMap(d){
       const e = g.from || g.to;
       layer = L.circleMarker([e.lat,e.lon], { radius:6, color, weight:2, fillColor:color, fillOpacity:0.85 }).addTo(driverLayer);
     }
-    layer.bindPopup(popup(x, g));
+    layer.on("click", () => showDetails(x));
     driverById[x._uid] = layer;
   });
   const routed = drawn.filter(x => x.geometry.snapped).length;
