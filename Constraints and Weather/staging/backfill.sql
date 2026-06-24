@@ -1,0 +1,141 @@
+/* ============================================================================
+   Constraint-map staging backfill  ->  SKYVEST.DBO
+   ----------------------------------------------------------------------------
+   WHY: long windows (1Y/3Y) over MARKET_SHIFT_FACTORS (3.5B rows) and PJM
+   CONSTRAINTS are too heavy to run on every page view. The historical data is
+   STALE (never changes), so we precompute daily aggregates ONCE here. The app
+   (read-only role SKYVEST_READ) then sums these tiny daily rows for any window
+   and computes only the live recent day(s) on top.
+
+   HOW TO RUN: paste into a Snowflake worksheet using a role that can write to
+   SKYVEST.DBO (your normal SV write role), and run all. First run backfills
+   ~3 years; it is INCREMENTAL (each statement skips days already staged), so
+   re-running later (weekly/monthly) only adds new days -- fast.
+
+   The app stays strictly read-only; it never writes these tables.
+   ============================================================================ */
+
+SET YES = 'YES_ENERGY__FULL_DATASET.YESDATA';   -- (reference only; tables fully-qualified below)
+
+/* -------------------------------------------------------------------------
+   ERCOT -- the heavy one. Daily per-constraint shift-factor sums for our 6
+   price nodes (4 site nodes + HB_WEST + HB_NORTH), daily interval counts, and
+   daily RT LMP sums for the basis average.
+   ------------------------------------------------------------------------- */
+CREATE TABLE IF NOT EXISTS SKYVEST.DBO.CM_ERCOT_SF_DAILY (
+    PRICENODEID   NUMBER,
+    DAY           DATE,
+    CONSTRAINTID  NUMBER,
+    CONSTRAINTNAME STRING,
+    FACILITYID    NUMBER,
+    SF_SUM        FLOAT          -- SUM( -(SHADOWPRICE * SHIFTFACTOR) ) over the day
+);
+
+CREATE TABLE IF NOT EXISTS SKYVEST.DBO.CM_ERCOT_INTERVALS_DAILY (
+    DAY           DATE,
+    N_INTERVALS   NUMBER         -- distinct RT intervals touching our nodes that day
+);
+
+CREATE TABLE IF NOT EXISTS SKYVEST.DBO.CM_ERCOT_LMP_DAILY (
+    OBJECTID      NUMBER,
+    DAY           DATE,
+    RTLMP_SUM     FLOAT,
+    N             NUMBER
+);
+
+INSERT INTO SKYVEST.DBO.CM_ERCOT_SF_DAILY
+SELECT PRICENODEID, DATETIME::DATE AS DAY, CONSTRAINTID,
+       ANY_VALUE(CONSTRAINTNAME), ANY_VALUE(FACILITYID),
+       SUM(-(SHADOWPRICE * SHIFTFACTOR))
+FROM YES_ENERGY__FULL_DATASET.YESDATA.MARKET_SHIFT_FACTORS
+WHERE MARKET = 'RT'
+  AND PRICENODEID IN (10000697078,10000697080,10000698819,10004202409,10016076881,10016246152)
+  AND DATETIME >= DATEADD('year', -3, CURRENT_DATE) AND DATETIME < CURRENT_DATE
+  AND DATETIME::DATE NOT IN (SELECT DISTINCT DAY FROM SKYVEST.DBO.CM_ERCOT_SF_DAILY)
+GROUP BY PRICENODEID, DATETIME::DATE, CONSTRAINTID;
+
+INSERT INTO SKYVEST.DBO.CM_ERCOT_INTERVALS_DAILY
+SELECT DATETIME::DATE AS DAY, COUNT(DISTINCT DATETIME)
+FROM YES_ENERGY__FULL_DATASET.YESDATA.MARKET_SHIFT_FACTORS
+WHERE MARKET = 'RT'
+  AND PRICENODEID IN (10000697078,10000697080,10000698819,10004202409,10016076881,10016246152)
+  AND DATETIME >= DATEADD('year', -3, CURRENT_DATE) AND DATETIME < CURRENT_DATE
+  AND DATETIME::DATE NOT IN (SELECT DAY FROM SKYVEST.DBO.CM_ERCOT_INTERVALS_DAILY)
+GROUP BY DATETIME::DATE;
+
+INSERT INTO SKYVEST.DBO.CM_ERCOT_LMP_DAILY
+SELECT OBJECTID, DATETIME::DATE AS DAY, SUM(RTLMP), COUNT(*)
+FROM YES_ENERGY__FULL_DATASET.YESDATA.DART_PRICES
+WHERE OBJECTID IN (10000697078,10000697080,10000698819,10004202409,10016076881,10016246152)
+  AND RTLMP IS NOT NULL
+  AND DATETIME >= DATEADD('year', -3, CURRENT_DATE) AND DATETIME < CURRENT_DATE
+  AND DATETIME::DATE NOT IN (SELECT DISTINCT DAY FROM SKYVEST.DBO.CM_ERCOT_LMP_DAILY)
+GROUP BY OBJECTID, DATETIME::DATE;
+
+/* -------------------------------------------------------------------------
+   PJM -- daily DART components (basis bridge) + daily binding-constraint
+   aggregates (the heavy CONSTRAINTS scan). BETA is already daily, so the node
+   attribution doesn't need staging.
+   ------------------------------------------------------------------------- */
+CREATE TABLE IF NOT EXISTS SKYVEST.DBO.CM_PJM_DART_DAILY (
+    OBJECTID      NUMBER,
+    DAY           DATE,
+    RTLMP_SUM     FLOAT,
+    RTCONG_SUM    FLOAT,
+    RTLOSS_SUM    FLOAT,
+    N             NUMBER
+);
+
+CREATE TABLE IF NOT EXISTS SKYVEST.DBO.CM_PJM_CONSTRAINTS_DAILY (
+    FACILITYID    NUMBER,
+    DAY           DATE,
+    N_BIND        NUMBER,        -- distinct intervals this facility bound
+    ABS_PRICE_SUM FLOAT,         -- SUM(ABS(PRICE)) over those intervals
+    N_CTG         NUMBER         -- distinct contingencies
+);
+
+CREATE TABLE IF NOT EXISTS SKYVEST.DBO.CM_PJM_INTERVALS_DAILY (
+    DAY           DATE,
+    N_INTERVALS   NUMBER
+);
+
+INSERT INTO SKYVEST.DBO.CM_PJM_DART_DAILY
+SELECT OBJECTID, DATETIME::DATE AS DAY,
+       SUM(RTLMP), SUM(COALESCE(RTCONG,0)), SUM(COALESCE(RTLOSS,0)), COUNT(*)
+FROM YES_ENERGY__FULL_DATASET.YESDATA.DART_PRICES
+WHERE OBJECTID IN (51301,34497127,1318144721,1369011076,1369012529)
+  AND RTLMP IS NOT NULL
+  AND DATETIME >= DATEADD('year', -3, CURRENT_DATE) AND DATETIME < CURRENT_DATE
+  AND DATETIME::DATE NOT IN (SELECT DISTINCT DAY FROM SKYVEST.DBO.CM_PJM_DART_DAILY)
+GROUP BY OBJECTID, DATETIME::DATE;
+
+INSERT INTO SKYVEST.DBO.CM_PJM_CONSTRAINTS_DAILY
+SELECT FACILITYID, DATETIME::DATE AS DAY,
+       COUNT(DISTINCT DATETIME), SUM(ABS(PRICE)), COUNT(DISTINCT CONTINGENCYID)
+FROM YES_ENERGY__FULL_DATASET.YESDATA.CONSTRAINTS
+WHERE ISO = 'PJMISO' AND PRICE <> 0 AND FACILITYID IS NOT NULL
+  AND DATETIME >= DATEADD('year', -3, CURRENT_DATE) AND DATETIME < CURRENT_DATE
+  AND DATETIME::DATE NOT IN (SELECT DISTINCT DAY FROM SKYVEST.DBO.CM_PJM_CONSTRAINTS_DAILY)
+GROUP BY FACILITYID, DATETIME::DATE;
+
+INSERT INTO SKYVEST.DBO.CM_PJM_INTERVALS_DAILY
+SELECT DATETIME::DATE AS DAY, COUNT(DISTINCT DATETIME)
+FROM YES_ENERGY__FULL_DATASET.YESDATA.CONSTRAINTS
+WHERE ISO = 'PJMISO'
+  AND DATETIME >= DATEADD('year', -3, CURRENT_DATE) AND DATETIME < CURRENT_DATE
+  AND DATETIME::DATE NOT IN (SELECT DAY FROM SKYVEST.DBO.CM_PJM_INTERVALS_DAILY)
+GROUP BY DATETIME::DATE;
+
+/* -------------------------------------------------------------------------
+   Let the read-only app role see them.
+   ------------------------------------------------------------------------- */
+GRANT SELECT ON SKYVEST.DBO.CM_ERCOT_SF_DAILY        TO ROLE SKYVEST_READ;
+GRANT SELECT ON SKYVEST.DBO.CM_ERCOT_INTERVALS_DAILY TO ROLE SKYVEST_READ;
+GRANT SELECT ON SKYVEST.DBO.CM_ERCOT_LMP_DAILY       TO ROLE SKYVEST_READ;
+GRANT SELECT ON SKYVEST.DBO.CM_PJM_DART_DAILY        TO ROLE SKYVEST_READ;
+GRANT SELECT ON SKYVEST.DBO.CM_PJM_CONSTRAINTS_DAILY TO ROLE SKYVEST_READ;
+GRANT SELECT ON SKYVEST.DBO.CM_PJM_INTERVALS_DAILY   TO ROLE SKYVEST_READ;
+
+/* Sanity check after running: */
+-- SELECT 'ERCOT_SF' t, COUNT(*) rows, MIN(DAY) lo, MAX(DAY) hi FROM SKYVEST.DBO.CM_ERCOT_SF_DAILY
+-- UNION ALL SELECT 'PJM_CONS', COUNT(*), MIN(DAY), MAX(DAY) FROM SKYVEST.DBO.CM_PJM_CONSTRAINTS_DAILY;
