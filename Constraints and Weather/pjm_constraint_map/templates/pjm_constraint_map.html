@@ -90,6 +90,20 @@
   </div>
 
   <div class="panel" style="margin-bottom:16px;">
+    <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+      <h2 style="margin:0;">Top congestion drivers</h2>
+      <span class="badge" style="color:#92400e; background:#fef3c7;">modeled shares</span>
+      <span id="winTabs" class="seg" style="margin-left:auto;"></span>
+      <span id="dayLabel" class="health"></span>
+    </div>
+    <div id="drivers" style="margin-top:12px;"><div class="empty">Loading&hellip;</div></div>
+    <div class="note">Authoritative node congestion ($/MWh) apportioned across constraints by <b>modeled</b>
+      shift-factor shares (Yes Energy BETA). The total is real (RTCONG); the per-constraint split is modeled and
+      its reliability varies by node &mdash; daily correlation vs actual is ~0.70 at NWOH but weak at Lordstown and
+      near-zero at Lackawanna, so treat the split there as indicative only. Click a row to locate it on the map.</div>
+  </div>
+
+  <div class="panel" style="margin-bottom:16px;">
     <div style="display:flex; align-items:center; gap:10px;">
       <h2 style="margin:0;">Where the congestion comes from</h2>
       <span class="health" id="mapMeta" style="margin-left:auto;"></span>
@@ -104,20 +118,8 @@
       </span>
       &nbsp;&middot;&nbsp; <span style="display:inline-block; width:14px; height:3px; background:#22c55e; vertical-align:middle; border-radius:2px;"></span> Transmission (&ge;138&nbsp;kV)
       &nbsp;&middot;&nbsp; <span class="dot" style="background:#2291EB;"></span> NWOH site
-      &nbsp;&middot;&nbsp; colored lines = constraints driving NWOH's congestion
+      &nbsp;&middot;&nbsp; colored lines = constraints driving the node's congestion
     </div>
-  </div>
-
-  <div class="panel">
-    <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
-      <h2 style="margin:0;">Top congestion drivers</h2>
-      <span id="winTabs" class="seg" style="margin-left:auto;"></span>
-      <span id="dayLabel" class="health"></span>
-    </div>
-    <div id="drivers" style="margin-top:12px;"><div class="empty">Loading&hellip;</div></div>
-    <div class="note">Real node congestion ($/MWh, averaged over the last full operating day) apportioned across
-      constraints by modeled shift-factor shares (Yes Energy BETA). Shares validated r=0.70 vs actual; the
-      magnitude is the authoritative RTCONG. Live basis &amp; node congestion live on the Basis Tracker / PnL tab.</div>
   </div>
 
   <div class="panel" style="margin-top:16px;">
@@ -157,6 +159,7 @@ const basemapLayer = L.layerGroup().addTo(map);   // green transmission grid (un
 const driverLayer = L.layerGroup().addTo(map);
 const highlightLayer = L.layerGroup().addTo(map);  // transient highlight for click-to-locate
 const bindGeom = {};   // binding-row uid -> geometry, for click-to-locate on the map
+const driverById = {}; // modeled-driver uid -> drawn map layer, for click-to-zoom
 
 async function loadBasemap(){
   try {
@@ -182,7 +185,7 @@ function renderSiteTabs(){
   document.querySelectorAll("#siteTabs button").forEach(b =>
     b.onclick = () => { curSite = b.dataset.s;
       SITES.forEach(s => siteMarkers[s.key].setIcon(star(s.key===curSite)));
-      renderSiteTabs(); loadBasis(); loadMap(); loadAttribution(); });
+      renderSiteTabs(); loadBasis(); loadMap(); });
 }
 
 async function loadBasis(){
@@ -220,31 +223,62 @@ function rampColor(v){
   return `rgb(${ch(0)},${ch(1)},${ch(2)})`;
 }
 
+// One fetch drives BOTH the modeled-drivers list and the map (mirrors ERCOT).
 async function loadMap(){
+  const drvEl = document.getElementById("drivers");
+  drvEl.innerHTML = '<div class="empty">Loading&hellip;</div>';
   try {
     const d = await (await fetch(`/api/pjm/map?site=${curSite}&days=${curDays}`)).json();
-    driverLayer.clearLayers();
-    if (d.error){ document.getElementById("mapMeta").textContent = "⚠️ " + d.error; return; }
+    driverLayer.clearLayers(); highlightLayer.clearLayers();
+    Object.keys(driverById).forEach(k => delete driverById[k]);
+    if (d.error){ document.getElementById("mapMeta").textContent = "⚠️ " + d.error; drvEl.innerHTML = `<div class="empty">⚠️ ${d.error}</div>`; return; }
+    (d.drivers||[]).forEach((x,i) => x._uid = "m"+i);
     const drawn = (d.drivers||[]).filter(x => x.drawable);
     drawn.forEach(x => {
       const color = rampColor(x.attributed);
-      // Follow the real conductor path when routed; else a straight segment.
-      const pts = (x.path && x.path.length > 1) ? x.path
-                : [[x.from.lat, x.from.lon], [x.to.lat, x.to.lon]];
+      const pts = (x.path && x.path.length > 1) ? x.path : [[x.from.lat, x.from.lon], [x.to.lat, x.to.lon]];
       L.polyline(pts, { color, weight: 10, opacity: 0.22, lineCap:"round", lineJoin:"round" }).addTo(driverLayer);
-      L.polyline(pts, { color, weight: 4, opacity: 0.95, lineCap:"round", lineJoin:"round" }).addTo(driverLayer)
+      const layer = L.polyline(pts, { color, weight: 4, opacity: 0.95, lineCap:"round", lineJoin:"round" }).addTo(driverLayer)
         .bindPopup(`<b>${x.name}</b><br>${x.from.name} &rarr; ${x.to.name}` +
-          `${x.voltage ? " &middot; "+x.voltage+" kV":""}<br>Attributed: <b>${fmt(x.attributed)} $/MWh</b>` +
+          `${x.voltage ? " &middot; "+Math.round(x.voltage)+" kV":""}<br>Attributed: <b>${fmt(x.attributed)} $/MWh</b>` +
           `<br>${(x.share*100).toFixed(0)}% of modeled congestion`);
+      driverById[x._uid] = layer;
     });
     const routed = drawn.filter(x => x.snapped).length;
     document.getElementById("mapMeta").textContent =
       `${drawn.length}/${(d.drivers||[]).length} located · ${routed} routed · ${fmtWindow(d)}`;
-    // Fit to the drivers + site.
     const all = drawn.flatMap(x => (x.path && x.path.length>1) ? x.path : [[x.from.lat,x.from.lon],[x.to.lat,x.to.lon]]).concat([[site().lat, site().lon]]);
     if (all.length > 1) map.fitBounds(all, { padding:[30,30] });
     else map.setView([site().lat, site().lon], 7);
-  } catch(e){ document.getElementById("mapMeta").textContent = "fetch error: " + e; }
+
+    // --- modeled-drivers list (clickable -> locate on map) ---
+    const win = fmtWindow(d), lead = d.days>1 ? "window: " : "operating day: ";
+    document.getElementById("dayLabel").innerHTML = lead + "<b>" + win + "</b>";
+    document.getElementById("health").innerHTML =
+      `avg node congestion <b>${fmt(d.avg_congestion)} $/MWh</b> &middot; ${win}`;
+    if (!d.drivers || !d.drivers.length){ drvEl.innerHTML = '<div class="empty">No constraints on this node for the window.</div>'; return; }
+    const max = Math.max(...d.drivers.map(x=>Math.abs(x.attributed)), 0.01);
+    drvEl.innerHTML = `<div id="drvgrid">` + d.drivers.map(x => {
+      const clk = !!x.drawable;
+      const desc = x.drawable ? `${x.from.name} → ${x.to.name}${x.voltage ? " · "+Math.round(x.voltage)+" kV" : ""}`
+                 : (x.from || x.to) ? `near ${(x.from||x.to).name}` : "location n/a";
+      return `<div class="drv${clk?' clk':''}"${clk?` onclick="focusDriver('${x._uid}')"`:''}>
+        <div class="drow"><span class="nm">${x.name}</span><span class="v neg">${fmt(x.attributed)} $/MWh</span></div>
+        <div class="bar" style="width:${Math.max(2, Math.abs(x.attributed)/max*100)}%"></div>
+        <div class="sub">${desc}</div>
+        <div class="sub">${(x.share*100).toFixed(0)}% of modeled congestion${d.days>1 ? " &middot; bound "+x.days_bound+"/"+d.days+" days" : ""}</div>
+      </div>`;
+    }).join("") + `</div>`;
+  } catch(e){ document.getElementById("mapMeta").textContent = "fetch error: " + e; drvEl.innerHTML = `<div class="empty">fetch error: ${e}</div>`; }
+}
+
+function focusDriver(uid){
+  highlightLayer.clearLayers();
+  const layer = driverById[uid];
+  if (!layer) return;
+  if (layer.getBounds) map.fitBounds(layer.getBounds().pad(0.6));
+  else map.setView(layer.getLatLng(), 9);
+  layer.openPopup();
 }
 
 const WINDOWS = [{d:1,label:"1D"},{d:7,label:"7D"},{d:30,label:"30D"},{d:90,label:"90D"}];
@@ -252,29 +286,7 @@ function renderWinTabs(){
   document.getElementById("winTabs").innerHTML = WINDOWS.map(w =>
     `<button data-d="${w.d}" class="${w.d===curDays?'active':''}">${w.label}</button>`).join("");
   document.querySelectorAll("#winTabs button").forEach(b =>
-    b.onclick = () => { curDays = +b.dataset.d; renderWinTabs(); loadBasis(); loadAttribution(); loadMap(); loadBinding(); });
-}
-
-async function loadAttribution(){
-  const el = document.getElementById("drivers");
-  el.innerHTML = '<div class="empty">Loading&hellip;</div>';
-  try {
-    const d = await (await fetch(`/api/pjm/attribution?site=${curSite}&days=${curDays}`)).json();
-    if (d.error){ el.innerHTML = `<div class="empty">⚠️ ${d.error}</div>`; return; }
-    if (!d.drivers.length){ el.innerHTML = '<div class="empty">No constraints on this node for the window.</div>'; return; }
-    const max = Math.max(...d.drivers.map(x=>Math.abs(x.attributed)), 0.01);
-    const win = fmtWindow(d), lead = d.days>1 ? "window: " : "operating day: ";
-    document.getElementById("dayLabel").innerHTML = lead + "<b>" + win + "</b>";
-    document.getElementById("health").innerHTML =
-      `avg node congestion <b>${fmt(d.avg_congestion)} $/MWh</b> &middot; ${win}`;
-    el.innerHTML = `<div id="drvgrid">` +
-      d.drivers.map(x => `
-        <div class="drv">
-          <div class="drow"><span class="nm">${x.name}</span><span class="v neg">${fmt(x.attributed)} $/MWh</span></div>
-          <div class="bar" style="width:${Math.max(2, Math.abs(x.attributed)/max*100)}%"></div>
-          <div class="sub">${(x.share*100).toFixed(0)}% of modeled congestion${d.days>1 ? " &middot; bound "+x.days_bound+"/"+d.days+" days" : ""}</div>
-        </div>`).join("") + `</div>`;
-  } catch(e){ el.innerHTML = `<div class="empty">fetch error: ${e}</div>`; }
+    b.onclick = () => { curDays = +b.dataset.d; renderWinTabs(); loadBasis(); loadMap(); loadBinding(); });
 }
 
 // ---- Authoritative system-wide binding constraints ---------------------
@@ -325,7 +337,6 @@ renderSiteTabs();
 renderWinTabs();
 loadBasemap();
 loadBasis();
-loadAttribution();
 loadMap();
 loadBinding();
 </script>

@@ -21,7 +21,7 @@ from typing import Any
 from constraint_map.db import YES, query
 from constraint_map.geo import facility_geometry, routed_path
 
-from .attribution import last_full_day
+from .attribution import _facility_names, last_full_day
 
 PJM_BASEMAP = os.path.join(os.path.dirname(__file__), "..", "data", "pjm_transmission_lines.geojson")
 
@@ -45,28 +45,29 @@ def binding_constraints(days: int = 1, top: int = 15) -> dict[str, Any]:
         WHERE ISO='PJMISO' AND {win}
     """)[0]["N"] or 1
 
+    # PJM rows carry NO CONSTRAINTNAME (null) and PRICE is signed negative -- so we
+    # key on the monitored FACILITYID, name it from FACILITIES, and rank by |PRICE|.
     rows = query(f"""
-        SELECT CONSTRAINTNAME AS NM,
-               ANY_VALUE(FACILITYID)       AS FID,
-               ANY_VALUE(CONTINGENCY)      AS CTG,
-               COUNT(DISTINCT CONTINGENCY) AS N_CTG,
-               COUNT(DISTINCT DATETIME)    AS N_BIND,
-               AVG(PRICE)                  AS AVG_SP,
-               SUM(PRICE) / {total}        AS ATC_SP,
-               MAX(PRICE)                  AS MAX_SP
+        SELECT FACILITYID                  AS FID,
+               COUNT(DISTINCT CONTINGENCYID) AS N_CTG,
+               COUNT(DISTINCT DATETIME)      AS N_BIND,
+               AVG(ABS(PRICE))               AS AVG_SP,
+               SUM(ABS(PRICE)) / {total}     AS ATC_SP,
+               MAX(ABS(PRICE))               AS MAX_SP
         FROM {YES}.CONSTRAINTS
-        WHERE ISO='PJMISO' AND PRICE <> 0 AND {win}
-        GROUP BY CONSTRAINTNAME
-        ORDER BY ABS(SUM(PRICE) / {total}) DESC
+        WHERE ISO='PJMISO' AND PRICE <> 0 AND FACILITYID IS NOT NULL AND {win}
+        GROUP BY FACILITYID
+        ORDER BY SUM(ABS(PRICE)) / {total} DESC
         LIMIT {int(top)}
     """)
 
+    names = _facility_names([r["FID"] for r in rows])
     span_hours = days * 24.0
     drivers = []
     for r in rows:
         n = int(r["N_BIND"])
         drivers.append({
-            "facility_id": r["FID"], "name": r["NM"], "contingency": r["CTG"],
+            "facility_id": r["FID"], "name": names.get(r["FID"], str(r["FID"])),
             "n_contingencies": int(r["N_CTG"]) if r["N_CTG"] is not None else 1,
             "atc_sp": float(r["ATC_SP"]) if r["ATC_SP"] is not None else 0.0,
             "avg_sp": float(r["AVG_SP"]) if r["AVG_SP"] is not None else 0.0,
