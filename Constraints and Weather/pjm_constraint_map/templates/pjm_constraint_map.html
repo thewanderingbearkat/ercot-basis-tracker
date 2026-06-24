@@ -310,9 +310,10 @@ async function loadMap(fresh){
       const clk = !!x.drawable;
       const p2p = x.drawable ? `${x.from.name} → ${x.to.name}${x.voltage ? " · "+Math.round(x.voltage)+" kV" : ""}` : null;
       const primary = p2p || ((x.from||x.to) ? `near ${(x.from||x.to).name}` : x.name);
+      const neg = x.attributed < 0;
       return `<div class="drv${clk?' clk':''}"${clk?` onclick="focusDriver('${x._uid}')"`:''}>
-        <div class="drow"><span class="nm">${primary}</span><span class="v neg">${fmt(x.attributed)} $/MWh</span></div>
-        <div class="bar" style="width:${Math.max(2, Math.abs(x.attributed)/max*100)}%"></div>
+        <div class="drow"><span class="nm">${primary}</span><span class="v ${neg?'neg':'pos'}">${fmt(x.attributed)} $/MWh</span></div>
+        <div class="bar" style="width:${Math.max(2, Math.abs(x.attributed)/max*100)}%;background:${neg?'#dc2626':'#16a34a'}"></div>
         ${p2p ? `<div class="sub">${x.name}</div>` : ""}
         <div class="sub">${(x.share*100).toFixed(0)}% of modeled congestion${d.days>1 ? " &middot; bound "+x.days_bound+"/"+d.days+" days" : ""}</div>
       </div>`;
