@@ -204,9 +204,11 @@ function focusDriver(id){
 
 // Every site star (both Bearkat pins show; selected one brighter).
 const siteMarkers = {};
-function star(s, active){ return L.divIcon({ className:"", iconSize:[22,22], html:
-  `<div style="font-size:22px;line-height:22px;transform:translate(-11px,-11px);color:${active?(SITE_COLOR[s.fuel]||'#0E2C51'):'#b8c4d0'};text-shadow:0 0 2px #fff,0 0 2px #fff;">&#9733;</div>` }); }
-SITES.forEach(s => { siteMarkers[s.key] = L.marker([s.lat, s.lon], { icon: star(s, s.settlement_point===site().settlement_point) })
+function dot(s, active){
+  const c = SITE_COLOR[s.fuel] || "#0E2C51", sz = active ? 17 : 13;
+  return L.divIcon({ className:"", iconSize:[sz,sz], iconAnchor:[sz/2,sz/2], html:
+    `<span style="display:block;width:${sz}px;height:${sz}px;border-radius:50%;background:${c};border:2.5px solid #fff;box-shadow:0 0 0 2px ${c}, 0 1.5px 5px rgba(0,0,0,.55);"></span>` }); }
+SITES.forEach(s => { siteMarkers[s.key] = L.marker([s.lat, s.lon], { icon: dot(s, s.settlement_point===site().settlement_point) })
   .addTo(map).bindPopup(`<b>${s.display_name}</b><br>${s.settlement_point} &middot; ${s.county} Co.`); });
 
 // Voltage palette (cool tones) so the warm green->red congestion overlay pops on top.
@@ -247,7 +249,7 @@ function renderSiteTabs(){
     `<button data-s="${s.key}" class="${s.key===curSite?'active':''}">${s.display_name.split(' ')[0]}</button>`).join("");
   document.querySelectorAll("#siteTabs button").forEach(b =>
     b.onclick = () => { curSite = b.dataset.s;
-      SITES.forEach(s => siteMarkers[s.key].setIcon(star(s, s.settlement_point===site().settlement_point)));
+      SITES.forEach(s => siteMarkers[s.key].setIcon(dot(s, s.settlement_point===site().settlement_point)));
       renderSiteTabs(); loadBasis(); preloadPresets(); });
 }
 

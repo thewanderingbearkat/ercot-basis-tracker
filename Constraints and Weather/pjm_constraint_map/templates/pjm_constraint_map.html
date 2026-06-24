@@ -220,9 +220,11 @@ async function loadBasemap(){
 
 // Site markers (stars) -- one per asset; the selected one shows brighter.
 const siteMarkers = {};
-function star(active){ return L.divIcon({ className:"", iconSize:[22,22], html:
-  `<div style="font-size:22px;line-height:22px;transform:translate(-11px,-11px);color:${active?'#2291EB':'#9bbcd6'};text-shadow:0 0 2px #fff,0 0 2px #fff;">&#9733;</div>` }); }
-SITES.forEach(s => { siteMarkers[s.key] = L.marker([s.lat, s.lon], { icon: star(s.key===curSite) })
+function dot(active){
+  const c = active ? "#2291EB" : "#94a3b8", sz = active ? 17 : 13;
+  return L.divIcon({ className:"", iconSize:[sz,sz], iconAnchor:[sz/2,sz/2], html:
+    `<span style="display:block;width:${sz}px;height:${sz}px;border-radius:50%;background:${c};border:2.5px solid #fff;box-shadow:0 0 0 2px ${c}, 0 1.5px 5px rgba(0,0,0,.55);"></span>` }); }
+SITES.forEach(s => { siteMarkers[s.key] = L.marker([s.lat, s.lon], { icon: dot(s.key===curSite) })
   .addTo(map).bindPopup(`<b>${s.display_name}</b><br>${s.pnode_name}<br>vs ${s.hub_name}`); });
 
 function renderSiteTabs(){
@@ -230,7 +232,7 @@ function renderSiteTabs(){
     `<button data-s="${s.key}" class="${s.key===curSite?'active':''}">${s.display_name.split(' ')[0]}</button>`).join("");
   document.querySelectorAll("#siteTabs button").forEach(b =>
     b.onclick = () => { curSite = b.dataset.s;
-      SITES.forEach(s => siteMarkers[s.key].setIcon(star(s.key===curSite)));
+      SITES.forEach(s => siteMarkers[s.key].setIcon(dot(s.key===curSite)));
       renderSiteTabs(); loadBasis(); loadMap(); preloadPresets(); });
 }
 
