@@ -40,6 +40,8 @@
   .drv .v.neg { color:#b91c1c; } .drv .v.pos { color:#15803d; }
   .drv .bar { height:7px; border-radius:3px; margin-top:2px; min-width:2px; }
   .drv .sub { color:#6b7280; font-size:10px; margin-top:1px; }
+  .drv.clk { cursor:pointer; border-radius:4px; margin:0 -6px 9px; padding:3px 6px; transition:background .1s; }
+  .drv.clk:hover { background:#f1f5f9; }
   #basisDrivers, #drivers { display:grid; grid-template-columns:1fr; gap:2px 28px; }
   @media (min-width:760px){ #basisDrivers, #drivers { grid-template-columns:1fr 1fr; } }
   .legend { font-size:11px; color:#6b7280; margin-top:8px; line-height:1.7; }
@@ -146,6 +148,39 @@ L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", {
 }).addTo(map);
 const basemapLayer = L.layerGroup().addTo(map);
 const driverLayer = L.layerGroup().addTo(map);
+const highlightLayer = L.layerGroup().addTo(map);   // transient highlight for click-to-zoom
+const driverById = {};   // constraint_id -> drawn map layer (basis lines on the map)
+const geomById = {};     // constraint_id -> geometry (basis + ATC), to zoom even when not drawn
+
+function lineDesc(g){
+  if (!g) return "location n/a";
+  if (g.drawable) return `${g.from.name} → ${g.to.name}${g.voltage ? " · " + Math.round(g.voltage) + " kV" : ""}`;
+  const e = g.from || g.to;
+  return e ? `near ${e.name}` : "location n/a";
+}
+
+function focusDriver(id){
+  highlightLayer.clearLayers();
+  const layer = driverById[id];
+  if (layer){                                  // already drawn on the map: zoom + popup
+    if (layer.getBounds) map.fitBounds(layer.getBounds().pad(0.6));
+    else map.setView(layer.getLatLng(), 10);
+    layer.openPopup();
+    return;
+  }
+  const g = geomById[id];                       // not drawn (e.g. an ATC line): highlight it
+  if (!g) return;
+  if ((g.path && g.path.length > 1) || g.drawable){
+    const pts = (g.path && g.path.length > 1) ? g.path : [[g.from.lat,g.from.lon],[g.to.lat,g.to.lon]];
+    L.polyline(pts, { color:"#2291EB", weight:5, opacity:0.95,
+      dashArray:(g.path && g.path.length > 1) ? null : "4 7", lineCap:"round" }).addTo(highlightLayer);
+    map.fitBounds(pts, { padding:[40,40] });
+  } else if (g.from || g.to){
+    const e = g.from || g.to;
+    L.circleMarker([e.lat,e.lon], { radius:7, color:"#2291EB", weight:2, fillColor:"#2291EB", fillOpacity:0.8 }).addTo(highlightLayer);
+    map.setView([e.lat,e.lon], 10);
+  }
+}
 
 // Every site star (both Bearkat pins show; selected one brighter).
 const siteMarkers = {};
@@ -200,6 +235,7 @@ async function loadBasis(){
   try {
     const d = await (await fetch(`/api/constraints/basis?site=${curSite}&days=${curDays}`)).json();
     if (d.error){ head.innerHTML = ""; list.innerHTML = `<div class="empty">⚠️ ${d.error}</div>`; drawMap({drivers:[]}); return; }
+    (d.drivers||[]).forEach((x,i) => x._uid = "b"+i);   // per-panel keys (constraint ids collide across tables)
     renderBasis(d);
     drawMap(d);
   } catch(e){ list.innerHTML = `<div class="empty">fetch error: ${e}</div>`; }
@@ -217,30 +253,37 @@ function renderBasis(d){
   const el = document.getElementById("basisDrivers");
   if (!drv.length){ el.innerHTML = '<div class="empty">No constraints driving basis for this window.</div>'; return; }
   const max = Math.max(...drv.map(x => Math.abs(x.contrib)), 0.01);
-  el.innerHTML = drv.map(x => `
-    <div class="drv">
+  el.innerHTML = drv.map(x => {
+    const g = x.geometry || {};
+    const clk = !!(g.drawable || g.from || g.to);
+    return `<div class="drv${clk?' clk':''}"${clk?` onclick="focusDriver('${x._uid}')"`:''}>
       <div class="drow"><span class="nm">${x.name}</span><span class="v ${x.contrib<0?'neg':'pos'}">${fmt(x.contrib)} $/MWh</span></div>
       <div class="bar" style="width:${Math.max(2, Math.abs(x.contrib)/max*100)}%;background:${x.contrib<0?'#dc2626':'#16a34a'};"></div>
-    </div>`).join("");
+      <div class="sub">${lineDesc(g)}</div>
+    </div>`;
+  }).join("");
 }
 
 function drawMap(d){
-  driverLayer.clearLayers();
+  driverLayer.clearLayers(); highlightLayer.clearLayers();
+  Object.keys(driverById).forEach(k => delete driverById[k]);
   const drivers = (d.drivers||[]).filter(x => x.geometry);
+  drivers.forEach(x => { geomById[x._uid] = x.geometry; });
   const drawn = drivers.filter(x => { const g=x.geometry; return (g.path&&g.path.length>1) || g.drawable || g.from || g.to; });
   drawn.forEach(x => {
     const g = x.geometry, color = rampColor(x.contrib);
+    let layer;
     if ((g.path && g.path.length>1) || g.drawable){
       const pts = (g.path && g.path.length>1) ? g.path : [[g.from.lat,g.from.lon],[g.to.lat,g.to.lon]];
       const dash = (g.path && g.path.length>1) ? null : "4 7";
       L.polyline(pts, { color, weight:11, opacity:0.20, lineCap:"round", lineJoin:"round" }).addTo(driverLayer);
-      L.polyline(pts, { color, weight: dash?3:5, opacity:0.95, dashArray:dash, lineCap:"round", lineJoin:"round" }).addTo(driverLayer)
-        .bindPopup(popup(x, g));
+      layer = L.polyline(pts, { color, weight: dash?3:5, opacity:0.95, dashArray:dash, lineCap:"round", lineJoin:"round" }).addTo(driverLayer);
     } else {
       const e = g.from || g.to;
-      L.circleMarker([e.lat,e.lon], { radius:6, color, weight:2, fillColor:color, fillOpacity:0.85 })
-        .addTo(driverLayer).bindPopup(popup(x, g));
+      layer = L.circleMarker([e.lat,e.lon], { radius:6, color, weight:2, fillColor:color, fillOpacity:0.85 }).addTo(driverLayer);
     }
+    layer.bindPopup(popup(x, g));
+    driverById[x._uid] = layer;
   });
   const routed = drawn.filter(x => x.geometry.snapped).length;
   document.getElementById("mapMeta").textContent =
@@ -271,12 +314,17 @@ async function loadAttribution(){
       (d.days>1 ? "window: " : "operating day: ") + "<b>" + fmtWindow(d) + "</b>";
     if (!v || !v.drivers.length){ el.innerHTML = '<div class="empty">No congestion on this node for the window.</div>'; return; }
     const max = Math.max(...v.drivers.map(x => Math.abs(x.atc)), 0.01);
-    el.innerHTML = v.drivers.map(x => `
-      <div class="drv">
+    v.drivers.forEach((x,i) => { x._uid = "a"+i; if (x.geometry) geomById[x._uid] = x.geometry; });
+    el.innerHTML = v.drivers.map(x => {
+      const g = x.geometry || {};
+      const clk = !!(g.drawable || g.from || g.to);
+      return `<div class="drv${clk?' clk':''}"${clk?` onclick="focusDriver('${x._uid}')"`:''}>
         <div class="drow"><span class="nm">${x.name}</span><span class="v neg">${x.atc.toFixed(2)} $/MWh</span></div>
         <div class="bar" style="width:${Math.max(2, Math.abs(x.atc)/max*100)}%;background:#dc2626;"></div>
+        <div class="sub">${lineDesc(g)}</div>
         <div class="sub">${x.pct_time.toFixed(0)}% of intervals bound &middot; ${x.when_bind.toFixed(1)} $/MWh when binding</div>
-      </div>`).join("");
+      </div>`;
+    }).join("");
     document.getElementById("health").innerHTML =
       `ATC congestion <b>${v.total_atc.toFixed(2)} $/MWh</b> &middot; last full day ${fmtDay(d.as_of)}`;
   } catch(e){ el.innerHTML = `<div class="empty">fetch error: ${e}</div>`; }

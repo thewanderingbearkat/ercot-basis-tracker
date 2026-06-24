@@ -24,7 +24,7 @@ from datetime import date, timedelta
 from typing import Any
 
 from .db import YES, query
-from .geo import facility_geometry, routed_path
+from .geo import attach_geometry_list
 from .sites import SITES
 
 MSF = f"{YES}.MARKET_SHIFT_FACTORS"
@@ -120,13 +120,6 @@ def _attach_geometry(drivers: list[dict[str, Any]], start: str, end: str) -> Non
           AND FACILITYID IS NOT NULL
     """):
         fac.setdefault(r["CONSTRAINTID"], r["FACILITYID"])
-    geo = facility_geometry([v for v in fac.values() if v is not None])
     for d in drivers:
-        g = geo.get(fac.get(d["constraint_id"]))
-        if not g:
-            d["geometry"] = {"from": None, "to": None, "voltage": None,
-                             "drawable": False, "path": None, "snapped": False}
-            continue
-        drawable = bool(g["from"] and g["to"])
-        path = routed_path(g["from"], g["to"]) if drawable else None
-        d["geometry"] = {**g, "drawable": drawable, "path": path, "snapped": path is not None}
+        d["facility_id"] = fac.get(d["constraint_id"])
+    attach_geometry_list(drivers)

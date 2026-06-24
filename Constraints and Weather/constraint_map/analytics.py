@@ -23,6 +23,7 @@ from typing import Any
 
 from .constraints import active_constraints
 from .db import YES, query
+from .geo import attach_geometry_list
 from .sites import SITES
 
 
@@ -101,6 +102,8 @@ def historical_attribution(days: int = 30, top: int = 10) -> dict[str, Any]:
 
     rows = query(f"""
         SELECT sf.SETTLEMENTPOINT AS SP, c.CONSTRAINTNAME AS NAME,
+               ANY_VALUE(c.CONSTRAINTID)  AS CID,
+               ANY_VALUE(c.FACILITYID)    AS FID,
                SUM(-(c.PRICE * sf.SHIFTFACTOR)) / {intervals} AS ATC,
                AVG(-(c.PRICE * sf.SHIFTFACTOR))               AS WHEN_BIND,
                COUNT(*)                                       AS N_BIND
@@ -116,6 +119,8 @@ def historical_attribution(days: int = 30, top: int = 10) -> dict[str, Any]:
     by_sp: dict[str, list[dict[str, Any]]] = {}
     for r in rows:
         by_sp.setdefault(r["SP"], []).append({
+            "constraint_id": r["CID"],
+            "facility_id": r["FID"],
             "name": r["NAME"],
             "atc": float(r["ATC"]),
             "when_bind": float(r["WHEN_BIND"]),
@@ -126,4 +131,8 @@ def historical_attribution(days: int = 30, top: int = 10) -> dict[str, Any]:
     for sp, lst in by_sp.items():
         lst.sort(key=lambda x: x["atc"])                 # most negative (worst) first
         out[sp] = {"total_atc": sum(x["atc"] for x in lst), "drivers": lst[:top]}
+
+    # Endpoint + voltage geometry for the displayed drivers (for the list
+    # descriptions and click-to-zoom). Only the top-N per site, so it's cheap.
+    attach_geometry_list([d for v in out.values() for d in v["drivers"]])
     return {"days": days, "as_of": end, "start": start, "intervals": intervals, "by_sp": out}

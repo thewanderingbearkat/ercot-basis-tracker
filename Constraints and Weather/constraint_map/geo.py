@@ -281,22 +281,28 @@ def routed_path(frm: dict | None, to: dict | None, basemap_path: str | None = No
     return _resolve_path(frm, to, path=basemap_path, tol_km=tol_km)
 
 
-def attach_geometry(result: dict[str, Any], basemap_path: str | None = None) -> dict[str, Any]:
-    """Enrich an active_constraints() result in place with endpoint geometry.
+def attach_geometry_list(items: list[dict[str, Any]], basemap_path: str | None = None) -> list[dict[str, Any]]:
+    """Enrich each item (which must carry a `facility_id`) with a `geometry` dict.
 
-    Adds a `geometry` key to each constraint: {from, to, voltage, drawable, path,
-    snapped}. `drawable` means both endpoints resolved; `path` is the routed
-    conductor geometry (along `basemap_path`, default TX) or None.
+    Adds {from, to, voltage, drawable, path, snapped} in place. `drawable` means
+    both endpoints resolved; `path` is the routed conductor geometry (along
+    `basemap_path`, default TX) or None. Shared by the active map, the basis
+    drivers, and the ATC drivers so every list can show endpoints + route lines.
     """
-    constraints = result.get("constraints", [])
-    geo = facility_geometry(c.get("facility_id") for c in constraints)
-    for c in constraints:
-        g = geo.get(c.get("facility_id"))
+    geo = facility_geometry(it.get("facility_id") for it in items)
+    for it in items:
+        g = geo.get(it.get("facility_id"))
         if g is None:
-            c["geometry"] = {"from": None, "to": None, "voltage": None, "drawable": False,
-                             "path": None, "snapped": False}
+            it["geometry"] = {"from": None, "to": None, "voltage": None, "drawable": False,
+                              "path": None, "snapped": False}
             continue
         drawable = bool(g["from"] and g["to"])
         path = _resolve_path(g["from"], g["to"], path=basemap_path) if drawable else None
-        c["geometry"] = {**g, "drawable": drawable, "path": path, "snapped": path is not None}
+        it["geometry"] = {**g, "drawable": drawable, "path": path, "snapped": path is not None}
+    return items
+
+
+def attach_geometry(result: dict[str, Any], basemap_path: str | None = None) -> dict[str, Any]:
+    """Enrich an active_constraints() result in place with endpoint geometry."""
+    attach_geometry_list(result.get("constraints", []), basemap_path)
     return result
