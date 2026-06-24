@@ -89,10 +89,16 @@ def basis_decomposition(site_key: str, days: int = 1, top: int = 15) -> dict[str
     drivers = [{"constraint_id": r["CID"], "constraint_name": r["NM"],
                 "facility_id": r["FID"], "name": r["NM"], "contrib": float(r["CONTRIB"])}
                for r in rows if r["CONTRIB"] is not None]
-    congestion_basis = sum(d["contrib"] for d in drivers)
-    drivers.sort(key=lambda d: d["contrib"])   # most negative (widens basis) first
-    drivers = drivers[:top]
-    _name_and_locate(drivers)
+    congestion_basis = sum(d["contrib"] for d in drivers)   # over ALL constraints
+    n_constraints = len(drivers)
+    # Rank by magnitude so the biggest movers show regardless of sign (longer
+    # windows have both wideners and narrowers; showing only the most-negative
+    # overshoots). The remainder is rolled into an explicit "other" row so the
+    # displayed bars + other == congestion_basis exactly.
+    drivers.sort(key=lambda d: abs(d["contrib"]), reverse=True)
+    shown = drivers[:top]
+    other_contrib = congestion_basis - sum(d["contrib"] for d in shown)
+    _name_and_locate(shown)
 
     return {
         "site": site.key, "name": site.display_name, "hub_name": site.hub_name,
@@ -101,7 +107,10 @@ def basis_decomposition(site_key: str, days: int = 1, top: int = 15) -> dict[str
         "hub_lmp": float(b["HLMP"]) if b["HLMP"] is not None else None,
         "basis": basis, "congestion_basis": congestion_basis,
         "residual": basis - congestion_basis,
-        "drivers": drivers,
+        "drivers": shown,
+        "other_contrib": other_contrib,
+        "other_count": n_constraints - len(shown),
+        "n_constraints": n_constraints,
     }
 
 

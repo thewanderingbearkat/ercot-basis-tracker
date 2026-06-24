@@ -260,12 +260,12 @@ async function loadMap(){
     const max = Math.max(...d.drivers.map(x=>Math.abs(x.attributed)), 0.01);
     drvEl.innerHTML = `<div id="drvgrid">` + d.drivers.map(x => {
       const clk = !!x.drawable;
-      const desc = x.drawable ? `${x.from.name} → ${x.to.name}${x.voltage ? " · "+Math.round(x.voltage)+" kV" : ""}`
-                 : (x.from || x.to) ? `near ${(x.from||x.to).name}` : "location n/a";
+      const p2p = x.drawable ? `${x.from.name} → ${x.to.name}${x.voltage ? " · "+Math.round(x.voltage)+" kV" : ""}` : null;
+      const primary = p2p || ((x.from||x.to) ? `near ${(x.from||x.to).name}` : x.name);
       return `<div class="drv${clk?' clk':''}"${clk?` onclick="focusDriver('${x._uid}')"`:''}>
-        <div class="drow"><span class="nm">${x.name}</span><span class="v neg">${fmt(x.attributed)} $/MWh</span></div>
+        <div class="drow"><span class="nm">${primary}</span><span class="v neg">${fmt(x.attributed)} $/MWh</span></div>
         <div class="bar" style="width:${Math.max(2, Math.abs(x.attributed)/max*100)}%"></div>
-        <div class="sub">${desc}</div>
+        ${p2p ? `<div class="sub">${x.name}</div>` : ""}
         <div class="sub">${(x.share*100).toFixed(0)}% of modeled congestion${d.days>1 ? " &middot; bound "+x.days_bound+"/"+d.days+" days" : ""}</div>
       </div>`;
     }).join("") + `</div>`;
@@ -303,12 +303,12 @@ async function loadBinding(){
     const max = Math.max(...d.drivers.map(x => Math.abs(x.atc_sp)), 0.01);
     el.innerHTML = `<div id="bindgrid">` + d.drivers.map(x => {
       const clk = !!(x.drawable || x.from || x.to);
-      const desc = x.drawable ? `${x.from.name} → ${x.to.name}${x.voltage ? " · " + Math.round(x.voltage) + " kV" : ""}`
-                 : (x.from || x.to) ? `near ${(x.from || x.to).name}` : "location n/a";
+      const p2p = x.drawable ? `${x.from.name} → ${x.to.name}${x.voltage ? " · " + Math.round(x.voltage) + " kV" : ""}` : null;
+      const primary = p2p || ((x.from || x.to) ? `near ${(x.from || x.to).name}` : x.name);
       return `<div class="drv${clk?' clk':''}"${clk?` onclick="focusBind('${x._uid}')"`:''}>
-        <div class="drow"><span class="nm">${x.name}</span><span class="v neg">${x.atc_sp.toFixed(2)} $/MWh</span></div>
+        <div class="drow"><span class="nm">${primary}</span><span class="v neg">${x.atc_sp.toFixed(2)} $/MWh</span></div>
         <div class="bar" style="width:${Math.max(2, Math.abs(x.atc_sp)/max*100)}%"></div>
-        <div class="sub">${desc}</div>
+        ${p2p ? `<div class="sub">${x.name}</div>` : ""}
         <div class="sub">${x.pct_time.toFixed(0)}% of intervals bound &middot; avg $${x.avg_sp.toFixed(0)}/MWh when binding &middot; ${x.hours_bound.toFixed(0)} hrs${x.n_contingencies>1 ? " &middot; "+x.n_contingencies+" contingencies" : ""}</div>
       </div>`;
     }).join("") + `</div>`;

@@ -241,16 +241,27 @@ function renderBasis(d){
   const drv = (d.drivers||[]).filter(x => Math.abs(x.contrib) >= 0.01);
   const el = document.getElementById("basisDrivers");
   if (!drv.length){ el.innerHTML = '<div class="empty">No constraints driving basis for this window.</div>'; return; }
-  const max = Math.max(...drv.map(x => Math.abs(x.contrib)), 0.01);
-  el.innerHTML = drv.map(x => {
+  const other = (Math.abs(d.other_contrib||0) >= 0.01 && d.other_count > 0) ? d.other_contrib : 0;
+  const max = Math.max(...drv.map(x => Math.abs(x.contrib)), Math.abs(other), 0.01);
+  let html = drv.map(x => {
     const g = x.geometry || {};
     const clk = !!(g.drawable || g.from || g.to);
+    const p2p = g.drawable ? lineDesc(g) : null;        // point-to-point is the primary label
+    const primary = p2p || x.name;
+    const secondary = p2p ? x.name : lineDesc(g);        // facility/constraint name underneath
     return `<div class="drv${clk?' clk':''}"${clk?` onclick="focusDriver('${x._uid}')"`:''}>
-      <div class="drow"><span class="nm">${x.name}</span><span class="v ${x.contrib<0?'neg':'pos'}">${fmt(x.contrib)} $/MWh</span></div>
+      <div class="drow"><span class="nm">${primary}</span><span class="v ${x.contrib<0?'neg':'pos'}">${fmt(x.contrib)} $/MWh</span></div>
       <div class="bar" style="width:${Math.max(2, Math.abs(x.contrib)/max*100)}%;background:${x.contrib<0?'#dc2626':'#16a34a'};"></div>
-      <div class="sub">${lineDesc(g)}</div>
+      <div class="sub">${secondary}</div>
     </div>`;
   }).join("");
+  if (other){
+    html += `<div class="drv" style="opacity:.7;">
+      <div class="drow"><span class="nm">Other (${d.other_count} constraint${d.other_count>1?'s':''})</span><span class="v ${other<0?'neg':'pos'}">${fmt(other)} $/MWh</span></div>
+      <div class="bar" style="width:${Math.max(2, Math.abs(other)/max*100)}%;background:${other<0?'#fca5a5':'#86efac'};"></div>
+    </div>`;
+  }
+  el.innerHTML = html;
 }
 
 function drawMap(d){
