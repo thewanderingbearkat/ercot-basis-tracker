@@ -86,7 +86,8 @@
   <div class="panel">
     <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
       <h2 style="margin:0;">Top congestion drivers</h2>
-      <span id="dayLabel" class="health" style="margin-left:auto;"></span>
+      <span id="winTabs" class="seg" style="margin-left:auto;"></span>
+      <span id="dayLabel" class="health"></span>
     </div>
     <div id="drivers" style="margin-top:12px;"><div class="empty">Loading&hellip;</div></div>
     <div class="note">Real node congestion ($/MWh, averaged over the last full operating day) apportioned across
@@ -96,9 +97,14 @@
 </div></div>
 
 <script>
+let curDays = 1;
 function fmt(v, d=2){ return (v>=0?"+":"") + v.toFixed(d); }
 function fmtDay(d){ if(!d) return ""; const [y,m,dd]=d.split("-");
   return new Date(y,m-1,dd).toLocaleDateString(undefined,{month:"short",day:"numeric",year:"numeric"}); }
+function fmtWindow(d){   // single operating day, or a start-end range
+  if(!d.as_of) return "";
+  return (d.days>1) ? `${fmtDay(d.start)} – ${fmtDay(d.as_of)}` : fmtDay(d.as_of);
+}
 
 // ---- Map ---------------------------------------------------------------
 const SITES = {{ sites|tojson }};
@@ -150,7 +156,7 @@ function rampColor(v){
 
 async function loadMap(){
   try {
-    const d = await (await fetch(`/api/pjm/map?site=${curSite}`)).json();
+    const d = await (await fetch(`/api/pjm/map?site=${curSite}&days=${curDays}`)).json();
     driverLayer.clearLayers();
     if (d.error){ document.getElementById("mapMeta").textContent = "⚠️ " + d.error; return; }
     const drawn = (d.drivers||[]).filter(x => x.drawable);
@@ -167,7 +173,7 @@ async function loadMap(){
     });
     const routed = drawn.filter(x => x.snapped).length;
     document.getElementById("mapMeta").textContent =
-      `${drawn.length}/${(d.drivers||[]).length} located · ${routed} routed · ${fmtDay(d.as_of)}`;
+      `${drawn.length}/${(d.drivers||[]).length} located · ${routed} routed · ${fmtWindow(d)}`;
     // Fit to the drivers + site.
     const all = drawn.flatMap(x => (x.path && x.path.length>1) ? x.path : [[x.from.lat,x.from.lon],[x.to.lat,x.to.lon]]).concat([[site().lat, site().lon]]);
     if (all.length > 1) map.fitBounds(all, { padding:[30,30] });
@@ -175,28 +181,38 @@ async function loadMap(){
   } catch(e){ document.getElementById("mapMeta").textContent = "fetch error: " + e; }
 }
 
+const WINDOWS = [{d:1,label:"1D"},{d:7,label:"7D"},{d:30,label:"30D"},{d:90,label:"90D"}];
+function renderWinTabs(){
+  document.getElementById("winTabs").innerHTML = WINDOWS.map(w =>
+    `<button data-d="${w.d}" class="${w.d===curDays?'active':''}">${w.label}</button>`).join("");
+  document.querySelectorAll("#winTabs button").forEach(b =>
+    b.onclick = () => { curDays = +b.dataset.d; renderWinTabs(); loadAttribution(); loadMap(); });
+}
+
 async function loadAttribution(){
   const el = document.getElementById("drivers");
   el.innerHTML = '<div class="empty">Loading&hellip;</div>';
   try {
-    const d = await (await fetch(`/api/pjm/attribution?site=${curSite}`)).json();
+    const d = await (await fetch(`/api/pjm/attribution?site=${curSite}&days=${curDays}`)).json();
     if (d.error){ el.innerHTML = `<div class="empty">⚠️ ${d.error}</div>`; return; }
-    if (!d.drivers.length){ el.innerHTML = '<div class="empty">No constraints on this node for the day.</div>'; return; }
+    if (!d.drivers.length){ el.innerHTML = '<div class="empty">No constraints on this node for the window.</div>'; return; }
     const max = Math.max(...d.drivers.map(x=>Math.abs(x.attributed)), 0.01);
-    document.getElementById("dayLabel").innerHTML = "operating day: <b>" + fmtDay(d.as_of) + "</b>";
+    const win = fmtWindow(d), lead = d.days>1 ? "window: " : "operating day: ";
+    document.getElementById("dayLabel").innerHTML = lead + "<b>" + win + "</b>";
     document.getElementById("health").innerHTML =
-      `avg node congestion <b>${fmt(d.avg_congestion)} $/MWh</b> &middot; ${fmtDay(d.as_of)}`;
+      `avg node congestion <b>${fmt(d.avg_congestion)} $/MWh</b> &middot; ${win}`;
     el.innerHTML = `<div id="drvgrid">` +
       d.drivers.map(x => `
         <div class="drv">
           <div class="drow"><span class="nm">${x.name}</span><span class="v neg">${fmt(x.attributed)} $/MWh</span></div>
           <div class="bar" style="width:${Math.max(2, Math.abs(x.attributed)/max*100)}%"></div>
-          <div class="sub">${(x.share*100).toFixed(0)}% of modeled congestion</div>
+          <div class="sub">${(x.share*100).toFixed(0)}% of modeled congestion${d.days>1 ? " &middot; bound "+x.days_bound+"/"+d.days+" days" : ""}</div>
         </div>`).join("") + `</div>`;
   } catch(e){ el.innerHTML = `<div class="empty">fetch error: ${e}</div>`; }
 }
 
 renderSiteTabs();
+renderWinTabs();
 loadBasemap();
 loadAttribution();
 loadMap();

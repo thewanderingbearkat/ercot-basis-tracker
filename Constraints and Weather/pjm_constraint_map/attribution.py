@@ -15,6 +15,7 @@ because it's still filling in; we use the last fully-settled day.
 """
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Any
 
 from constraint_map.db import YES, query
@@ -24,40 +25,44 @@ from .sites import SITES
 BETA = f"{YES}.YES_ENERGY_SHIFT_FACTOR_BETA"
 
 
-def last_full_day() -> Any:
+def last_full_day():
     """Most recent COMPLETE PJM operating day (excludes today, still in progress)."""
-    return query(f"""SELECT MAX(CONSTRAINT_DAY) AS D FROM {BETA}
-                     WHERE ISO = 'PJMISO' AND CONSTRAINT_DAY < CURRENT_DATE""")[0]["D"]
+    d = query(f"""SELECT MAX(CONSTRAINT_DAY) AS D FROM {BETA}
+                  WHERE ISO = 'PJMISO' AND CONSTRAINT_DAY < CURRENT_DATE""")[0]["D"]
+    return d.date() if (d is not None and hasattr(d, "date")) else d
 
 
-def daily_attribution(site_key: str, top: int = 12) -> dict[str, Any]:
+def daily_attribution(site_key: str, days: int = 1, top: int = 12) -> dict[str, Any]:
+    """Attribution over `days` complete calendar days ending at the last full
+    operating day. days=1 is that single day; 7/30/90 are trailing windows."""
     site = SITES[site_key]
     as_of = last_full_day()
     if as_of is None:
         return {"site": site.key, "name": site.display_name, "as_of": None,
-                "avg_congestion": 0.0, "drivers": []}
-    day = as_of.date().isoformat() if hasattr(as_of, "date") else str(as_of)
+                "start": None, "days": days, "avg_congestion": 0.0, "drivers": []}
+    start = as_of - timedelta(days=int(days) - 1)
 
-    # 1. Modeled congestion share per constraint for that single day.
+    # 1. Modeled congestion share per constraint over the window (BETA, daily).
     beta = query(f"""
         SELECT FACILITYID, CONTINGENCYID,
                ANY_VALUE(PNODENAME) AS PNODE,
                SUM(-(SHADOW_PRICE * SHIFT_FACTOR)) AS MODELED,
-               AVG(QUALITY_METRIC)                 AS QUALITY
+               AVG(QUALITY_METRIC)                 AS QUALITY,
+               COUNT(DISTINCT CONSTRAINT_DAY)      AS DAYS_BOUND
         FROM {BETA}
         WHERE ISO = 'PJMISO' AND PNODEID = {site.node_id}
-          AND CONSTRAINT_DAY = '{day}'
+          AND CONSTRAINT_DAY BETWEEN '{start}' AND '{as_of}'
         GROUP BY FACILITYID, CONTINGENCYID
     """)
     modeled = [r for r in beta if r["MODELED"] is not None]
     total_modeled = sum(float(r["MODELED"]) for r in modeled) or 1.0
 
-    # 2. Authoritative magnitude: average RTCONG over that same calendar day
+    # 2. Authoritative magnitude: average RTCONG over the same calendar-day range
     #    (market-time NTZ boundaries -- no CURRENT_TIMESTAMP / timezone drift).
     avg = query(f"""
         SELECT AVG(RTCONG) AS C FROM {YES}.DART_PRICES
         WHERE OBJECTID = {site.node_id} AND RTCONG IS NOT NULL
-          AND DATETIME >= '{day}' AND DATETIME < DATEADD('day', 1, '{day}'::DATE)
+          AND DATETIME >= '{start}' AND DATETIME < DATEADD('day', 1, '{as_of}'::DATE)
     """)[0]["C"]
     avg_cong = float(avg) if avg is not None else 0.0
 
@@ -71,11 +76,13 @@ def daily_attribution(site_key: str, top: int = 12) -> dict[str, Any]:
             "name": names.get(r["FACILITYID"], str(r["FACILITYID"])),
             "share": share,
             "attributed": avg_cong * share,           # $/MWh of real congestion
+            "days_bound": r["DAYS_BOUND"],
             "quality": float(r["QUALITY"]) if r["QUALITY"] is not None else None,
         })
     drivers.sort(key=lambda d: d["attributed"])        # most negative (worst) first
     return {
-        "site": site.key, "name": site.display_name, "as_of": day,
+        "site": site.key, "name": site.display_name,
+        "as_of": str(as_of), "start": str(start), "days": int(days),
         "avg_congestion": avg_cong, "drivers": drivers[:top],
     }
 
