@@ -18,11 +18,23 @@ historical_attribution(days)
 """
 from __future__ import annotations
 
+from datetime import date, timedelta
 from typing import Any
 
 from .constraints import active_constraints
 from .db import YES, query
 from .sites import SITES
+
+
+def _last_full_day() -> str:
+    """Most recent complete operating day in the shift-factor feed (day before
+    the latest interval), so attribution windows line up with the basis panel."""
+    d = query(f"""
+        SELECT DATEADD('day', -1, MAX(DATETIME)::DATE) AS D
+        FROM {YES}.ERCOT_SCED_SHIFT_FACTORS
+        WHERE DATETIME >= DATEADD('day', -2, CURRENT_TIMESTAMP)
+    """)[0]["D"]
+    return d.date().isoformat() if hasattr(d, "date") else str(d)
 
 
 def _latest_lmp(node_ids: list[int]) -> dict[int, dict[str, Any]]:
@@ -76,9 +88,15 @@ def price_bridge(at: str | None = None) -> dict[str, Any]:
 
 def historical_attribution(days: int = 30, top: int = 10) -> dict[str, Any]:
     sps = ",".join(f"'{sp}'" for sp in {s.settlement_point for s in SITES.values()})
+    days = max(1, int(days))
+    end = _last_full_day()
+    start = (date.fromisoformat(end) - timedelta(days=days - 1)).isoformat()
+    # `days` full operating days ending on `end`, matching the basis panel window.
+    win = f"DATETIME >= '{start}' AND DATETIME < DATEADD('day', 1, '{end}'::DATE)"
+
     intervals = query(f"""
         SELECT COUNT(DISTINCT DATETIME) AS N FROM {YES}.ERCOT_SCED_SHIFT_FACTORS
-        WHERE DATETIME >= DATEADD('day', -{int(days)}, CURRENT_TIMESTAMP)
+        WHERE {win}
     """)[0]["N"] or 1
 
     rows = query(f"""
@@ -91,7 +109,7 @@ def historical_attribution(days: int = 30, top: int = 10) -> dict[str, Any]:
           ON sf.DATETIME = c.DATETIME AND sf.CONSTRAINTID = c.CONSTRAINTID
         WHERE c.ISO = 'ERCOT' AND c.PRICE <> 0
           AND sf.SETTLEMENTPOINT IN ({sps})
-          AND c.DATETIME >= DATEADD('day', -{int(days)}, CURRENT_TIMESTAMP)
+          AND c.DATETIME >= '{start}' AND c.DATETIME < DATEADD('day', 1, '{end}'::DATE)
         GROUP BY 1, 2
     """)
 
@@ -108,4 +126,4 @@ def historical_attribution(days: int = 30, top: int = 10) -> dict[str, Any]:
     for sp, lst in by_sp.items():
         lst.sort(key=lambda x: x["atc"])                 # most negative (worst) first
         out[sp] = {"total_atc": sum(x["atc"] for x in lst), "drivers": lst[:top]}
-    return {"days": days, "intervals": intervals, "by_sp": out}
+    return {"days": days, "as_of": end, "start": start, "intervals": intervals, "by_sp": out}

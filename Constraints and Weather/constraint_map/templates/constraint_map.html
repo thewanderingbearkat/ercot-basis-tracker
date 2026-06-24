@@ -9,69 +9,42 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <style>
-  html, body { margin: 0; padding: 0; background: #f8f9fa; }
-  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: #0E2C51; }
-
-  .tab-nav { display: flex; gap: 4px; padding: 20px 20px 0 20px; border-bottom: 2px solid #e5e7eb; background: #f8f9fa; line-height: 1.25; }
-  .tab-nav a { display: inline-block; padding: 8px 16px; font-size: 13px; color: #6b7280; text-decoration: none; border-bottom: 2px solid transparent; margin-bottom: -2px; font-weight: 500; }
-  .tab-nav a:hover { color: #0E2C51; }
-  .tab-nav a.active { color: #0E2C51; border-bottom-color: #0E2C51; font-weight: 600; }
-
-  .page-wrap { padding: 12px; }
-  @media (min-width: 768px) { .page-wrap { padding: 16px; } }
-  .page-inner { max-width: 80rem; margin: 0 auto; }
-  h1 { font-size: 24px; line-height: 32px; margin: 0 0 4px; font-weight: 700; }
-  .subtitle { color: #2291EB; font-size: 12px; font-weight: 600; margin-bottom: 16px; text-transform: uppercase; letter-spacing: 0.5px; }
-  .health { font-size: 11px; color: #6b7280; margin-left: auto; }
-
-  .layout { display: grid; grid-template-columns: 1fr; gap: 16px; }
-  @media (min-width: 900px) { .layout { grid-template-columns: 1.7fr 1fr; } }
-
-  #map { height: 620px; border-radius: 6px; border: 1px solid #e5e7eb; }
-
-  .panel { background: #fff; border: 1px solid #e5e7eb; border-radius: 6px; padding: 14px 16px; }
-  .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px; color: #6b7280; margin: 0 0 10px; }
-
-  .cell { border: 1px solid #e5e7eb; border-left-width: 4px; border-radius: 4px; padding: 10px 12px; margin-bottom: 10px; cursor: pointer; }
-  .cell:hover { background: #f9fafb; }
-  .cell .row1 { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
-  .cell .name { font-weight: 700; font-size: 13px; }
-  .cell .price { font-size: 12px; font-weight: 700; color: #b91c1c; white-space: nowrap; }
-  .cell .meta { color: #6b7280; font-size: 11px; margin-top: 2px; }
-  .cell .impacts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px 10px; margin-top: 8px; font-size: 12px; }
-  .cell .impacts .k { color: #6b7280; font-size: 10px; text-transform: uppercase; letter-spacing: 0.3px; }
-  .cell .impacts .v { font-weight: 700; }
-  .v.neg { color: #b91c1c; } .v.pos { color: #15803d; } .v.zero { color: #94a3b8; }
-  .empty { color: #6b7280; font-size: 13px; padding: 24px 8px; text-align: center; }
-
-  .legend { font-size: 11px; color: #6b7280; margin-top: 8px; line-height: 1.7; }
-  .legend .sw { display: inline-block; width: 12px; height: 4px; vertical-align: middle; margin-right: 4px; border-radius: 2px; }
-  .legend .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; vertical-align: middle; margin-right: 4px; }
-  button { background: #0E2C51; color: #fff; border: none; padding: 6px 14px; border-radius: 3px; font-size: 12px; cursor: pointer; }
-  button:hover { background: #143562; }
-
-  /* Price-impact section */
+  html, body { margin:0; padding:0; background:#f8f9fa; }
+  body { font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color:#0E2C51; }
+  .tab-nav { display:flex; gap:4px; padding:20px 20px 0 20px; border-bottom:2px solid #e5e7eb; background:#f8f9fa; line-height:1.25; }
+  .tab-nav a { display:inline-block; padding:8px 16px; font-size:13px; color:#6b7280; text-decoration:none; border-bottom:2px solid transparent; margin-bottom:-2px; font-weight:500; }
+  .tab-nav a:hover { color:#0E2C51; }
+  .tab-nav a.active { color:#0E2C51; border-bottom-color:#0E2C51; font-weight:600; }
+  .page-wrap { padding:16px; } .page-inner { max-width:80rem; margin:0 auto; }
+  h1 { font-size:24px; line-height:32px; margin:0 0 4px; font-weight:700; }
+  .subtitle { color:#2291EB; font-size:12px; font-weight:600; margin-bottom:16px; text-transform:uppercase; letter-spacing:.5px; }
+  .health { font-size:11px; color:#6b7280; margin-left:auto; }
+  .panel { background:#fff; border:1px solid #e5e7eb; border-radius:6px; padding:14px 16px; }
+  .panel h2 { font-size:13px; text-transform:uppercase; letter-spacing:.5px; color:#6b7280; margin:0 0 10px; }
   .seg { display:inline-flex; gap:2px; background:#eef1f4; border-radius:6px; padding:2px; }
-  .seg button { background:transparent; color:#6b7280; padding:4px 10px; font-size:12px; font-weight:600; border-radius:4px; }
+  .seg button { background:transparent; color:#6b7280; padding:3px 9px; font-size:11px; font-weight:600; border:none; border-radius:4px; cursor:pointer; }
   .seg button.active { background:#0E2C51; color:#fff; }
-  .seg.seg-sm button { padding:2px 8px; font-size:11px; }
-  .pi-grid { display:grid; grid-template-columns:1fr; gap:20px; margin-top:14px; }
-  @media (min-width:900px){ .pi-grid { grid-template-columns:1.15fr 1fr; } }
-  .pi-sub { font-size:11px; color:#6b7280; text-transform:uppercase; letter-spacing:.4px; margin-bottom:10px; font-weight:600; }
-  .bridge-row { display:flex; align-items:center; gap:8px; padding:2.5px 0; }
-  .bridge-row .lbl { width:148px; flex:none; font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  .bridge-row .amt { width:60px; flex:none; text-align:right; font-size:12px; font-weight:700; }
-  .bridge-row .track { position:relative; flex:1; height:15px; background:#f3f4f6; border-radius:3px; }
-  .bridge-row .seg2 { position:absolute; top:2.5px; height:10px; border-radius:2px; opacity:.92; }
-  .bridge-row .run { position:absolute; top:-1px; height:17px; width:2px; background:#0E2C51; opacity:.4; }
-  .bridge-row.tot .lbl, .bridge-row.tot .amt { font-weight:800; }
-  .bsum { font-size:12px; color:#374151; margin:4px 0 12px; }
-  .drv-total { font-size:12px; color:#374151; margin-bottom:12px; }
+  .empty { color:#6b7280; font-size:13px; padding:24px 8px; text-align:center; }
+  .note { font-size:11px; color:#6b7280; margin-top:8px; line-height:1.5; }
+  #map { height:520px; border-radius:6px; border:1px solid #e5e7eb; }
+
+  .basis-head { display:flex; align-items:baseline; gap:9px; flex-wrap:wrap; margin-bottom:12px; }
+  .basis-head .lab { font-size:12px; color:#6b7280; text-transform:uppercase; letter-spacing:.5px; font-weight:600; }
+  .basis-head b { font-size:26px; font-weight:700; line-height:1; }
+  .basis-head .sub { color:#6b7280; font-size:12px; }
+  .basis-head b.neg { color:#b91c1c; } .basis-head b.pos { color:#15803d; }
+
   .drv { margin-bottom:9px; }
-  .drv .drow { display:flex; justify-content:space-between; font-size:12px; }
-  .drv .drow .nm { font-weight:600; }
-  .drv .bar { height:7px; border-radius:3px; background:#dc2626; margin-top:2px; min-width:2px; }
+  .drv .drow { display:flex; justify-content:space-between; font-size:12px; gap:8px; }
+  .drv .nm { font-weight:600; } .drv .v { font-weight:700; }
+  .drv .v.neg { color:#b91c1c; } .drv .v.pos { color:#15803d; }
+  .drv .bar { height:7px; border-radius:3px; margin-top:2px; min-width:2px; }
   .drv .sub { color:#6b7280; font-size:10px; margin-top:1px; }
+  #basisDrivers, #drivers { display:grid; grid-template-columns:1fr; gap:2px 28px; }
+  @media (min-width:760px){ #basisDrivers, #drivers { grid-template-columns:1fr 1fr; } }
+  .legend { font-size:11px; color:#6b7280; margin-top:8px; line-height:1.7; }
+  .legend .sw { display:inline-block; width:12px; height:4px; vertical-align:middle; margin-right:4px; border-radius:2px; }
+  .legend .dot { display:inline-block; width:10px; height:10px; border-radius:50%; vertical-align:middle; margin-right:4px; }
 </style>
 </head>
 <body>
@@ -89,370 +62,231 @@
   <div style="display:flex; align-items:flex-end; gap:16px; flex-wrap:wrap;">
     <div>
       <h1>ERCOT Constraint Map &mdash; West Texas</h1>
-      <div class="subtitle">Live ERCOT binding constraints &middot; shift-factor congestion impact on our nodes</div>
+      <div class="subtitle">Basis decomposition &middot; the constraints that sum to node&minus;hub basis</div>
     </div>
+    <div id="siteTabs" class="seg"></div>
     <div class="health" id="health">loading&hellip;</div>
-    <button onclick="refresh(true)">Refresh now</button>
   </div>
 
-  <div class="layout">
-    <div>
-      <div id="map"></div>
-      <div class="legend">
-        <span style="display:inline-flex; align-items:center; gap:6px; vertical-align:middle;">
-          <b style="font-weight:600;">Congestion on our nodes</b>
-          <span style="width:140px; height:9px; border-radius:5px; display:inline-block;
-            background:linear-gradient(90deg,#22c55e,#84cc16,#eab308,#f97316,#dc2626);"></span>
-          <span style="color:#16a34a;">clear</span>&nbsp;&rarr;&nbsp;<span style="color:#dc2626;">severe</span>
-          <span style="color:#9ca3af;">($/MWh hit to our basis)</span>
-        </span>
-        <br>
-        <span class="sw" style="background:#22c55e;"></span> Transmission (&ge;100&nbsp;kV) &nbsp;
-        <span class="dot" style="background:#f59e0b;"></span> Solar site &nbsp;
-        <span class="dot" style="background:#2291EB;"></span> Wind site
-        &nbsp;&middot;&nbsp; <span style="border-bottom:2px dashed #6b7280; padding-bottom:1px;">dashed</span> = approx. (line not in basemap)
-        &nbsp;&middot;&nbsp; Click a constraint in the list to zoom.
-      </div>
+  <!-- Basis breakdown (headline) -->
+  <div class="panel" style="margin-bottom:16px;">
+    <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+      <h2 style="margin:0;">Basis breakdown</h2>
+      <span id="winTabs" class="seg" style="margin-left:auto;"></span>
+      <span class="health" id="basisMeta" style="margin-left:8px;"></span>
     </div>
-    <div class="panel">
-      <h2>Active constraints &mdash; worst impact first</h2>
-      <div id="list"><div class="empty">Loading&hellip;</div></div>
-    </div>
-  </div>
-
-  <div class="panel" style="margin-top:16px;">
-    <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
-      <h2 style="margin:0;">Price impact &mdash; how constraints move our RT price</h2>
-      <div id="siteTabs" class="seg"></div>
-      <span id="piMeta" class="health"></span>
-    </div>
-    <div class="pi-grid">
-      <div>
-        <div class="pi-sub">Live bridge &middot; hub &rarr; constraints &rarr; node RT LMP</div>
-        <div id="bridge"><div class="empty">Loading&hellip;</div></div>
-      </div>
-      <div>
-        <div class="pi-sub">
-          Top ATC drivers
-          <span id="winTabs" class="seg seg-sm" style="margin-left:6px;"></span>
-        </div>
-        <div id="drivers"><div class="empty">Loading&hellip;</div></div>
-      </div>
-    </div>
-  </div>
-
-  <div class="panel" style="margin-top:16px;">
-    <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
-      <h2 style="margin:0;">Basis breakdown &mdash; constraints driving node vs hub</h2>
-      <span id="basisMeta" class="health" style="margin-left:auto;"></span>
-    </div>
-    <div id="basisHead" style="margin-top:8px;"></div>
+    <div id="basisHead" style="margin-top:10px;"></div>
     <div id="basisDrivers" style="margin-top:10px;"><div class="empty">Loading&hellip;</div></div>
-    <div class="legend" style="margin-top:8px;">Basis = node LMP &minus; hub LMP, decomposed into the binding constraints
-      that drive it (authoritative SCED shift factors, last full operating day). The constraints <b>sum to the congestion</b>;
-      a small residual is timing/reference. ERCOT is lossless, so basis &asymp; all congestion. Follows the site selector above.</div>
+    <div class="note">Basis = node LMP &minus; hub LMP, decomposed into the binding constraints that drive it
+      (authoritative ERCOT shift factors). The constraints <b>sum to the congestion</b>; a small residual is
+      5-min/hourly timing + reference. ERCOT is lossless, so basis &asymp; all congestion.</div>
+  </div>
+
+  <!-- Map: conductors colored by basis contribution -->
+  <div class="panel" style="margin-bottom:16px;">
+    <div style="display:flex; align-items:center; gap:10px;">
+      <h2 style="margin:0;">Where the basis comes from</h2>
+      <span class="health" id="mapMeta" style="margin-left:auto;"></span>
+    </div>
+    <div id="map" style="margin-top:10px;"></div>
+    <div class="legend">
+      <span style="display:inline-flex; align-items:center; gap:6px; vertical-align:middle;">
+        <b style="font-weight:600;">Basis contribution</b>
+        <span style="width:140px; height:9px; border-radius:5px; display:inline-block;
+          background:linear-gradient(90deg,#22c55e,#84cc16,#eab308,#f97316,#dc2626);"></span>
+        <span style="color:#16a34a;">small</span>&nbsp;&rarr;&nbsp;<span style="color:#dc2626;">large</span>
+        <span style="color:#9ca3af;">(|$/MWh| moved on basis)</span>
+      </span>
+      <br>
+      <span class="sw" style="background:#22c55e;"></span> Transmission (&ge;100&nbsp;kV) &nbsp;
+      <span class="dot" style="background:#f59e0b;"></span> Solar site &nbsp;
+      <span class="dot" style="background:#2291EB;"></span> Wind site
+      &nbsp;&middot;&nbsp; <span style="border-bottom:2px dashed #6b7280; padding-bottom:1px;">dashed</span> = approx. (line not in basemap)
+      &nbsp;&middot;&nbsp; colored lines = constraints driving this site's basis
+    </div>
+  </div>
+
+  <!-- Around-the-clock congestion drivers -->
+  <div class="panel">
+    <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+      <h2 style="margin:0;">Top congestion drivers</h2>
+      <span id="dayLabel" class="health" style="margin-left:auto;"></span>
+    </div>
+    <div id="drivers" style="margin-top:12px;"><div class="empty">Loading&hellip;</div></div>
+    <div class="note">Around-the-clock congestion ($/MWh, all hours over the window) at this site's settlement point,
+      ranked by constraint. This is total congestion magnitude (vs. the node&minus;hub basis above) &mdash; a
+      constraint can hit the node and its hub alike yet still dominate ATC.</div>
   </div>
 
 </div></div>
 
 <script>
 const SITES = {{ sites|tojson }};
-const SITE_COLOR = { solar: "#f59e0b", wind: "#2291EB" };
+const SITE_COLOR = { solar:"#f59e0b", wind:"#2291EB" };
+let curDays = 1;
 
-// ---- Map setup ----------------------------------------------------------
-// Canvas renderer keeps the ~7k-line network smooth; a light/quiet basemap lets
-// the transmission grid pop instead of competing with roads + terrain.
-const map = L.map("map", { preferCanvas: true }).setView([31.6, -100.8], 7);
-L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", {
-  maxZoom: 19, subdomains: "abcd",
-  attribution: "&copy; OpenStreetMap &copy; CARTO"
-}).addTo(map);
+function fmt(v, d=2){ return (v>=0?"+":"") + v.toFixed(d); }
+function fmtDay(s){ if(!s) return ""; const [y,m,dd]=s.split("-");
+  return new Date(y,m-1,dd).toLocaleDateString(undefined,{month:"short",day:"numeric",year:"numeric"}); }
+function fmtWindow(d){ if(!d.as_of) return ""; return (d.days>1) ? `${fmtDay(d.start)} – ${fmtDay(d.as_of)}` : fmtDay(d.as_of); }
 
-const basemapLayer = L.layerGroup().addTo(map);
-const constraintLayer = L.layerGroup().addTo(map);
-const byId = {};   // constraint_id -> leaflet layer, for click-to-zoom
-
-// Site markers (stars).
-SITES.forEach(s => {
-  L.marker([s.lat, s.lon], {
-    icon: L.divIcon({ className: "", iconSize: [22,22], html:
-      `<div style="font-size:22px; line-height:22px; transform:translate(-11px,-11px); color:${SITE_COLOR[s.fuel]||'#0E2C51'}; text-shadow:0 0 2px #fff,0 0 2px #fff;">&#9733;</div>` })
-  }).addTo(map).bindPopup(`<b>${s.display_name}</b><br>${s.settlement_point} &middot; ${s.county} Co.`);
-});
-
-// ---- Basemap (transmission lines) --------------------------------------
-async function loadBasemap() {
-  try {
-    const r = await fetch("/api/constraints/basemap?min_kv=100");
-    const gj = await r.json();
-    const wt = v => v >= 345 ? 2.4 : v >= 200 ? 1.7 : 1.1;   // thicker = higher voltage
-    // Dark casing underneath + bright-green core on top = a power line that reads
-    // clearly against the quiet basemap and won't be mistaken for a road.
-    L.geoJSON(gj, { style: f => {
-      const v = (f.properties && f.properties.VOLTAGE) || 0;
-      return { color: "#14532d", weight: wt(v) + 1.4, opacity: 0.5 };
-    }}).addTo(basemapLayer);
-    L.geoJSON(gj, { style: f => {
-      const v = (f.properties && f.properties.VOLTAGE) || 0;
-      return { color: "#22c55e", weight: wt(v), opacity: 0.95 };
-    }}).addTo(basemapLayer);
-  } catch (e) { console.warn("basemap load failed", e); }
-}
-
-// ---- Constraints --------------------------------------------------------
-// Worst (most negative) per-site impact drives color: how much congestion this
-// constraint is pushing onto our nodes, in $/MWh.
-function worstImpact(c) {
-  let w = 0;
-  for (const sp in c.impacts) w = Math.min(w, c.impacts[sp].impact);
-  return w;   // <= 0 typically (depressing our basis)
-}
-
-// Google-traffic ramp keyed to |impact| $/MWh: clear -> light -> heavy -> severe.
-const RAMP = [
-  { at: 0.0, c: [ 34, 197,  94] },   // green   (negligible)
-  { at: 0.5, c: [132, 204,  22] },   // lime
-  { at: 1.5, c: [234, 179,   8] },   // yellow
-  { at: 3.0, c: [249, 115,  22] },   // orange
-  { at: 6.0, c: [220,  38,  38] },   // red     (severe)
-];
-function rampColor(worst) {
-  const v = Math.abs(worst);
-  let lo = RAMP[0], hi = RAMP[RAMP.length - 1];
-  for (let i = 0; i < RAMP.length - 1; i++) {
-    if (v >= RAMP[i].at && v <= RAMP[i + 1].at) { lo = RAMP[i]; hi = RAMP[i + 1]; break; }
-  }
-  const span = (hi.at - lo.at) || 1;
-  const t = Math.max(0, Math.min(1, (v - lo.at) / span));
-  const ch = i => Math.round(lo.c[i] + (hi.c[i] - lo.c[i]) * t);
-  return `rgb(${ch(0)},${ch(1)},${ch(2)})`;
-}
-function fmtImpact(v) {
-  const cls = v < -0.005 ? "neg" : v > 0.005 ? "pos" : "zero";
-  const s = (v >= 0 ? "+" : "") + v.toFixed(2);
-  return `<span class="v ${cls}">${s}</span>`;
-}
-
-function drawConstraints(data) {
-  constraintLayer.clearLayers();
-  const cs = (data.constraints || []).slice().sort((a,b) => worstImpact(a) - worstImpact(b));
-
-  cs.forEach(c => {
-    const g = c.geometry || {};
-    const color = rampColor(worstImpact(c));
-    // Uniform width like a traffic map -- color alone carries severity.
-    let layer = null;
-    if (g.drawable && g.path && g.path.length > 1) {
-      // Snapped to the real conductor path: solid "road" with a soft glow.
-      L.polyline(g.path, { color, weight: 11, opacity: 0.22, lineCap: "round", lineJoin: "round" }).addTo(constraintLayer);
-      layer = L.polyline(g.path, { color, weight: 5, opacity: 0.95, lineCap: "round", lineJoin: "round" }).addTo(constraintLayer);
-    } else if (g.drawable) {
-      // No basemap line found (e.g. station absent from HIFLD): draw an
-      // approximate straight link, thin + dashed so it reads as "estimated".
-      layer = L.polyline([[g.from.lat, g.from.lon], [g.to.lat, g.to.lon]],
-        { color, weight: 3, opacity: 0.8, dashArray: "4 7", lineCap: "round" }).addTo(constraintLayer);
-    } else if (g.from || g.to) {
-      const e = g.from || g.to;
-      layer = L.circleMarker([e.lat, e.lon],
-        { radius: 6, color, weight: 2, fillColor: color, fillOpacity: 0.8 }).addTo(constraintLayer);
-    }
-    if (layer) { layer.bindPopup(popup(c)); byId[c.constraint_id] = layer; }
-  });
-}
-
-function popup(c) {
-  const g = c.geometry || {};
-  const seg = g.drawable ? `${g.from.name} &rarr; ${g.to.name}${g.voltage ? " &middot; "+g.voltage+" kV" : ""}`
-            : (g.from || g.to) ? `near ${(g.from||g.to).name}` : "location n/a";
-  const util = c.utilization != null ? (100*c.utilization).toFixed(0)+"%" : "&mdash;";
-  let rows = "";
-  for (const sp in c.impacts) rows += `${sp}: ${fmtImpact(c.impacts[sp].impact)} $/MWh (SF ${c.impacts[sp].shift_factor.toFixed(3)})<br>`;
-  return `<b>${c.name}</b><br><span style="color:#6b7280">${seg}</span><br>
-    Shadow: <b>$${(c.shadow_price||0).toFixed(0)}/MWh</b> &middot; util ${util}<br>${rows}`;
-}
-
-function fmtList(data) {
-  const cs = (data.constraints || []).slice().sort((a,b) => worstImpact(a) - worstImpact(b));
-  if (!cs.length) return '<div class="empty">No binding constraints touching our nodes right now.</div>';
-  return cs.map(c => {
-    const g = c.geometry || {};
-    const seg = g.drawable ? `${g.from.name} &rarr; ${g.to.name}` : (g.from||g.to) ? `near ${(g.from||g.to).name}` : "location n/a";
-    const util = c.utilization != null ? (100*c.utilization).toFixed(0)+"%" : "—";
-    let cells = "";
-    for (const sp in c.impacts) cells += `<div><div class="k">${sp}</div>${fmtImpact(c.impacts[sp].impact)}</div>`;
-    return `<div class="cell" onclick="focusConstraint(${JSON.stringify(c.constraint_id)})">
-      <div class="row1"><span class="name">${c.name}</span><span class="price">$${(c.shadow_price||0).toFixed(0)}/MWh</span></div>
-      <div class="meta">${seg} &middot; ${ g.voltage ? g.voltage+" kV &middot; " : "" }util ${util}</div>
-      <div class="impacts">${cells}</div>
-    </div>`;
-  }).join("");
-}
-
-function focusConstraint(id) {
-  const layer = byId[id];
-  if (!layer) return;
-  if (layer.getBounds) map.fitBounds(layer.getBounds().pad(0.5));
-  else map.setView(layer.getLatLng(), 9);
-  layer.openPopup();
-}
-
-function render(data) {
-  drawConstraints(data);
-  document.getElementById("list").innerHTML = fmtList(data);
-  const n = (data.constraints || []).length;
-  const t = data.interval ? new Date(data.interval).toLocaleTimeString() : "—";
-  document.getElementById("health").innerHTML =
-    `SCED interval ${t} &middot; ${n} constraint(s) &middot; auto-refresh 5 min`;
-}
-
-async function refresh(fresh) {
-  try {
-    const r = await fetch("/api/constraints/active?fresh=" + (fresh ? "1" : "0"));
-    const data = await r.json();
-    if (data.error) {
-      document.getElementById("health").innerHTML = "⚠️ " + data.error;
-      document.getElementById("list").innerHTML = `<div class="empty">⚠️ ${data.error}</div>`;
-      return;
-    }
-    render(data);
-  } catch (e) {
-    document.getElementById("health").textContent = "fetch error: " + e;
-  }
-}
-
-// ---- Price impact: live bridge + historical ATC drivers ----------------
-let bridgeData = null, attribData = null, curSP = null, curDays = 30;
-
-function uniqueSites() {              // dedupe sites sharing a settlement point (NBOHR)
+// One basis entity per settlement point (McCrae & BKI share NBOHR_RN).
+function siteList(){
   const seen = new Set(), out = [];
-  (bridgeData.sites || []).forEach(s => {
-    if (seen.has(s.settlement_point)) return;
-    seen.add(s.settlement_point); out.push(s);
-  });
+  SITES.forEach(s => { if (seen.has(s.settlement_point)) return; seen.add(s.settlement_point); out.push(s); });
   return out;
 }
-function siteForSP(sp) { return (bridgeData.sites || []).find(s => s.settlement_point === sp); }
-const pct = (v, lo, hi) => (hi > lo ? (v - lo) / (hi - lo) * 100 : 0);
+let curSite = siteList()[0].key;
+const site = () => SITES.find(s => s.key === curSite);
 
-function renderTabs() {
-  document.getElementById("siteTabs").innerHTML = uniqueSites().map(s =>
-    `<button data-sp="${s.settlement_point}" class="${s.settlement_point===curSP?'active':''}">${s.name}</button>`).join("");
-  document.querySelectorAll("#siteTabs button").forEach(b =>
-    b.onclick = () => { curSP = b.dataset.sp; renderTabs(); renderBridge(); renderDrivers(); loadBasis(); });
-  document.getElementById("winTabs").innerHTML = [7,30,90].map(d =>
-    `<button data-d="${d}" class="${d===curDays?'active':''}">${d}d</button>`).join("");
-  document.querySelectorAll("#winTabs button").forEach(b =>
-    b.onclick = () => { curDays = +b.dataset.d; renderTabs(); loadAttribution(); });
-}
+// ---- Map ----------------------------------------------------------------
+const map = L.map("map", { preferCanvas:true }).setView([31.6, -100.8], 7);
+L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", {
+  maxZoom:19, subdomains:"abcd", attribution:"&copy; OpenStreetMap &copy; CARTO"
+}).addTo(map);
+const basemapLayer = L.layerGroup().addTo(map);
+const driverLayer = L.layerGroup().addTo(map);
 
-function renderBridge() {
-  const el = document.getElementById("bridge");
-  const s = siteForSP(curSP);
-  if (!s || s.basis == null) { el.innerHTML = '<div class="empty">No settled RT price for this node yet.</div>'; return; }
-  const cons = s.constraints.slice().sort((a,b) => a.impact - b.impact);
-  const shown = cons.slice(0, 6);
-  const other = cons.slice(6).reduce((a,c) => a + c.impact, 0);
-  const steps = [{ label: "Hub (" + s.hub_name + ")", abs: s.hub_lmp }];
-  shown.forEach(c => steps.push({ label: c.name, d: c.impact }));
-  if (Math.abs(other) > 0.005) steps.push({ label: "Other constraints", d: other });
-  if (s.residual != null && Math.abs(s.residual) > 0.005) steps.push({ label: "Losses / residual", d: s.residual });
-  steps.push({ label: s.name + " RT LMP", abs: s.site_lmp });
+// Every site star (both Bearkat pins show; selected one brighter).
+const siteMarkers = {};
+function star(s, active){ return L.divIcon({ className:"", iconSize:[22,22], html:
+  `<div style="font-size:22px;line-height:22px;transform:translate(-11px,-11px);color:${active?(SITE_COLOR[s.fuel]||'#0E2C51'):'#b8c4d0'};text-shadow:0 0 2px #fff,0 0 2px #fff;">&#9733;</div>` }); }
+SITES.forEach(s => { siteMarkers[s.key] = L.marker([s.lat, s.lon], { icon: star(s, s.settlement_point===site().settlement_point) })
+  .addTo(map).bindPopup(`<b>${s.display_name}</b><br>${s.settlement_point} &middot; ${s.county} Co.`); });
 
-  let run = 0; const rows = [];
-  steps.forEach(st => {
-    if ("abs" in st) { rows.push({ label: st.label, a: 0, b: st.abs, run: st.abs, kind: "abs" }); run = st.abs; }
-    else { const a = run, b = run + st.d; rows.push({ label: st.label, a, b, run: b, kind: st.d < 0 ? "neg" : "pos", d: st.d }); run = b; }
-  });
-  const lo = Math.min(0, ...rows.flatMap(r => [r.a, r.b]));
-  const hi = Math.max(...rows.flatMap(r => [r.a, r.b]));
-  el.innerHTML = rows.map((r,i) => {
-    const x0 = pct(Math.min(r.a,r.b), lo, hi), x1 = pct(Math.max(r.a,r.b), lo, hi);
-    const col = r.kind === "abs" ? "#0E2C51" : r.kind === "neg" ? "#dc2626" : "#16a34a";
-    const amt = r.kind === "abs" ? "$" + r.b.toFixed(2) : (r.d >= 0 ? "+" : "") + r.d.toFixed(2);
-    const tot = (i === 0 || i === rows.length - 1) ? " tot" : "";
-    return `<div class="bridge-row${tot}">
-      <span class="lbl" title="${r.label}">${r.label}</span>
-      <span class="amt" style="color:${col}">${amt}</span>
-      <div class="track">
-        <div class="seg2" style="left:${x0}%;width:${Math.max(0.6, x1-x0)}%;background:${col}"></div>
-        <div class="run" style="left:${pct(r.run, lo, hi)}%"></div>
-      </div></div>`;
-  }).join("");
-  const t = bridgeData.interval ? new Date(bridgeData.interval).toLocaleTimeString() : "";
-  document.getElementById("piMeta").innerHTML =
-    `basis ${s.basis>=0?'+':''}${s.basis.toFixed(2)} &middot; modeled ${s.modeled_congestion.toFixed(2)} &middot; SCED ${t}`;
-}
-
-function renderDrivers() {
-  const el = document.getElementById("drivers");
-  if (!attribData || !attribData.by_sp) { el.innerHTML = '<div class="empty">Loading&hellip;</div>'; return; }
-  const v = attribData.by_sp[curSP];
-  if (!v) { el.innerHTML = '<div class="empty">No history for this node.</div>'; return; }
-  const max = Math.max(...v.drivers.map(x => Math.abs(x.atc)), 0.01);
-  el.innerHTML = `<div class="drv-total">Around-the-clock congestion: <b>${v.total_atc.toFixed(2)} $/MWh</b> over ${attribData.days} days</div>` +
-    v.drivers.map(x => `
-      <div class="drv">
-        <div class="drow"><span class="nm">${x.name}</span><span class="v neg">${x.atc.toFixed(2)} $/MWh</span></div>
-        <div class="bar" style="width:${Math.max(2, Math.abs(x.atc)/max*100)}%"></div>
-        <div class="sub">${x.pct_time.toFixed(0)}% of hours bound &middot; ${x.when_bind.toFixed(1)} $/MWh when binding</div>
-      </div>`).join("");
-}
-
-// ---- Basis breakdown: constraints that sum to basis (authoritative) ------
-const basisCache = {};
-async function loadBasis() {
-  const el = document.getElementById("basisDrivers");
-  const s = bridgeData ? siteForSP(curSP) : null;
-  if (!s) return;
+async function loadBasemap(){
   try {
-    let d = basisCache[s.key];
-    if (!d) { d = await (await fetch("/api/constraints/basis?site=" + s.key)).json(); basisCache[s.key] = d; }
-    if (d.error) { el.innerHTML = `<div class="empty">⚠️ ${d.error}</div>`; return; }
-    renderBasis(d);
-  } catch (e) { el.innerHTML = `<div class="empty">fetch error: ${e}</div>`; }
+    const gj = await (await fetch("/api/constraints/basemap?min_kv=100")).json();
+    const wt = v => v>=345 ? 2.4 : v>=200 ? 1.7 : 1.1;
+    L.geoJSON(gj, { style: f => { const v=(f.properties&&f.properties.VOLTAGE)||0;
+      return { color:"#14532d", weight:wt(v)+1.4, opacity:0.5 }; }}).addTo(basemapLayer);
+    L.geoJSON(gj, { style: f => { const v=(f.properties&&f.properties.VOLTAGE)||0;
+      return { color:"#22c55e", weight:wt(v), opacity:0.95 }; }}).addTo(basemapLayer);
+  } catch(e){ console.warn("basemap load failed", e); }
 }
-function renderBasis(d) {
-  const sgn = v => (v >= 0 ? "+" : "") + v.toFixed(2);
-  const red = "#b91c1c", grn = "#15803d";
-  document.getElementById("basisMeta").innerHTML = `vs ${d.hub_name} &middot; ${d.as_of}`;
+
+// Green->red ramp keyed to |basis contribution| $/MWh.
+const RAMP = [[0,[34,197,94]],[0.5,[132,204,22]],[1.5,[234,179,8]],[3,[249,115,22]],[6,[220,38,38]]];
+function rampColor(v){
+  const a = Math.abs(v); let lo=RAMP[0], hi=RAMP[RAMP.length-1];
+  for (let i=0;i<RAMP.length-1;i++){ if (a>=RAMP[i][0] && a<=RAMP[i+1][0]){ lo=RAMP[i]; hi=RAMP[i+1]; break; } }
+  const t = Math.max(0, Math.min(1, (a-lo[0])/((hi[0]-lo[0])||1)));
+  const ch = i => Math.round(lo[1][i] + (hi[1][i]-lo[1][i])*t);
+  return `rgb(${ch(0)},${ch(1)},${ch(2)})`;
+}
+
+function renderSiteTabs(){
+  document.getElementById("siteTabs").innerHTML = siteList().map(s =>
+    `<button data-s="${s.key}" class="${s.key===curSite?'active':''}">${s.display_name.split(' ')[0]}</button>`).join("");
+  document.querySelectorAll("#siteTabs button").forEach(b =>
+    b.onclick = () => { curSite = b.dataset.s;
+      SITES.forEach(s => siteMarkers[s.key].setIcon(star(s, s.settlement_point===site().settlement_point)));
+      renderSiteTabs(); loadBasis(); loadAttribution(); });
+}
+
+const WINDOWS = [{d:1,label:"1D"},{d:7,label:"7D"},{d:30,label:"30D"},{d:90,label:"90D"}];
+function renderWinTabs(){
+  document.getElementById("winTabs").innerHTML = WINDOWS.map(w =>
+    `<button data-d="${w.d}" class="${w.d===curDays?'active':''}">${w.label}</button>`).join("");
+  document.querySelectorAll("#winTabs button").forEach(b =>
+    b.onclick = () => { curDays = +b.dataset.d; renderWinTabs(); loadBasis(); loadAttribution(); });
+}
+
+// ---- Basis panel + map (one fetch drives both) --------------------------
+async function loadBasis(){
+  const head = document.getElementById("basisHead");
+  const list = document.getElementById("basisDrivers");
+  list.innerHTML = '<div class="empty">Loading&hellip;</div>';
+  try {
+    const d = await (await fetch(`/api/constraints/basis?site=${curSite}&days=${curDays}`)).json();
+    if (d.error){ head.innerHTML = ""; list.innerHTML = `<div class="empty">⚠️ ${d.error}</div>`; drawMap({drivers:[]}); return; }
+    renderBasis(d);
+    drawMap(d);
+  } catch(e){ list.innerHTML = `<div class="empty">fetch error: ${e}</div>`; }
+}
+
+function renderBasis(d){
+  const cls = v => v<-0.005 ? "neg" : v>0.005 ? "pos" : "";
+  document.getElementById("basisMeta").innerHTML =
+    `vs ${d.hub_name} &middot; node ${d.node_lmp!=null?d.node_lmp.toFixed(2):'—'} &minus; hub ${d.hub_lmp!=null?d.hub_lmp.toFixed(2):'—'} &middot; ${fmtWindow(d)}`;
   document.getElementById("basisHead").innerHTML =
-    `<div style="display:flex;align-items:baseline;gap:9px;flex-wrap:wrap;">` +
-    `<span style="font-size:12px;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;font-weight:600;">Basis</span>` +
-    `<b style="font-size:26px;font-weight:700;line-height:1;color:${d.basis<0?red:grn};">${sgn(d.basis)} $/MWh</b>` +
-    `<span style="color:#6b7280;font-size:12px;">= congestion ${sgn(d.congestion_basis)} + residual ${sgn(d.residual)} (loss/timing)</span></div>`;
-  const drv = (d.drivers || []).filter(x => Math.abs(x.contrib) >= 0.01);
+    `<div class="basis-head"><span class="lab">Basis</span>` +
+    `<b class="${cls(d.basis)}">${fmt(d.basis)} $/MWh</b>` +
+    `<span class="sub">= congestion ${fmt(d.congestion_basis)} + residual ${fmt(d.residual)} (timing/ref)</span></div>`;
+  const drv = (d.drivers||[]).filter(x => Math.abs(x.contrib) >= 0.01);
   const el = document.getElementById("basisDrivers");
-  if (!drv.length) { el.innerHTML = '<div class="empty">No constraints on this node for the day.</div>'; return; }
+  if (!drv.length){ el.innerHTML = '<div class="empty">No constraints driving basis for this window.</div>'; return; }
   const max = Math.max(...drv.map(x => Math.abs(x.contrib)), 0.01);
   el.innerHTML = drv.map(x => `
     <div class="drv">
-      <div class="drow"><span class="nm">${x.name}</span><span style="color:${x.contrib<0?red:grn};font-weight:700;">${sgn(x.contrib)} $/MWh</span></div>
+      <div class="drow"><span class="nm">${x.name}</span><span class="v ${x.contrib<0?'neg':'pos'}">${fmt(x.contrib)} $/MWh</span></div>
       <div class="bar" style="width:${Math.max(2, Math.abs(x.contrib)/max*100)}%;background:${x.contrib<0?'#dc2626':'#16a34a'};"></div>
     </div>`).join("");
 }
 
-async function loadBridge() {
-  try {
-    bridgeData = await (await fetch("/api/constraints/bridge")).json();
-    if (bridgeData.error) { document.getElementById("bridge").innerHTML = `<div class="empty">⚠️ ${bridgeData.error}</div>`; return; }
-    if (!curSP) { const u = uniqueSites(); curSP = (u[0]||{}).settlement_point; }
-    renderTabs(); renderBridge(); loadBasis();
-  } catch (e) { document.getElementById("bridge").innerHTML = `<div class="empty">fetch error: ${e}</div>`; }
-}
-async function loadAttribution() {
-  try {
-    document.getElementById("drivers").innerHTML = '<div class="empty">Loading&hellip;</div>';
-    attribData = await (await fetch("/api/constraints/attribution?days=" + curDays)).json();
-    renderDrivers();
-  } catch (e) { document.getElementById("drivers").innerHTML = `<div class="empty">fetch error: ${e}</div>`; }
+function drawMap(d){
+  driverLayer.clearLayers();
+  const drivers = (d.drivers||[]).filter(x => x.geometry);
+  const drawn = drivers.filter(x => { const g=x.geometry; return (g.path&&g.path.length>1) || g.drawable || g.from || g.to; });
+  drawn.forEach(x => {
+    const g = x.geometry, color = rampColor(x.contrib);
+    if ((g.path && g.path.length>1) || g.drawable){
+      const pts = (g.path && g.path.length>1) ? g.path : [[g.from.lat,g.from.lon],[g.to.lat,g.to.lon]];
+      const dash = (g.path && g.path.length>1) ? null : "4 7";
+      L.polyline(pts, { color, weight:11, opacity:0.20, lineCap:"round", lineJoin:"round" }).addTo(driverLayer);
+      L.polyline(pts, { color, weight: dash?3:5, opacity:0.95, dashArray:dash, lineCap:"round", lineJoin:"round" }).addTo(driverLayer)
+        .bindPopup(popup(x, g));
+    } else {
+      const e = g.from || g.to;
+      L.circleMarker([e.lat,e.lon], { radius:6, color, weight:2, fillColor:color, fillOpacity:0.85 })
+        .addTo(driverLayer).bindPopup(popup(x, g));
+    }
+  });
+  const routed = drawn.filter(x => x.geometry.snapped).length;
+  document.getElementById("mapMeta").textContent =
+    `${drawn.length}/${drivers.length} located · ${routed} routed · ${fmtWindow(d)}`;
+  const pts = drawn.flatMap(x => { const g=x.geometry;
+    return (g.path&&g.path.length>1) ? g.path : g.drawable ? [[g.from.lat,g.from.lon],[g.to.lat,g.to.lon]] : [[(g.from||g.to).lat,(g.from||g.to).lon]]; })
+    .concat([[site().lat, site().lon]]);
+  if (pts.length > 1) map.fitBounds(pts, { padding:[30,30] });
+  else map.setView([site().lat, site().lon], 8);
 }
 
+function popup(x, g){
+  const seg = (g.drawable) ? `${g.from.name} &rarr; ${g.to.name}${g.voltage?" &middot; "+g.voltage+" kV":""}`
+            : (g.from||g.to) ? `near ${(g.from||g.to).name}` : "location n/a";
+  return `<b>${x.name}</b><br><span style="color:#6b7280">${seg}</span><br>Basis contribution: <b>${fmt(x.contrib)} $/MWh</b>`;
+}
+
+// ---- Around-the-clock congestion drivers --------------------------------
+async function loadAttribution(){
+  const el = document.getElementById("drivers");
+  el.innerHTML = '<div class="empty">Loading&hellip;</div>';
+  try {
+    const d = await (await fetch(`/api/constraints/attribution?days=${curDays}`)).json();
+    if (d.error){ el.innerHTML = `<div class="empty">⚠️ ${d.error}</div>`; return; }
+    const sp = site().settlement_point;
+    const v = d.by_sp ? d.by_sp[sp] : null;
+    document.getElementById("dayLabel").innerHTML =
+      (d.days>1 ? "window: " : "operating day: ") + "<b>" + fmtWindow(d) + "</b>";
+    if (!v || !v.drivers.length){ el.innerHTML = '<div class="empty">No congestion on this node for the window.</div>'; return; }
+    const max = Math.max(...v.drivers.map(x => Math.abs(x.atc)), 0.01);
+    el.innerHTML = v.drivers.map(x => `
+      <div class="drv">
+        <div class="drow"><span class="nm">${x.name}</span><span class="v neg">${x.atc.toFixed(2)} $/MWh</span></div>
+        <div class="bar" style="width:${Math.max(2, Math.abs(x.atc)/max*100)}%;background:#dc2626;"></div>
+        <div class="sub">${x.pct_time.toFixed(0)}% of intervals bound &middot; ${x.when_bind.toFixed(1)} $/MWh when binding</div>
+      </div>`).join("");
+    document.getElementById("health").innerHTML =
+      `ATC congestion <b>${v.total_atc.toFixed(2)} $/MWh</b> &middot; last full day ${fmtDay(d.as_of)}`;
+  } catch(e){ el.innerHTML = `<div class="empty">fetch error: ${e}</div>`; }
+}
+
+renderSiteTabs();
+renderWinTabs();
 loadBasemap();
-refresh(false);
-loadBridge();
+loadBasis();
 loadAttribution();
-setInterval(() => refresh(false), 300000);   // 5 min, matched to SCED cadence + server cache
-setInterval(loadBridge, 300000);
 </script>
 </body>
 </html>

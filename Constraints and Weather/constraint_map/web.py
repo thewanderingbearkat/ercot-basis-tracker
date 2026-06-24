@@ -125,22 +125,28 @@ def api_attribution():
     return jsonify({**data, "cache_age_seconds": 0})
 
 
-# Basis decomposition (last full day): which constraints drive node vs hub.
-_basis_cache: dict[str, tuple[float, dict]] = {}
+# Basis decomposition over a window (1/7/30/90 days, anchored to the last full
+# operating day): which constraints drive node vs hub, plus map geometry.
+_basis_cache: dict[tuple[str, int], tuple[float, dict]] = {}
 
 
 @constraints_bp.route("/api/constraints/basis")
 def api_basis():
     site = request.args.get("site", next(iter(SITES)))
-    hit = _basis_cache.get(site)
-    if hit and (time.time() - hit[0]) < ATTRIB_CACHE_TTL and request.args.get("fresh") != "1":
-        return jsonify({**hit[1], "cache_age_seconds": round(time.time() - hit[0], 1)})
+    try:
+        days = max(1, min(90, int(request.args.get("days", 1))))
+    except ValueError:
+        days = 1
     if site not in SITES:
         return jsonify({"error": f"unknown site {site}"}), 400
+    key = (site, days)
+    hit = _basis_cache.get(key)
+    if hit and (time.time() - hit[0]) < ATTRIB_CACHE_TTL and request.args.get("fresh") != "1":
+        return jsonify({**hit[1], "cache_age_seconds": round(time.time() - hit[0], 1)})
     try:
-        data = basis_decomposition(site)
+        data = basis_decomposition(site, days)
     except Exception as e:
         logger.exception("ercot basis_decomposition failed")
         return jsonify({"error": str(e)}), 502
-    _basis_cache[site] = (time.time(), data)
+    _basis_cache[key] = (time.time(), data)
     return jsonify({**data, "cache_age_seconds": 0})
