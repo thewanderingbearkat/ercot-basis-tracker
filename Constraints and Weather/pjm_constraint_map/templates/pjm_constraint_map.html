@@ -31,6 +31,10 @@
   .seg { display:inline-flex; gap:2px; background:#eef1f4; border-radius:6px; padding:2px; }
   .seg button { background:transparent; color:#6b7280; padding:3px 9px; font-size:11px; font-weight:600; border:none; border-radius:4px; cursor:pointer; }
   .seg button.active { background:#0E2C51; color:#fff; }
+  .btn { background:#0E2C51; color:#fff; border:none; padding:6px 12px; border-radius:4px; font-size:12px; font-weight:600; cursor:pointer; }
+  .btn:hover { background:#143562; } .btn.sm { padding:3px 9px; font-size:11px; }
+  .dwin { display:inline-flex; align-items:center; gap:5px; font-size:11px; color:#6b7280; }
+  .dwin input { font-size:11px; padding:2px 4px; border:1px solid #d1d5db; border-radius:3px; color:#0E2C51; }
   .drv { margin-bottom:9px; }
   .drv .drow { display:flex; justify-content:space-between; font-size:12px; }
   .drv .nm { font-weight:600; } .drv .v { font-weight:700; }
@@ -76,6 +80,7 @@
       <div class="subtitle">Authoritative node congestion &middot; daily modeled constraint attribution</div>
     </div>
     <div id="siteTabs" class="seg"></div>
+    <button class="btn" id="refreshBtn" title="Reload live data now">&#8635; Refresh</button>
     <div class="health" id="health">loading&hellip;</div>
   </div>
 
@@ -95,6 +100,7 @@
       <h2 style="margin:0;">Top congestion drivers</h2>
       <span class="badge" style="color:#92400e; background:#fef3c7;">modeled shares</span>
       <span id="winTabs" class="seg" style="margin-left:auto;"></span>
+      <span class="dwin"><input type="date" id="dStart"><span>&rarr;</span><input type="date" id="dEnd"><button class="btn sm" id="dApply">Apply</button></span>
       <span id="dayLabel" class="health"></span>
     </div>
     <div id="drivers" style="margin-top:12px;"><div class="empty">Loading&hellip;</div></div>
@@ -145,6 +151,28 @@
 
 <script>
 let curDays = 1;
+let curStart = null, curEnd = null;     // custom date range (else preset curDays)
+const apiCache = {};                     // url -> response, for instant switching
+function qWindow(){ return (curStart && curEnd) ? `start=${curStart}&end=${curEnd}` : `days=${curDays}`; }
+async function getJSON(url, fresh){
+  if (!fresh && apiCache[url]) return apiCache[url];
+  const j = await (await fetch(url + (fresh ? (url.includes("?")?"&":"?")+"fresh=1" : ""))).json();
+  if (!j.error) apiCache[url] = j;
+  return j;
+}
+function reloadAll(fresh){ loadBasis(fresh); loadMap(fresh); loadBinding(fresh); }
+function preloadPresets(){    // warm cache so preset switches are instant
+  WINDOWS.forEach(w => [`/api/pjm/basis?site=${curSite}&days=${w.d}`,
+                        `/api/pjm/map?site=${curSite}&days=${w.d}`,
+                        `/api/pjm/binding?days=${w.d}`]
+    .forEach(u => { if (!apiCache[u]) fetch(u).then(r=>r.json()).then(j=>{ if(!j.error) apiCache[u]=j; }).catch(()=>{}); }));
+}
+function applyCustom(){
+  const s = document.getElementById("dStart").value, e = document.getElementById("dEnd").value;
+  if (!s || !e || s > e) return;
+  curStart = s; curEnd = e; renderWinTabs(); reloadAll();
+}
+function refreshNow(){ for (const k in apiCache) delete apiCache[k]; reloadAll(true); setTimeout(preloadPresets, 50); }
 function fmt(v, d=2){ return (v>=0?"+":"") + v.toFixed(d); }
 function fmtDay(d){ if(!d) return ""; const [y,m,dd]=d.split("-");
   return new Date(y,m-1,dd).toLocaleDateString(undefined,{month:"short",day:"numeric",year:"numeric"}); }
@@ -196,13 +224,13 @@ function renderSiteTabs(){
   document.querySelectorAll("#siteTabs button").forEach(b =>
     b.onclick = () => { curSite = b.dataset.s;
       SITES.forEach(s => siteMarkers[s.key].setIcon(star(s.key===curSite)));
-      renderSiteTabs(); loadBasis(); loadMap(); });
+      renderSiteTabs(); loadBasis(); loadMap(); preloadPresets(); });
 }
 
-async function loadBasis(){
+async function loadBasis(fresh){
   const el = document.getElementById("basis");
   try {
-    const d = await (await fetch(`/api/pjm/basis?site=${curSite}&days=${curDays}`)).json();
+    const d = await getJSON(`/api/pjm/basis?site=${curSite}&${qWindow()}`, fresh);
     if (d.error){ el.innerHTML = `<div class="empty">⚠️ ${d.error}</div>`; return; }
     const parts = [
       { label:"Congestion (constraints)", v:d.congestion_basis },
@@ -235,11 +263,11 @@ function rampColor(v){
 }
 
 // One fetch drives BOTH the modeled-drivers list and the map (mirrors ERCOT).
-async function loadMap(){
+async function loadMap(fresh){
   const drvEl = document.getElementById("drivers");
   drvEl.innerHTML = '<div class="empty">Loading&hellip;</div>';
   try {
-    const d = await (await fetch(`/api/pjm/map?site=${curSite}&days=${curDays}`)).json();
+    const d = await getJSON(`/api/pjm/map?site=${curSite}&${qWindow()}`, fresh);
     driverLayer.clearLayers(); highlightLayer.clearLayers();
     Object.keys(driverById).forEach(k => delete driverById[k]);
     if (d.error){ document.getElementById("mapMeta").textContent = "⚠️ " + d.error; drvEl.innerHTML = `<div class="empty">⚠️ ${d.error}</div>`; return; }
@@ -292,20 +320,23 @@ function focusDriver(uid){
   layer.openPopup();
 }
 
-const WINDOWS = [{d:1,label:"1D"},{d:7,label:"7D"},{d:30,label:"30D"},{d:90,label:"90D"}];
+const WINDOWS = [{d:1,label:"1D"},{d:7,label:"7D"},{d:30,label:"30D"},{d:365,label:"1Y"},{d:1095,label:"3Y"}];
 function renderWinTabs(){
+  const custom = !!(curStart && curEnd);
   document.getElementById("winTabs").innerHTML = WINDOWS.map(w =>
-    `<button data-d="${w.d}" class="${w.d===curDays?'active':''}">${w.label}</button>`).join("");
+    `<button data-d="${w.d}" class="${(!custom && w.d===curDays)?'active':''}">${w.label}</button>`).join("");
   document.querySelectorAll("#winTabs button").forEach(b =>
-    b.onclick = () => { curDays = +b.dataset.d; renderWinTabs(); loadBasis(); loadMap(); loadBinding(); });
+    b.onclick = () => { curDays = +b.dataset.d; curStart = curEnd = null;
+      document.getElementById("dStart").value = ""; document.getElementById("dEnd").value = "";
+      renderWinTabs(); reloadAll(); });
 }
 
 // ---- Authoritative system-wide binding constraints ---------------------
-async function loadBinding(){
+async function loadBinding(fresh){
   const el = document.getElementById("binding");
   el.innerHTML = '<div class="empty">Loading&hellip;</div>';
   try {
-    const d = await (await fetch(`/api/pjm/binding?days=${curDays}`)).json();
+    const d = await getJSON(`/api/pjm/binding?${qWindow()}`, fresh);
     if (d.error){ el.innerHTML = `<div class="empty">⚠️ ${d.error}</div>`; return; }
     if (!d.drivers || !d.drivers.length){ el.innerHTML = '<div class="empty">No binding constraints for the window.</div>'; return; }
     document.getElementById("bindMeta").innerHTML = `${fmtWindow(d)} &middot; ${d.intervals} intervals`;
@@ -344,12 +375,15 @@ function focusBind(uid){
   }
 }
 
+document.getElementById("refreshBtn").onclick = refreshNow;
+document.getElementById("dApply").onclick = applyCustom;
 renderSiteTabs();
 renderWinTabs();
 loadBasemap();
 loadBasis();
 loadMap();
 loadBinding();
+preloadPresets();
 </script>
 </body>
 </html>

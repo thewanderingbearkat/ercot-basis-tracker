@@ -24,6 +24,10 @@
   .seg { display:inline-flex; gap:2px; background:#eef1f4; border-radius:6px; padding:2px; }
   .seg button { background:transparent; color:#6b7280; padding:3px 9px; font-size:11px; font-weight:600; border:none; border-radius:4px; cursor:pointer; }
   .seg button.active { background:#0E2C51; color:#fff; }
+  .btn { background:#0E2C51; color:#fff; border:none; padding:6px 12px; border-radius:4px; font-size:12px; font-weight:600; cursor:pointer; }
+  .btn:hover { background:#143562; } .btn.sm { padding:3px 9px; font-size:11px; }
+  .dwin { display:inline-flex; align-items:center; gap:5px; font-size:11px; color:#6b7280; }
+  .dwin input { font-size:11px; padding:2px 4px; border:1px solid #d1d5db; border-radius:3px; color:#0E2C51; }
   .empty { color:#6b7280; font-size:13px; padding:24px 8px; text-align:center; }
   .note { font-size:11px; color:#6b7280; margin-top:8px; line-height:1.5; }
   #map { height:520px; border-radius:6px; border:1px solid #e5e7eb; }
@@ -67,6 +71,7 @@
       <div class="subtitle">Basis decomposition &middot; the constraints that sum to node&minus;hub basis</div>
     </div>
     <div id="siteTabs" class="seg"></div>
+    <button class="btn" id="refreshBtn" title="Reload live data now">&#8635; Refresh</button>
     <div class="health" id="health">loading&hellip;</div>
   </div>
 
@@ -75,7 +80,8 @@
     <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
       <h2 style="margin:0;">Basis breakdown</h2>
       <span id="winTabs" class="seg" style="margin-left:auto;"></span>
-      <span class="health" id="basisMeta" style="margin-left:8px;"></span>
+      <span class="dwin"><input type="date" id="dStart"><span>&rarr;</span><input type="date" id="dEnd"><button class="btn sm" id="dApply">Apply</button></span>
+      <span class="health" id="basisMeta"></span>
     </div>
     <div id="basisHead" style="margin-top:10px;"></div>
     <div id="basisDrivers" style="margin-top:10px;"><div class="empty">Loading&hellip;</div></div>
@@ -212,30 +218,58 @@ function rampColor(v){
   return `rgb(${ch(0)},${ch(1)},${ch(2)})`;
 }
 
+let curStart = null, curEnd = null;   // custom date range (else preset curDays)
+const apiCache = {};                   // url -> response, for instant preset switching
+
 function renderSiteTabs(){
   document.getElementById("siteTabs").innerHTML = siteList().map(s =>
     `<button data-s="${s.key}" class="${s.key===curSite?'active':''}">${s.display_name.split(' ')[0]}</button>`).join("");
   document.querySelectorAll("#siteTabs button").forEach(b =>
     b.onclick = () => { curSite = b.dataset.s;
       SITES.forEach(s => siteMarkers[s.key].setIcon(star(s, s.settlement_point===site().settlement_point)));
-      renderSiteTabs(); loadBasis(); });
+      renderSiteTabs(); loadBasis(); preloadPresets(); });
 }
 
-const WINDOWS = [{d:1,label:"1D"},{d:7,label:"7D"},{d:30,label:"30D"},{d:90,label:"90D"}];
+const WINDOWS = [{d:1,label:"1D"},{d:7,label:"7D"},{d:30,label:"30D"},{d:365,label:"1Y"},{d:1095,label:"3Y"}];
 function renderWinTabs(){
+  const custom = !!(curStart && curEnd);
   document.getElementById("winTabs").innerHTML = WINDOWS.map(w =>
-    `<button data-d="${w.d}" class="${w.d===curDays?'active':''}">${w.label}</button>`).join("");
+    `<button data-d="${w.d}" class="${(!custom && w.d===curDays)?'active':''}">${w.label}</button>`).join("");
   document.querySelectorAll("#winTabs button").forEach(b =>
-    b.onclick = () => { curDays = +b.dataset.d; renderWinTabs(); loadBasis(); });
+    b.onclick = () => { curDays = +b.dataset.d; curStart = curEnd = null;
+      document.getElementById("dStart").value = ""; document.getElementById("dEnd").value = "";
+      renderWinTabs(); loadBasis(); });
+}
+
+function qWindow(){ return (curStart && curEnd) ? `start=${curStart}&end=${curEnd}` : `days=${curDays}`; }
+async function getBasis(fresh){
+  const base = `/api/constraints/basis?site=${curSite}&${qWindow()}`;
+  if (!fresh && apiCache[base]) return apiCache[base];
+  const d = await (await fetch(base + (fresh ? "&fresh=1" : ""))).json();
+  if (!d.error) apiCache[base] = d;
+  return d;
+}
+function preloadPresets(){   // warm the cache so preset switches are instant
+  WINDOWS.forEach(w => { const base = `/api/constraints/basis?site=${curSite}&days=${w.d}`;
+    if (!apiCache[base]) fetch(base).then(r=>r.json()).then(d=>{ if(!d.error) apiCache[base]=d; }).catch(()=>{}); });
+}
+function applyCustom(){
+  const s = document.getElementById("dStart").value, e = document.getElementById("dEnd").value;
+  if (!s || !e || s > e) return;
+  curStart = s; curEnd = e; renderWinTabs(); loadBasis();
+}
+function refreshNow(){   // re-pull live data for the current view, bypassing caches
+  for (const k in apiCache) delete apiCache[k];
+  loadBasis(true).then(preloadPresets);
 }
 
 // ---- Basis panel + map (one fetch drives both) --------------------------
-async function loadBasis(){
+async function loadBasis(fresh){
   const head = document.getElementById("basisHead");
   const list = document.getElementById("basisDrivers");
   list.innerHTML = '<div class="empty">Loading&hellip;</div>';
   try {
-    const d = await (await fetch(`/api/constraints/basis?site=${curSite}&days=${curDays}`)).json();
+    const d = await getBasis(fresh);
     if (d.error){ head.innerHTML = ""; list.innerHTML = `<div class="empty">⚠️ ${d.error}</div>`; drawMap({drivers:[]}); return; }
     (d.drivers||[]).forEach((x,i) => x._uid = "b"+i);   // per-panel keys (constraint ids collide across tables)
     renderBasis(d);
@@ -314,10 +348,13 @@ function popup(x, g){
   return `<b>${x.name}</b><br><span style="color:#6b7280">${seg}</span><br>Basis contribution: <b>${fmt(x.contrib)} $/MWh</b>`;
 }
 
+document.getElementById("refreshBtn").onclick = refreshNow;
+document.getElementById("dApply").onclick = applyCustom;
 renderSiteTabs();
 renderWinTabs();
 loadBasemap();
 loadBasis();
+preloadPresets();
 </script>
 </body>
 </html>
