@@ -28,6 +28,10 @@ from .geo import attach_geometry_list
 from .sites import SITES
 
 MSF = f"{YES}.MARKET_SHIFT_FACTORS"
+DBO = "SKYVEST.DBO"   # precomputed daily aggregates (see staging/stage.py)
+# All monitored ERCOT price nodes (sites + hubs) -- matches the staged interval grid.
+E_ALL_NODES = ",".join(str(i) for i in sorted(
+    {s.price_node_id for s in SITES.values()} | {s.hub_node_id for s in SITES.values()}))
 
 
 def last_full_day() -> str:
@@ -36,65 +40,104 @@ def last_full_day() -> str:
     return d.date().isoformat() if hasattr(d, "date") else str(d)
 
 
-def basis_decomposition(site_key: str, days: int = 1, top: int = 15) -> dict[str, Any]:
+def _staged_max(table: str) -> str | None:
+    """Latest DAY in a staging table, or None if staging is unavailable/empty
+    (in which case callers fall back to the full live path)."""
+    try:
+        d = query(f"SELECT MAX(DAY) AS D FROM {DBO}.{table}")[0]["D"]
+        return d.isoformat() if hasattr(d, "isoformat") else (str(d) if d else None)
+    except Exception:
+        return None
+
+
+def basis_decomposition(site_key: str, days: int = 1, top: int = 15,
+                        start: str | None = None, end: str | None = None) -> dict[str, Any]:
+    """Decompose node-hub basis over a window. Reads precomputed daily aggregates
+    from SKYVEST.DBO for the stale history and computes only the live tail (days
+    after the staged max) from the heavy source tables -- so 1Y/3Y stays fast.
+    Pass days (window ending on the last full day) or an explicit start/end."""
     site = SITES[site_key]
-    days = max(1, int(days))
-    end = last_full_day()
-    start = (date.fromisoformat(end) - timedelta(days=days - 1)).isoformat()
-    # `days` full operating days ending on `end`: [start 00:00, end+1day).
-    win = f"DATETIME >= '{start}' AND DATETIME < DATEADD('day', 1, '{end}'::DATE)"
+    node, hub = site.price_node_id, site.hub_node_id
+    if end is None:
+        end = last_full_day()
+    if start is None:
+        days = max(1, int(days))
+        start = (date.fromisoformat(end) - timedelta(days=days - 1)).isoformat()
+    days = (date.fromisoformat(end) - date.fromisoformat(start)).days + 1
 
-    # Authoritative basis from DART RT LMP (node - hub), averaged over the window.
-    b = query(f"""
-        SELECT AVG(n.RTLMP - h.RTLMP) AS BASIS, AVG(n.RTLMP) AS NLMP, AVG(h.RTLMP) AS HLMP
-        FROM (SELECT DATETIME, RTLMP FROM {YES}.DART_PRICES
-              WHERE OBJECTID={site.price_node_id}
-                AND DATETIME >= '{start}' AND DATETIME < DATEADD('day', 1, '{end}'::DATE)
-                AND RTLMP IS NOT NULL) n
-        JOIN (SELECT DATETIME, RTLMP FROM {YES}.DART_PRICES
-              WHERE OBJECTID={site.hub_node_id}
-                AND DATETIME >= '{start}' AND DATETIME < DATEADD('day', 1, '{end}'::DATE)
-                AND RTLMP IS NOT NULL) h
-          ON n.DATETIME = h.DATETIME
-    """)[0]
-    basis = float(b["BASIS"]) if b["BASIS"] is not None else 0.0
+    # Split the window: STAGED [start .. staged_hi] + LIVE tail (staged_max .. end].
+    sm = _staged_max("CM_ERCOT_SF_DAILY")
+    staged_hi = min(end, sm) if sm else None
+    has_staged = bool(sm and start <= staged_hi)
+    if sm is None:
+        live_lo = start                                     # no staging -> all live
+    elif sm < end:
+        live_lo = max(start, (date.fromisoformat(sm) + timedelta(days=1)).isoformat())
+    else:
+        live_lo = None                                      # staged covers the window
 
-    # Intervals in the window (denominator to turn interval-sums into averages).
-    iv = query(f"SELECT COUNT(DISTINCT DATETIME) AS N FROM {MSF} WHERE MARKET='RT' AND {win}")[0]["N"] or 1
+    nodeS: dict[Any, float] = {}
+    hubS: dict[Any, float] = {}
+    names: dict[Any, Any] = {}
+    facs: dict[Any, Any] = {}
 
-    # Per-constraint differential contribution to basis = -(SP*(node_SF - hub_SF)),
-    # summed over the window and averaged. node/hub summed separately then differenced
-    # (SP is the same for both at a given interval, so this is the differential).
-    # FACILITYID comes straight from MARKET_SHIFT_FACTORS (one per constraint) --
-    # the authoritative link for both the facility name and the map geometry. (An
-    # earlier CONSTRAINTID->CONSTRAINTS join scrambled facilities; that id isn't a
-    # clean cross-table key.)
-    rows = query(f"""
-        WITH node AS (
-            SELECT CONSTRAINTID, ANY_VALUE(CONSTRAINTNAME) NM, ANY_VALUE(FACILITYID) FID,
-                   SUM(-(SHADOWPRICE * SHIFTFACTOR)) S
-            FROM {MSF} WHERE PRICENODEID={site.price_node_id} AND MARKET='RT' AND {win}
-            GROUP BY CONSTRAINTID),
-        hub AS (
-            SELECT CONSTRAINTID, ANY_VALUE(CONSTRAINTNAME) NM, ANY_VALUE(FACILITYID) FID,
-                   SUM(-(SHADOWPRICE * SHIFTFACTOR)) S
-            FROM {MSF} WHERE PRICENODEID={site.hub_node_id} AND MARKET='RT' AND {win}
-            GROUP BY CONSTRAINTID)
-        SELECT COALESCE(n.CONSTRAINTID, h.CONSTRAINTID) CID,
-               COALESCE(n.NM, h.NM) NM,
-               COALESCE(n.FID, h.FID) FID,
-               (COALESCE(n.S, 0) - COALESCE(h.S, 0)) / {iv} AS CONTRIB
-        FROM node n FULL OUTER JOIN hub h ON n.CONSTRAINTID = h.CONSTRAINTID
-    """)
-    drivers = [{"constraint_id": r["CID"], "constraint_name": r["NM"],
-                "facility_id": r["FID"], "name": r["NM"], "contrib": float(r["CONTRIB"])}
-               for r in rows if r["CONTRIB"] is not None]
+    def add_sf(rows):
+        for r in rows:
+            d = nodeS if r["PN"] == node else hubS
+            d[r["CID"]] = d.get(r["CID"], 0.0) + float(r["S"])
+            names.setdefault(r["CID"], r["NM"]); facs.setdefault(r["CID"], r["FID"])
+
+    if has_staged:
+        add_sf(query(f"""
+            SELECT PRICENODEID PN, CONSTRAINTID CID, ANY_VALUE(CONSTRAINTNAME) NM,
+                   ANY_VALUE(FACILITYID) FID, SUM(SF_SUM) S
+            FROM {DBO}.CM_ERCOT_SF_DAILY
+            WHERE PRICENODEID IN ({node},{hub}) AND DAY BETWEEN '{start}' AND '{staged_hi}'
+            GROUP BY 1, 2"""))
+    if live_lo:
+        add_sf(query(f"""
+            SELECT PRICENODEID PN, CONSTRAINTID CID, ANY_VALUE(CONSTRAINTNAME) NM,
+                   ANY_VALUE(FACILITYID) FID, SUM(-(SHADOWPRICE*SHIFTFACTOR)) S
+            FROM {MSF} WHERE MARKET='RT' AND PRICENODEID IN ({node},{hub})
+              AND DATETIME >= '{live_lo}' AND DATETIME < DATEADD('day',1,'{end}'::DATE)
+            GROUP BY 1, 2"""))
+
+    # Interval denominator (over the monitored-node grid), staged + live.
+    iv = 0
+    if has_staged:
+        iv += query(f"SELECT COALESCE(SUM(N_INTERVALS),0) N FROM {DBO}.CM_ERCOT_INTERVALS_DAILY WHERE DAY BETWEEN '{start}' AND '{staged_hi}'")[0]["N"]
+    if live_lo:
+        iv += query(f"SELECT COUNT(DISTINCT DATETIME) N FROM {MSF} WHERE MARKET='RT' AND PRICENODEID IN ({E_ALL_NODES}) AND DATETIME >= '{live_lo}' AND DATETIME < DATEADD('day',1,'{end}'::DATE)")[0]["N"]
+    iv = iv or 1
+
+    # Basis from RT LMP sums (node - hub), staged + live.
+    nsum = hsum = 0.0
+    nn = hn = 0
+
+    def add_lmp(rows):
+        nonlocal nsum, hsum, nn, hn
+        for r in rows:
+            if r["O"] == node:
+                nsum += float(r["S"]); nn += int(r["N"])
+            else:
+                hsum += float(r["S"]); hn += int(r["N"])
+
+    if has_staged:
+        add_lmp(query(f"SELECT OBJECTID O, SUM(RTLMP_SUM) S, SUM(N) N FROM {DBO}.CM_ERCOT_LMP_DAILY WHERE OBJECTID IN ({node},{hub}) AND DAY BETWEEN '{start}' AND '{staged_hi}' GROUP BY 1"))
+    if live_lo:
+        add_lmp(query(f"SELECT OBJECTID O, SUM(RTLMP) S, COUNT(*) N FROM {YES}.DART_PRICES WHERE OBJECTID IN ({node},{hub}) AND RTLMP IS NOT NULL AND DATETIME >= '{live_lo}' AND DATETIME < DATEADD('day',1,'{end}'::DATE) GROUP BY 1"))
+    node_lmp = (nsum / nn) if nn else None
+    hub_lmp = (hsum / hn) if hn else None
+    basis = (node_lmp - hub_lmp) if (node_lmp is not None and hub_lmp is not None) else 0.0
+
+    cids = set(nodeS) | set(hubS)
+    drivers = [{"constraint_id": c, "constraint_name": names.get(c), "facility_id": facs.get(c),
+                "name": names.get(c), "contrib": (nodeS.get(c, 0.0) - hubS.get(c, 0.0)) / iv}
+               for c in cids]
     congestion_basis = sum(d["contrib"] for d in drivers)   # over ALL constraints
     n_constraints = len(drivers)
-    # Rank by magnitude so the biggest movers show regardless of sign (longer
-    # windows have both wideners and narrowers; showing only the most-negative
-    # overshoots). The remainder is rolled into an explicit "other" row so the
-    # displayed bars + other == congestion_basis exactly.
+    # Rank by magnitude (both signs); roll the rest into an explicit "other" row
+    # so the displayed bars + other == congestion_basis exactly.
     drivers.sort(key=lambda d: abs(d["contrib"]), reverse=True)
     shown = drivers[:top]
     other_contrib = congestion_basis - sum(d["contrib"] for d in shown)
@@ -103,14 +146,14 @@ def basis_decomposition(site_key: str, days: int = 1, top: int = 15) -> dict[str
     return {
         "site": site.key, "name": site.display_name, "hub_name": site.hub_name,
         "as_of": end, "start": start, "days": days,
-        "node_lmp": float(b["NLMP"]) if b["NLMP"] is not None else None,
-        "hub_lmp": float(b["HLMP"]) if b["HLMP"] is not None else None,
+        "node_lmp": node_lmp, "hub_lmp": hub_lmp,
         "basis": basis, "congestion_basis": congestion_basis,
         "residual": basis - congestion_basis,
         "drivers": shown,
         "other_contrib": other_contrib,
         "other_count": n_constraints - len(shown),
         "n_constraints": n_constraints,
+        "staged_through": sm,
     }
 
 
