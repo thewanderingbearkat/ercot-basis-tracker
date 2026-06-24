@@ -15,14 +15,38 @@ because it's still filling in; we use the last fully-settled day.
 """
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import date, timedelta
 from typing import Any
 
+from constraint_map.basis import DBO, _staged_max
 from constraint_map.db import YES, query
 
 from .sites import SITES
 
 BETA = f"{YES}.YES_ENERGY_SHIFT_FACTOR_BETA"
+
+
+def _avg_node_cong(node_id: int, start: str, end: str) -> float:
+    """Average node RTCONG over [start, end], from staged daily DART + live tail."""
+    sm = _staged_max("CM_PJM_DART_DAILY")
+    staged_hi = min(end, sm) if sm else None
+    has_staged = bool(sm and start <= staged_hi)
+    if sm is None:
+        live_lo = start
+    elif sm < end:
+        live_lo = max(start, (date.fromisoformat(sm) + timedelta(days=1)).isoformat())
+    else:
+        live_lo = None
+    csum, n = 0.0, 0
+    if has_staged:
+        r = query(f"SELECT SUM(RTCONG_SUM) S, SUM(N) N FROM {DBO}.CM_PJM_DART_DAILY WHERE OBJECTID={node_id} AND DAY BETWEEN '{start}' AND '{staged_hi}'")[0]
+        if r["S"] is not None:
+            csum += float(r["S"]); n += int(r["N"])
+    if live_lo:
+        r = query(f"SELECT SUM(COALESCE(RTCONG,0)) S, COUNT(*) N FROM {YES}.DART_PRICES WHERE OBJECTID={node_id} AND RTLMP IS NOT NULL AND DATETIME >= '{live_lo}' AND DATETIME < DATEADD('day',1,'{end}'::DATE)")[0]
+        if r["S"] is not None:
+            csum += float(r["S"]); n += int(r["N"])
+    return (csum / n) if n else 0.0
 
 
 def last_full_day():
@@ -32,17 +56,22 @@ def last_full_day():
     return d.date() if (d is not None and hasattr(d, "date")) else d
 
 
-def daily_attribution(site_key: str, days: int = 1, top: int = 12) -> dict[str, Any]:
-    """Attribution over `days` complete calendar days ending at the last full
-    operating day. days=1 is that single day; 7/30/90 are trailing windows."""
+def daily_attribution(site_key: str, days: int = 1, top: int = 12,
+                      start: str | None = None, end: str | None = None) -> dict[str, Any]:
+    """Attribution over a window ending at the last full operating day (or an
+    explicit start/end). Modeled BETA shares x authoritative RTCONG magnitude."""
     site = SITES[site_key]
-    as_of = last_full_day()
-    if as_of is None:
-        return {"site": site.key, "name": site.display_name, "as_of": None,
-                "start": None, "days": days, "avg_congestion": 0.0, "drivers": []}
-    start = as_of - timedelta(days=int(days) - 1)
+    if end is None:
+        as_of = last_full_day()
+        if as_of is None:
+            return {"site": site.key, "name": site.display_name, "as_of": None,
+                    "start": None, "days": days, "avg_congestion": 0.0, "drivers": []}
+        end = as_of.isoformat() if hasattr(as_of, "isoformat") else str(as_of)
+    if start is None:
+        days = max(1, int(days))
+        start = (date.fromisoformat(end) - timedelta(days=days - 1)).isoformat()
 
-    # 1. Modeled congestion share per constraint over the window (BETA, daily).
+    # 1. Modeled congestion share per constraint over the window (BETA, daily/cheap).
     beta = query(f"""
         SELECT FACILITYID, CONTINGENCYID,
                ANY_VALUE(PNODENAME) AS PNODE,
@@ -51,20 +80,15 @@ def daily_attribution(site_key: str, days: int = 1, top: int = 12) -> dict[str, 
                COUNT(DISTINCT CONSTRAINT_DAY)      AS DAYS_BOUND
         FROM {BETA}
         WHERE ISO = 'PJMISO' AND PNODEID = {site.node_id}
-          AND CONSTRAINT_DAY BETWEEN '{start}' AND '{as_of}'
+          AND CONSTRAINT_DAY BETWEEN '{start}' AND '{end}'
         GROUP BY FACILITYID, CONTINGENCYID
     """)
     modeled = [r for r in beta if r["MODELED"] is not None]
     total_modeled = sum(float(r["MODELED"]) for r in modeled) or 1.0
 
-    # 2. Authoritative magnitude: average RTCONG over the same calendar-day range
-    #    (market-time NTZ boundaries -- no CURRENT_TIMESTAMP / timezone drift).
-    avg = query(f"""
-        SELECT AVG(RTCONG) AS C FROM {YES}.DART_PRICES
-        WHERE OBJECTID = {site.node_id} AND RTCONG IS NOT NULL
-          AND DATETIME >= '{start}' AND DATETIME < DATEADD('day', 1, '{as_of}'::DATE)
-    """)[0]["C"]
-    avg_cong = float(avg) if avg is not None else 0.0
+    # 2. Authoritative magnitude: average node RTCONG over the window, from staged
+    #    daily aggregates + a live tail (fast for long windows).
+    avg_cong = _avg_node_cong(site.node_id, start, end)
 
     # 3. Apportion the real congestion by modeled share.
     names = _facility_names([r["FACILITYID"] for r in modeled])
@@ -82,7 +106,8 @@ def daily_attribution(site_key: str, days: int = 1, top: int = 12) -> dict[str, 
     drivers.sort(key=lambda d: d["attributed"])        # most negative (worst) first
     return {
         "site": site.key, "name": site.display_name,
-        "as_of": str(as_of), "start": str(start), "days": int(days),
+        "as_of": end, "start": start,
+        "days": (date.fromisoformat(end) - date.fromisoformat(start)).days + 1,
         "avg_congestion": avg_cong, "drivers": drivers[:top],
     }
 

@@ -19,8 +19,9 @@ from .sites import SITES
 PJM_BASEMAP = os.path.join(os.path.dirname(__file__), "..", "data", "pjm_transmission_lines.geojson")
 
 
-def driver_map(site_key: str, days: int = 1, top: int = 15) -> dict[str, Any]:
-    attr = daily_attribution(site_key, days=days, top=top)
+def driver_map(site_key: str, days: int = 1, top: int = 15,
+               start: str | None = None, end: str | None = None) -> dict[str, Any]:
+    attr = daily_attribution(site_key, days=days, top=top, start=start, end=end)
     geo = facility_geometry([d["facility_id"] for d in attr["drivers"]])
 
     drivers = []

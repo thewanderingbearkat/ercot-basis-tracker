@@ -7,60 +7,72 @@ hub LMP splits *exactly* into:
     cong-basis   = node RTCONG  - hub RTCONG    (constraint-driven)
     loss-basis   = node RTLOSS  - hub RTLOSS    (topology / loss-driven)
 
-All authoritative -- ties to settlement prices. Averaged over the same window as
-the attribution (last full operating day, or a trailing N-day window ending
-there). The per-constraint split of the congestion piece is the modeled BETA
-attribution (see attribution.py) for the node and the hub.
+All authoritative -- ties to settlement. Reads precomputed daily DART aggregates
+(CM_PJM_DART_DAILY) for the stale history + a live tail, so 1Y/3Y stays fast.
 """
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import date, timedelta
 from typing import Any
 
+from constraint_map.basis import DBO, _staged_max
 from constraint_map.db import YES, query
 
-from .attribution import daily_attribution, last_full_day
+from .attribution import last_full_day
 from .sites import SITES
 
 
-def basis_decomposition(site_key: str, days: int = 1) -> dict[str, Any]:
+def basis_decomposition(site_key: str, days: int = 1,
+                        start: str | None = None, end: str | None = None) -> dict[str, Any]:
     site = SITES[site_key]
-    as_of = last_full_day()
-    if as_of is None:
-        return {"site": site.key, "name": site.display_name, "as_of": None,
-                "start": None, "days": days}
-    start = as_of - timedelta(days=int(days) - 1)
+    node, hub = site.node_id, site.hub_node_id
+    if end is None:
+        as_of = last_full_day()
+        if as_of is None:
+            return {"site": site.key, "name": site.display_name, "as_of": None,
+                    "start": None, "days": int(days)}
+        end = as_of.isoformat() if hasattr(as_of, "isoformat") else str(as_of)
+    if start is None:
+        days = max(1, int(days))
+        start = (date.fromisoformat(end) - timedelta(days=days - 1)).isoformat()
+    days = (date.fromisoformat(end) - date.fromisoformat(start)).days + 1
 
-    rows = query(f"""
-        SELECT OBJECTID,
-               AVG(RTLMP)                                          AS LMP,
-               AVG(RTCONG)                                         AS CONG,
-               AVG(RTLOSS)                                         AS LOSS,
-               AVG(RTLMP - COALESCE(RTCONG,0) - COALESCE(RTLOSS,0)) AS ENERGY
-        FROM {YES}.DART_PRICES
-        WHERE OBJECTID IN ({site.node_id}, {site.hub_node_id}) AND RTLMP IS NOT NULL
-          AND DATETIME >= '{start}' AND DATETIME < DATEADD('day', 1, '{as_of}'::DATE)
-        GROUP BY OBJECTID
-    """)
-    by = {r["OBJECTID"]: r for r in rows}
-    n, h = by.get(site.node_id), by.get(site.hub_node_id)
+    sm = _staged_max("CM_PJM_DART_DAILY")
+    staged_hi = min(end, sm) if sm else None
+    has_staged = bool(sm and start <= staged_hi)
+    if sm is None:
+        live_lo = start
+    elif sm < end:
+        live_lo = max(start, (date.fromisoformat(sm) + timedelta(days=1)).isoformat())
+    else:
+        live_lo = None
 
-    def c(r, k):
-        return float(r[k]) if (r and r.get(k) is not None) else 0.0
+    agg: dict[Any, list] = {}   # objectid -> [lmp_sum, cong_sum, loss_sum, n]
 
-    out = {
+    def add(rows):
+        for r in rows:
+            a = agg.setdefault(r["O"], [0.0, 0.0, 0.0, 0])
+            a[0] += float(r["LS"]); a[1] += float(r["CS"]); a[2] += float(r["OS"]); a[3] += int(r["N"])
+
+    if has_staged:
+        add(query(f"SELECT OBJECTID O, SUM(RTLMP_SUM) LS, SUM(RTCONG_SUM) CS, SUM(RTLOSS_SUM) OS, SUM(N) N FROM {DBO}.CM_PJM_DART_DAILY WHERE OBJECTID IN ({node},{hub}) AND DAY BETWEEN '{start}' AND '{staged_hi}' GROUP BY 1"))
+    if live_lo:
+        add(query(f"SELECT OBJECTID O, SUM(RTLMP) LS, SUM(COALESCE(RTCONG,0)) CS, SUM(COALESCE(RTLOSS,0)) OS, COUNT(*) N FROM {YES}.DART_PRICES WHERE OBJECTID IN ({node},{hub}) AND RTLMP IS NOT NULL AND DATETIME >= '{live_lo}' AND DATETIME < DATEADD('day',1,'{end}'::DATE) GROUP BY 1"))
+
+    def avg(o, i):
+        a = agg.get(o)
+        return (a[i] / a[3]) if (a and a[3]) else 0.0
+
+    nl, nc, nlo = avg(node, 0), avg(node, 1), avg(node, 2)
+    hl, hc, hlo = avg(hub, 0), avg(hub, 1), avg(hub, 2)
+    ne, he = nl - nc - nlo, hl - hc - hlo
+
+    return {
         "site": site.key, "name": site.display_name, "hub_name": site.hub_name,
-        "as_of": str(as_of), "start": str(start), "days": int(days),
-        "node_lmp": c(n, "LMP"), "hub_lmp": c(h, "LMP"),
-        "node_energy": c(n, "ENERGY"), "hub_energy": c(h, "ENERGY"),
-        "node_cong": c(n, "CONG"), "hub_cong": c(h, "CONG"),
-        "node_loss": c(n, "LOSS"), "hub_loss": c(h, "LOSS"),
-        "energy_basis": c(n, "ENERGY") - c(h, "ENERGY"),
-        "congestion_basis": c(n, "CONG") - c(h, "CONG"),
-        "loss_basis": c(n, "LOSS") - c(h, "LOSS"),
-        "basis": c(n, "LMP") - c(h, "LMP"),
+        "as_of": end, "start": start, "days": days,
+        "node_lmp": nl, "hub_lmp": hl,
+        "node_energy": ne, "hub_energy": he,
+        "node_cong": nc, "hub_cong": hc, "node_loss": nlo, "hub_loss": hlo,
+        "energy_basis": ne - he, "congestion_basis": nc - hc, "loss_basis": nlo - hlo,
+        "basis": nl - hl, "staged_through": sm,
     }
-    # Per-constraint drivers of each side's congestion (modeled BETA; reliable
-    # individually). congestion_basis = sum(node drivers) - sum(hub drivers).
-    out["node_drivers"] = daily_attribution(site_key, days=days)["drivers"]
-    return out
