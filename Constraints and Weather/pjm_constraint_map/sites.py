@@ -49,4 +49,22 @@ SITES: dict[str, Site] = {
         hub_name="PSEG", hub_node_id=51301,
         fuel="gas", lat=41.466, lon=-75.561, county="Lackawanna", state="PA",
     ),
+    "MIDDLETOWN": Site(
+        key="MIDDLETOWN", display_name="Middletown Energy Center",
+        pnode_name="MIDLTWN2 18 KV MIDDLTST", node_id=1869196082,
+        hub_name="DEOK", hub_node_id=124076095,    # DEOK zone (same zone as the node)
+        fuel="gas", lat=39.509, lon=-84.374, county="Butler", state="OH",
+    ),
+    "CARROLL": Site(
+        key="CARROLL", display_name="Carroll County Energy",
+        pnode_name="STEMPLE 18 KV CTG1", node_id=1348264769,
+        hub_name="AEP-DAYTON HUB", hub_node_id=34497127,
+        fuel="gas", lat=40.617, lon=-81.052, county="Carroll", state="OH",
+    ),
+    "SOUTHFIELD": Site(
+        key="SOUTHFIELD", display_name="South Field Energy",
+        pnode_name="HIBBMILL 26 KV CTG-2", node_id=2156109467,
+        hub_name="AEP-DAYTON HUB", hub_node_id=34497127,
+        fuel="gas", lat=40.566, lon=-80.648, county="Columbiana", state="OH",
+    ),
 }
