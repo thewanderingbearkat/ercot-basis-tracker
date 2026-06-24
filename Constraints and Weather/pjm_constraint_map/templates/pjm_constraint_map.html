@@ -112,19 +112,19 @@
 
   <div class="panel" style="margin-bottom:16px;">
     <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
-      <h2 style="margin:0;">Congestion drivers &mdash; node vs hub</h2>
-      <span class="badge" style="color:#92400e; background:#fef3c7;">modeled shares</span>
+      <h2 style="margin:0;">Basis congestion drivers</h2>
+      <span class="badge" style="color:#92400e; background:#fef3c7;">modeled split</span>
       <span id="winTabs" class="seg" style="margin-left:auto;"></span>
       <span class="dwin"><input type="date" id="dStart"><span>&rarr;</span><input type="date" id="dEnd"><button class="btn sm" id="dApply">Apply</button></span>
       <span id="dayLabel" class="health"></span>
     </div>
     <div id="drivers" style="margin-top:12px;"><div class="empty">Loading&hellip;</div></div>
-    <div class="note">Each side apportions a pnode's <b>authoritative</b> average congestion (RTCONG) across constraints
-      by <b>modeled</b> BETA shift-factor shares. <b>Basis congestion = node &minus; hub</b> (shown up top): when the same
-      lines hit both sides they cancel, and what's left is the basis &mdash; that's why a big node congestion can still
-      leave a tiny basis. Totals are real; the per-constraint split is modeled (daily corr vs actual ~0.70 at NWOH,
-      weak at Lordstown, near-zero at Lackawanna). Click a row to locate it on the map (node lines are drawn; hub lines
-      highlight on click).</div>
+    <div class="note">Each line's contribution to the <b>basis congestion</b> = its effect on the node <i>minus</i> its
+      effect on the hub (each apportioned from authoritative RTCONG by <b>modeled</b> BETA shares; the <i>node &minus; hub</i>
+      under each row). They sum (+ &ldquo;other&rdquo;) to the basis congestion in the box below, which ties to the
+      <b>Congestion</b> line in the basis breakdown. The total is authoritative; the per-constraint split is modeled
+      (daily corr vs actual ~0.70 at NWOH, weak at Lordstown, near-zero at Lackawanna &mdash; read direction &amp; the big
+      movers, not the last decimal). Click a row to locate it on the map.</div>
   </div>
 
   <div class="panel" style="margin-bottom:16px;">
@@ -308,44 +308,42 @@ async function loadMap(fresh){
     if (all.length > 1) map.fitBounds(all, { padding:[30,30] });
     else map.setView([site().lat, site().lon], 7);
 
-    // --- node vs hub congestion drivers (two-sided => basis cong = node - hub) ---
+    // --- basis-congestion drivers (per-constraint node - hub; sums to basis cong) ---
     const win = fmtWindow(d), lead = d.days>1 ? "window: " : "operating day: ";
     document.getElementById("dayLabel").innerHTML = lead + "<b>" + win + "</b>";
     document.getElementById("health").innerHTML =
-      `node cong <b>${fmt(d.avg_congestion)}</b> &minus; hub ${fmt(d.hub_avg_congestion)} = basis cong <b>${fmt(d.avg_congestion - d.hub_avg_congestion)}</b> $/MWh`;
-    Object.keys(hubByUid).forEach(k => delete hubByUid[k]);
-    (d.hub_drivers||[]).forEach((x,i) => { x._uid = "h"+i; hubByUid[x._uid] = x; });
-    const everything = [...(d.drivers||[]), ...(d.hub_drivers||[])];
-    if (!everything.length){ drvEl.innerHTML = '<div class="empty">No constraints on this node/hub for the window.</div>'; return; }
-    const max = Math.max(...everything.map(x=>Math.abs(x.attributed)), 0.01);
-    const row = (x, focus) => {
+      `node cong <b>${fmt(d.avg_congestion)}</b> &minus; hub ${fmt(d.hub_avg_congestion)} = basis cong <b>${fmt(d.congestion_basis)}</b> $/MWh`;
+    const drv = (d.drivers||[]).filter(x => Math.abs(x.attributed) >= 0.005);
+    const otherV = (Math.abs(d.other_contrib||0) >= 0.005 && d.other_count>0) ? d.other_contrib : 0;
+    if (!drv.length && !otherV){ drvEl.innerHTML = '<div class="empty">No constraints driving basis congestion for the window.</div>'; return; }
+    const max = Math.max(...drv.map(x=>Math.abs(x.attributed)), Math.abs(otherV), 0.01);
+    const row = x => {
       const neg = x.attributed < 0, clk = !!(x.drawable || x.from || x.to);
       const p2p = x.drawable ? `${x.from.name} → ${x.to.name}${x.voltage ? " · "+Math.round(x.voltage)+" kV" : ""}`
                 : (x.from||x.to) ? `near ${(x.from||x.to).name}` : x.name;
-      return `<div class="drv${clk?' clk':''}"${clk?` onclick="${focus}('${x._uid}')"`:''}>
+      return `<div class="drv${clk?' clk':''}"${clk?` onclick="focusDriver('${x._uid}')"`:''}>
         <div class="drow"><span class="nm">${p2p}</span><span class="v ${neg?'neg':'pos'}">${fmt(x.attributed)} $/MWh</span></div>
         <div class="bar" style="width:${Math.max(2, Math.abs(x.attributed)/max*100)}%;background:${neg?'#dc2626':'#16a34a'}"></div>
-        <div class="sub">${(x.share*100).toFixed(0)}% of modeled congestion</div>
+        <div class="sub">node ${fmt(x.node_part)} &minus; hub ${fmt(x.hub_part)}</div>
       </div>`;
     };
-    const col = (title, val, drivers, focus) =>
-      `<div class="side"><div class="side-h">${title} <span class="v ${val<0?'neg':'pos'}">${fmt(val)} $/MWh</span></div>` +
-      ((drivers||[]).map(x => row(x, focus)).join("") || '<div class="empty">none</div>') + `</div>`;
-    const bc = d.avg_congestion - d.hub_avg_congestion;
+    let html = `<div id="drvgrid">` + drv.map(row).join("");
+    if (otherV){
+      html += `<div class="drv" style="opacity:.7;">
+        <div class="drow"><span class="nm">Other (${d.other_count} constraint${d.other_count>1?'s':''})</span><span class="v ${otherV<0?'neg':'pos'}">${fmt(otherV)} $/MWh</span></div>
+        <div class="bar" style="width:${Math.max(2, Math.abs(otherV)/max*100)}%;background:${otherV<0?'#fca5a5':'#86efac'}"></div></div>`;
+    }
+    html += `</div>`;
     const part = (lab, v) => `<span class="ck-lab">${lab}</span> <span class="v ${v<0?'neg':'pos'}">${fmt(v)}</span>`;
-    drvEl.innerHTML = `<div class="twosided">` +
-      col("Congesting the node", d.avg_congestion, d.drivers, "focusDriver") +
-      col(`Congesting the hub (${d.hub_name})`, d.hub_avg_congestion, d.hub_drivers, "focusHub") +
-      `</div>` +
-      `<div class="checkbox">${part("Node congestion", d.avg_congestion)}<span class="ck-op">&minus;</span>` +
+    html += `<div class="checkbox">${part("Node congestion", d.avg_congestion)}<span class="ck-op">&minus;</span>` +
       `${part("Hub congestion", d.hub_avg_congestion)}<span class="ck-op">=</span>` +
-      `${part("Basis congestion", bc)} <span style="color:#6b7280;">$/MWh</span>` +
-      `<div class="ck-foot">ties to the <b>Congestion</b> line in the basis breakdown above</div></div>`;
+      `${part("Basis congestion", d.congestion_basis)} <span style="color:#6b7280;">$/MWh</span>` +
+      `<div class="ck-foot">these drivers (+ other) sum to this, and it ties to the <b>Congestion</b> line in the basis breakdown</div></div>`;
+    drvEl.innerHTML = html;
   } catch(e){ document.getElementById("mapMeta").textContent = "fetch error: " + e; drvEl.innerHTML = `<div class="empty">fetch error: ${e}</div>`; }
 }
 
-const dataByUid = {};   // node-driver uid -> object, for the details box
-const hubByUid = {};    // hub-driver uid -> object (list-only; highlights on click)
+const dataByUid = {};   // driver uid -> object, for the details box
 function showDetails(x){
   const el = document.getElementById("mapDetails");
   if (!el) return;
@@ -354,7 +352,7 @@ function showDetails(x){
   const kv = x.voltage ? Math.round(x.voltage) + " kV" : "";
   const val = (x.atc_sp !== undefined)
     ? `ATC shadow &nbsp;<b>${x.atc_sp.toFixed(2)} $/MWh</b> &middot; ${x.pct_time.toFixed(0)}% of intervals bound`
-    : `Attributed congestion &nbsp;<b>${fmt(x.attributed)} $/MWh</b> &middot; ${(x.share*100).toFixed(0)}% of modeled`;
+    : `Basis contribution &nbsp;<b>${fmt(x.attributed)} $/MWh</b> &middot; node ${fmt(x.node_part)} &minus; hub ${fmt(x.hub_part)}`;
   el.innerHTML = `<div class="md-t">${p2p}${kv ? ` <span class="md-kv">${kv}</span>` : ""}</div>` +
     `<div class="md-s">${x.name || ""}</div><div class="md-v">${val}</div>`;
 }
@@ -366,24 +364,6 @@ function focusDriver(uid){
   if (!layer) return;
   if (layer.getBounds) map.fitBounds(layer.getBounds().pad(0.6));
   else map.setView(layer.getLatLng(), 9);
-}
-
-// Hub drivers aren't drawn on the map; clicking one highlights + locates it.
-function focusHub(uid){
-  highlightLayer.clearLayers();
-  const x = hubByUid[uid];
-  if (!x) return;
-  showDetails(x);
-  if ((x.path && x.path.length > 1) || x.drawable){
-    const pts = (x.path && x.path.length > 1) ? x.path : [[x.from.lat,x.from.lon],[x.to.lat,x.to.lon]];
-    L.polyline(pts, { color:"#7c3aed", weight:6, opacity:0.95,
-      dashArray:(x.path && x.path.length > 1) ? null : "4 7", lineCap:"round" }).addTo(highlightLayer);
-    map.fitBounds(pts, { padding:[40,40] });
-  } else if (x.from || x.to){
-    const e = x.from || x.to;
-    L.circleMarker([e.lat,e.lon], { radius:7, color:"#7c3aed", weight:2, fillColor:"#7c3aed", fillOpacity:0.8 }).addTo(highlightLayer);
-    map.setView([e.lat,e.lon], 8);
-  }
 }
 
 const WINDOWS = [{d:1,label:"1D"},{d:7,label:"7D"},{d:30,label:"30D"},{d:365,label:"1Y"},{d:1095,label:"3Y"}];

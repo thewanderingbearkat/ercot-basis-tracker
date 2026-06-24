@@ -56,14 +56,13 @@ def last_full_day():
     return d.date() if (d is not None and hasattr(d, "date")) else d
 
 
-def _apportion(pnode_id: int, avg_cong: float, start: str, end: str, top: int) -> list[dict[str, Any]]:
+def _apportion(pnode_id: int, avg_cong: float, start: str, end: str) -> dict[Any, dict[str, Any]]:
     """Apportion a pnode's authoritative avg RTCONG across constraints by modeled
-    BETA shares (grouped by FACILITY, so each line shows once). Biggest movers first."""
+    BETA shares (grouped by FACILITY). Returns {facility_id: {name, attributed}}."""
     beta = query(f"""
-        SELECT FACILITYID, ANY_VALUE(PNODENAME) AS PNODE,
+        SELECT FACILITYID,
                SUM(-(SHADOW_PRICE * SHIFT_FACTOR)) AS MODELED,
-               AVG(QUALITY_METRIC)            AS QUALITY,
-               COUNT(DISTINCT CONSTRAINT_DAY) AS DAYS_BOUND
+               COUNT(DISTINCT CONSTRAINT_DAY)      AS DAYS_BOUND
         FROM {BETA}
         WHERE ISO = 'PJMISO' AND PNODEID = {pnode_id}
           AND CONSTRAINT_DAY BETWEEN '{start}' AND '{end}'
@@ -72,31 +71,26 @@ def _apportion(pnode_id: int, avg_cong: float, start: str, end: str, top: int) -
     modeled = [r for r in beta if r["MODELED"] is not None]
     total = sum(float(r["MODELED"]) for r in modeled) or 1.0
     names = _facility_names([r["FACILITYID"] for r in modeled])
-    drivers = []
-    for r in modeled:
-        share = float(r["MODELED"]) / total
-        drivers.append({
-            "facility_id": r["FACILITYID"], "name": names.get(r["FACILITYID"], str(r["FACILITYID"])),
-            "share": share, "attributed": avg_cong * share,
-            "days_bound": r["DAYS_BOUND"],
-            "quality": float(r["QUALITY"]) if r["QUALITY"] is not None else None,
-        })
-    drivers.sort(key=lambda d: abs(d["attributed"]), reverse=True)   # biggest movers first
-    return drivers[:top]
+    return {r["FACILITYID"]: {"name": names.get(r["FACILITYID"], str(r["FACILITYID"])),
+                              "attributed": avg_cong * (float(r["MODELED"]) / total),
+                              "days_bound": r["DAYS_BOUND"]}
+            for r in modeled}
 
 
-def daily_attribution(site_key: str, days: int = 1, top: int = 12,
+def daily_attribution(site_key: str, days: int = 1, top: int = 14,
                       start: str | None = None, end: str | None = None) -> dict[str, Any]:
-    """Node-side AND hub-side congestion attribution over the window. Each side =
-    modeled BETA shares x that pnode's authoritative avg RTCONG. basis congestion
-    = node avg - hub avg; showing both makes the (near-)cancellation visible."""
+    """Per-constraint contribution to the BASIS congestion (node - hub), modeled.
+    Each side is apportioned from authoritative RTCONG by BETA shares, then
+    differenced per facility, so the drivers SUM to the congestion component of
+    basis (= node avg - hub avg). Biggest basis movers first + an 'other' row."""
     site = SITES[site_key]
     if end is None:
         as_of = last_full_day()
         if as_of is None:
             return {"site": site.key, "name": site.display_name, "as_of": None, "start": None,
-                    "days": days, "avg_congestion": 0.0, "drivers": [],
-                    "hub_name": site.hub_name, "hub_avg_congestion": 0.0, "hub_drivers": []}
+                    "days": days, "avg_congestion": 0.0, "hub_name": site.hub_name,
+                    "hub_avg_congestion": 0.0, "congestion_basis": 0.0, "drivers": [],
+                    "other_contrib": 0.0, "other_count": 0, "n_constraints": 0}
         end = as_of.isoformat() if hasattr(as_of, "isoformat") else str(as_of)
     if start is None:
         days = max(1, int(days))
@@ -104,13 +98,33 @@ def daily_attribution(site_key: str, days: int = 1, top: int = 12,
 
     node_avg = _avg_node_cong(site.node_id, start, end)
     hub_avg = _avg_node_cong(site.hub_node_id, start, end)
+    nmap = _apportion(site.node_id, node_avg, start, end)
+    hmap = _apportion(site.hub_node_id, hub_avg, start, end)
+
+    drivers = []
+    for fid in set(nmap) | set(hmap):
+        n, h = nmap.get(fid), hmap.get(fid)
+        node_part = n["attributed"] if n else 0.0
+        hub_part = h["attributed"] if h else 0.0
+        drivers.append({
+            "facility_id": fid, "name": (n or h)["name"],
+            "node_part": node_part, "hub_part": hub_part,
+            "attributed": node_part - hub_part,   # contribution to BASIS congestion
+            "days_bound": (n or h)["days_bound"],
+        })
+    congestion_basis = sum(d["attributed"] for d in drivers)   # == node_avg - hub_avg
+    n_constraints = len(drivers)
+    drivers.sort(key=lambda d: abs(d["attributed"]), reverse=True)
+    shown = drivers[:top]
+    other = congestion_basis - sum(d["attributed"] for d in shown)
     return {
         "site": site.key, "name": site.display_name,
         "as_of": end, "start": start,
         "days": (date.fromisoformat(end) - date.fromisoformat(start)).days + 1,
-        "avg_congestion": node_avg, "drivers": _apportion(site.node_id, node_avg, start, end, top),
-        "hub_name": site.hub_name, "hub_avg_congestion": hub_avg,
-        "hub_drivers": _apportion(site.hub_node_id, hub_avg, start, end, top),
+        "avg_congestion": node_avg, "hub_name": site.hub_name, "hub_avg_congestion": hub_avg,
+        "congestion_basis": congestion_basis, "drivers": shown,
+        "other_contrib": other, "other_count": n_constraints - len(shown),
+        "n_constraints": n_constraints,
     }
 
 
