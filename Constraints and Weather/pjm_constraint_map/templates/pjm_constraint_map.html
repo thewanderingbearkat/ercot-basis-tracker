@@ -35,6 +35,8 @@
   .btn:hover { background:#143562; } .btn.sm { padding:3px 9px; font-size:11px; }
   .dwin { display:inline-flex; align-items:center; gap:5px; font-size:11px; color:#6b7280; }
   .dwin input { font-size:11px; padding:2px 4px; border:1px solid #d1d5db; border-radius:3px; color:#0E2C51; }
+  .vflab { font-size:11px; color:#6b7280; font-weight:600; }
+  .seg-v button { padding:2px 7px; font-size:10px; }
   .map-details { margin-top:8px; border:1px solid #e5e7eb; border-radius:6px; padding:9px 12px; background:#f9fafb; min-height:20px; }
   .map-details .md-hint { color:#9ca3af; font-size:12px; }
   .map-details .md-t { font-weight:700; font-size:14px; }
@@ -128,8 +130,9 @@
   </div>
 
   <div class="panel" style="margin-bottom:16px;">
-    <div style="display:flex; align-items:center; gap:10px;">
+    <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
       <h2 style="margin:0;">Where the congestion comes from</h2>
+      <span class="vflab">grid kV</span><span id="vFilter" class="seg seg-v"></span>
       <span class="health" id="mapMeta" style="margin-left:auto;"></span>
     </div>
     <div id="map" style="margin-top:10px;"></div>
@@ -143,6 +146,7 @@
       </span>
       <br>
       <b style="font-weight:600;">Grid kV</b>
+      <span class="sw" style="background:#64748b;"></span>69&ndash;115
       <span class="sw" style="background:#14b8a6;"></span>138
       <span class="sw" style="background:#0ea5e9;"></span>230
       <span class="sw" style="background:#2563eb;"></span>345
@@ -219,13 +223,34 @@ function kvColor(v){
        : v >= 138 ? "#14b8a6" : v >= 100 ? "#64748b" : "#94a3b8";
 }
 const kvWeight = v => v >= 500 ? 2.8 : v >= 345 ? 2.3 : v >= 230 ? 1.8 : v >= 138 ? 1.4 : 1.0;
+function kvClass(v){ return v >= 500 ? "500" : v >= 345 ? "345" : v >= 230 ? "230" : v >= 138 ? "138" : "lo"; }
+
+let basemapGeo = null;
+const vClasses = new Set(["lo","138","230","345","500"]);   // kV classes currently shown
+function renderBasemap(){
+  basemapLayer.clearLayers();
+  if (!basemapGeo) return;
+  L.geoJSON(basemapGeo, {
+    filter: f => vClasses.has(kvClass((f.properties&&f.properties.VOLTAGE)||0)),
+    style: f => { const v=(f.properties&&f.properties.VOLTAGE)||0;
+      return { color: kvColor(v), weight: kvWeight(v), opacity: 0.8 }; }
+  }).addTo(basemapLayer);
+}
+const VCLASSES = [["lo","69–115"],["138","138"],["230","230"],["345","345"],["500","500+"]];
+function renderVFilter(){
+  const el = document.getElementById("vFilter");
+  if (!el) return;
+  el.innerHTML = VCLASSES.map(([k,lab]) => `<button data-v="${k}" class="${vClasses.has(k)?'active':''}">${lab}</button>`).join("");
+  el.querySelectorAll("button").forEach(b => b.onclick = () => {
+    const k = b.dataset.v; vClasses.has(k) ? vClasses.delete(k) : vClasses.add(k);
+    renderVFilter(); renderBasemap();
+  });
+}
 
 async function loadBasemap(){
   try {
-    const gj = await (await fetch("/api/pjm/basemap?min_kv=138")).json();
-    // Color each line by its kV class so the grid reads as a voltage map.
-    L.geoJSON(gj, { style: f => { const v=(f.properties&&f.properties.VOLTAGE)||0;
-      return { color: kvColor(v), weight: kvWeight(v), opacity: 0.8 }; }}).addTo(basemapLayer);
+    basemapGeo = await (await fetch("/api/pjm/basemap?min_kv=69")).json();
+    renderBasemap();
   } catch(e){ console.warn("pjm basemap load failed", e); }
 }
 
@@ -430,6 +455,7 @@ document.getElementById("refreshBtn").onclick = refreshNow;
 document.getElementById("dApply").onclick = applyCustom;
 renderSiteTabs();
 renderWinTabs();
+renderVFilter();
 loadBasemap();
 loadBasis();
 loadMap();
