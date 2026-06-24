@@ -100,7 +100,11 @@
         <span style="color:#9ca3af;">(|$/MWh| moved on basis)</span>
       </span>
       <br>
-      <span class="sw" style="background:#22c55e;"></span> Transmission (&ge;100&nbsp;kV) &nbsp;
+      <b style="font-weight:600;">Grid kV</b>
+      <span class="sw" style="background:#14b8a6;"></span>138
+      <span class="sw" style="background:#0ea5e9;"></span>230
+      <span class="sw" style="background:#2563eb;"></span>345
+      <span class="sw" style="background:#7c3aed;"></span>500+ &nbsp;
       <span class="dot" style="background:#f59e0b;"></span> Solar site &nbsp;
       <span class="dot" style="background:#2291EB;"></span> Wind site
       &nbsp;&middot;&nbsp; <span style="border-bottom:2px dashed #6b7280; padding-bottom:1px;">dashed</span> = approx. (line not in basemap)
@@ -178,14 +182,23 @@ function star(s, active){ return L.divIcon({ className:"", iconSize:[22,22], htm
 SITES.forEach(s => { siteMarkers[s.key] = L.marker([s.lat, s.lon], { icon: star(s, s.settlement_point===site().settlement_point) })
   .addTo(map).bindPopup(`<b>${s.display_name}</b><br>${s.settlement_point} &middot; ${s.county} Co.`); });
 
+// Voltage palette (cool tones) so the warm green->red congestion overlay pops on top.
+function kvColor(v){
+  return v >= 500 ? "#7c3aed"   // violet  (EHV)
+       : v >= 345 ? "#2563eb"   // blue    (345 kV)
+       : v >= 230 ? "#0ea5e9"   // sky     (230 kV)
+       : v >= 138 ? "#14b8a6"   // teal    (138 kV)
+       : v >= 100 ? "#64748b"   // slate   (100-138 kV)
+       : "#94a3b8";             // gray    (sub-100 / unknown)
+}
+const kvWeight = v => v >= 500 ? 2.8 : v >= 345 ? 2.3 : v >= 230 ? 1.8 : v >= 138 ? 1.4 : 1.0;
+
 async function loadBasemap(){
   try {
     const gj = await (await fetch("/api/constraints/basemap?min_kv=100")).json();
-    const wt = v => v>=345 ? 2.4 : v>=200 ? 1.7 : 1.1;
+    // Color each line by its kV class so the grid reads as a voltage map.
     L.geoJSON(gj, { style: f => { const v=(f.properties&&f.properties.VOLTAGE)||0;
-      return { color:"#14532d", weight:wt(v)+1.4, opacity:0.5 }; }}).addTo(basemapLayer);
-    L.geoJSON(gj, { style: f => { const v=(f.properties&&f.properties.VOLTAGE)||0;
-      return { color:"#22c55e", weight:wt(v), opacity:0.95 }; }}).addTo(basemapLayer);
+      return { color: kvColor(v), weight: kvWeight(v), opacity: 0.8 }; }}).addTo(basemapLayer);
   } catch(e){ console.warn("basemap load failed", e); }
 }
 
