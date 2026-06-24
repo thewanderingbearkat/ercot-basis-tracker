@@ -65,28 +65,34 @@ def basis_decomposition(site_key: str, days: int = 1, top: int = 15) -> dict[str
     # Per-constraint differential contribution to basis = -(SP*(node_SF - hub_SF)),
     # summed over the window and averaged. node/hub summed separately then differenced
     # (SP is the same for both at a given interval, so this is the differential).
+    # FACILITYID comes straight from MARKET_SHIFT_FACTORS (one per constraint) --
+    # the authoritative link for both the facility name and the map geometry. (An
+    # earlier CONSTRAINTID->CONSTRAINTS join scrambled facilities; that id isn't a
+    # clean cross-table key.)
     rows = query(f"""
         WITH node AS (
-            SELECT CONSTRAINTID, ANY_VALUE(CONSTRAINTNAME) NM,
+            SELECT CONSTRAINTID, ANY_VALUE(CONSTRAINTNAME) NM, ANY_VALUE(FACILITYID) FID,
                    SUM(-(SHADOWPRICE * SHIFTFACTOR)) S
             FROM {MSF} WHERE PRICENODEID={site.price_node_id} AND MARKET='RT' AND {win}
             GROUP BY CONSTRAINTID),
         hub AS (
-            SELECT CONSTRAINTID, ANY_VALUE(CONSTRAINTNAME) NM,
+            SELECT CONSTRAINTID, ANY_VALUE(CONSTRAINTNAME) NM, ANY_VALUE(FACILITYID) FID,
                    SUM(-(SHADOWPRICE * SHIFTFACTOR)) S
             FROM {MSF} WHERE PRICENODEID={site.hub_node_id} AND MARKET='RT' AND {win}
             GROUP BY CONSTRAINTID)
         SELECT COALESCE(n.CONSTRAINTID, h.CONSTRAINTID) CID,
                COALESCE(n.NM, h.NM) NM,
+               COALESCE(n.FID, h.FID) FID,
                (COALESCE(n.S, 0) - COALESCE(h.S, 0)) / {iv} AS CONTRIB
         FROM node n FULL OUTER JOIN hub h ON n.CONSTRAINTID = h.CONSTRAINTID
     """)
-    drivers = [{"constraint_id": r["CID"], "name": r["NM"], "contrib": float(r["CONTRIB"])}
+    drivers = [{"constraint_id": r["CID"], "constraint_name": r["NM"],
+                "facility_id": r["FID"], "name": r["NM"], "contrib": float(r["CONTRIB"])}
                for r in rows if r["CONTRIB"] is not None]
     congestion_basis = sum(d["contrib"] for d in drivers)
     drivers.sort(key=lambda d: d["contrib"])   # most negative (widens basis) first
     drivers = drivers[:top]
-    _attach_geometry(drivers, start, end)
+    _name_and_locate(drivers)
 
     return {
         "site": site.key, "name": site.display_name, "hub_name": site.hub_name,
@@ -99,27 +105,18 @@ def basis_decomposition(site_key: str, days: int = 1, top: int = 15) -> dict[str
     }
 
 
-def _attach_geometry(drivers: list[dict[str, Any]], start: str, end: str) -> None:
-    """Resolve each driver's conductor geometry so the map can route it.
-
-    MARKET_SHIFT_FACTORS keys on CONSTRAINTID; geometry keys on FACILITYID. The
-    CONSTRAINTS table carries both, so we map CONSTRAINTID -> FACILITYID over the
-    same window, then reuse the active-map geo chain (FACILITIES -> STATIONS_GEO
-    -> HIFLD routing). Undrawable drivers still show in the basis list, just not
-    on the map.
-    """
-    cids = [int(d["constraint_id"]) for d in drivers if d.get("constraint_id") is not None]
-    if not cids:
-        return
-    in_clause = ",".join(str(c) for c in cids)
-    fac: dict[Any, Any] = {}
-    for r in query(f"""
-        SELECT DISTINCT CONSTRAINTID, FACILITYID FROM {YES}.CONSTRAINTS
-        WHERE ISO='ERCOT' AND CONSTRAINTID IN ({in_clause})
-          AND DATETIME >= '{start}' AND DATETIME < DATEADD('day', 1, '{end}'::DATE)
-          AND FACILITYID IS NOT NULL
-    """):
-        fac.setdefault(r["CONSTRAINTID"], r["FACILITYID"])
+def _name_and_locate(drivers: list[dict[str, Any]]) -> None:
+    """Label each driver with its FACILITY name (from FACILITIES) and attach map
+    geometry, both keyed off the FACILITYID that MARKET_SHIFT_FACTORS already
+    carries per constraint. Falls back to the constraint name when a facility has
+    no FACILITIES row. Reuses the active-map geo chain (FACILITIES -> STATIONS_GEO
+    -> HIFLD routing)."""
+    fids = [int(d["facility_id"]) for d in drivers if d.get("facility_id") is not None]
+    names: dict[Any, str] = {}
+    if fids:
+        in_clause = ",".join(str(f) for f in dict.fromkeys(fids))
+        for r in query(f"SELECT OBJECTID, FACILITYNAME FROM {YES}.FACILITIES WHERE OBJECTID IN ({in_clause})"):
+            names[r["OBJECTID"]] = r["FACILITYNAME"]
     for d in drivers:
-        d["facility_id"] = fac.get(d["constraint_id"])
+        d["name"] = names.get(d["facility_id"]) or d.get("constraint_name") or str(d.get("facility_id"))
     attach_geometry_list(drivers)

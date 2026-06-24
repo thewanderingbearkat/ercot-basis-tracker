@@ -108,17 +108,6 @@
     </div>
   </div>
 
-  <!-- Around-the-clock congestion drivers -->
-  <div class="panel">
-    <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
-      <h2 style="margin:0;">Top congestion drivers</h2>
-      <span id="dayLabel" class="health" style="margin-left:auto;"></span>
-    </div>
-    <div id="drivers" style="margin-top:12px;"><div class="empty">Loading&hellip;</div></div>
-    <div class="note">Around-the-clock congestion ($/MWh, all hours over the window) at this site's settlement point,
-      ranked by constraint. This is total congestion magnitude (vs. the node&minus;hub basis above) &mdash; a
-      constraint can hit the node and its hub alike yet still dominate ATC.</div>
-  </div>
 
 </div></div>
 
@@ -216,7 +205,7 @@ function renderSiteTabs(){
   document.querySelectorAll("#siteTabs button").forEach(b =>
     b.onclick = () => { curSite = b.dataset.s;
       SITES.forEach(s => siteMarkers[s.key].setIcon(star(s, s.settlement_point===site().settlement_point)));
-      renderSiteTabs(); loadBasis(); loadAttribution(); });
+      renderSiteTabs(); loadBasis(); });
 }
 
 const WINDOWS = [{d:1,label:"1D"},{d:7,label:"7D"},{d:30,label:"30D"},{d:90,label:"90D"}];
@@ -224,7 +213,7 @@ function renderWinTabs(){
   document.getElementById("winTabs").innerHTML = WINDOWS.map(w =>
     `<button data-d="${w.d}" class="${w.d===curDays?'active':''}">${w.label}</button>`).join("");
   document.querySelectorAll("#winTabs button").forEach(b =>
-    b.onclick = () => { curDays = +b.dataset.d; renderWinTabs(); loadBasis(); loadAttribution(); });
+    b.onclick = () => { curDays = +b.dataset.d; renderWinTabs(); loadBasis(); });
 }
 
 // ---- Basis panel + map (one fetch drives both) --------------------------
@@ -301,40 +290,10 @@ function popup(x, g){
   return `<b>${x.name}</b><br><span style="color:#6b7280">${seg}</span><br>Basis contribution: <b>${fmt(x.contrib)} $/MWh</b>`;
 }
 
-// ---- Around-the-clock congestion drivers --------------------------------
-async function loadAttribution(){
-  const el = document.getElementById("drivers");
-  el.innerHTML = '<div class="empty">Loading&hellip;</div>';
-  try {
-    const d = await (await fetch(`/api/constraints/attribution?days=${curDays}`)).json();
-    if (d.error){ el.innerHTML = `<div class="empty">⚠️ ${d.error}</div>`; return; }
-    const sp = site().settlement_point;
-    const v = d.by_sp ? d.by_sp[sp] : null;
-    document.getElementById("dayLabel").innerHTML =
-      (d.days>1 ? "window: " : "operating day: ") + "<b>" + fmtWindow(d) + "</b>";
-    if (!v || !v.drivers.length){ el.innerHTML = '<div class="empty">No congestion on this node for the window.</div>'; return; }
-    const max = Math.max(...v.drivers.map(x => Math.abs(x.atc)), 0.01);
-    v.drivers.forEach((x,i) => { x._uid = "a"+i; if (x.geometry) geomById[x._uid] = x.geometry; });
-    el.innerHTML = v.drivers.map(x => {
-      const g = x.geometry || {};
-      const clk = !!(g.drawable || g.from || g.to);
-      return `<div class="drv${clk?' clk':''}"${clk?` onclick="focusDriver('${x._uid}')"`:''}>
-        <div class="drow"><span class="nm">${x.name}</span><span class="v neg">${x.atc.toFixed(2)} $/MWh</span></div>
-        <div class="bar" style="width:${Math.max(2, Math.abs(x.atc)/max*100)}%;background:#dc2626;"></div>
-        <div class="sub">${lineDesc(g)}</div>
-        <div class="sub">${x.pct_time.toFixed(0)}% of intervals bound &middot; ${x.when_bind.toFixed(1)} $/MWh when binding</div>
-      </div>`;
-    }).join("");
-    document.getElementById("health").innerHTML =
-      `ATC congestion <b>${v.total_atc.toFixed(2)} $/MWh</b> &middot; last full day ${fmtDay(d.as_of)}`;
-  } catch(e){ el.innerHTML = `<div class="empty">fetch error: ${e}</div>`; }
-}
-
 renderSiteTabs();
 renderWinTabs();
 loadBasemap();
 loadBasis();
-loadAttribution();
 </script>
 </body>
 </html>
