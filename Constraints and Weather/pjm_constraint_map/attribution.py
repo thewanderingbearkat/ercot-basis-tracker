@@ -56,61 +56,61 @@ def last_full_day():
     return d.date() if (d is not None and hasattr(d, "date")) else d
 
 
+def _apportion(pnode_id: int, avg_cong: float, start: str, end: str, top: int) -> list[dict[str, Any]]:
+    """Apportion a pnode's authoritative avg RTCONG across constraints by modeled
+    BETA shares (grouped by FACILITY, so each line shows once). Biggest movers first."""
+    beta = query(f"""
+        SELECT FACILITYID, ANY_VALUE(PNODENAME) AS PNODE,
+               SUM(-(SHADOW_PRICE * SHIFT_FACTOR)) AS MODELED,
+               AVG(QUALITY_METRIC)            AS QUALITY,
+               COUNT(DISTINCT CONSTRAINT_DAY) AS DAYS_BOUND
+        FROM {BETA}
+        WHERE ISO = 'PJMISO' AND PNODEID = {pnode_id}
+          AND CONSTRAINT_DAY BETWEEN '{start}' AND '{end}'
+        GROUP BY FACILITYID
+    """)
+    modeled = [r for r in beta if r["MODELED"] is not None]
+    total = sum(float(r["MODELED"]) for r in modeled) or 1.0
+    names = _facility_names([r["FACILITYID"] for r in modeled])
+    drivers = []
+    for r in modeled:
+        share = float(r["MODELED"]) / total
+        drivers.append({
+            "facility_id": r["FACILITYID"], "name": names.get(r["FACILITYID"], str(r["FACILITYID"])),
+            "share": share, "attributed": avg_cong * share,
+            "days_bound": r["DAYS_BOUND"],
+            "quality": float(r["QUALITY"]) if r["QUALITY"] is not None else None,
+        })
+    drivers.sort(key=lambda d: abs(d["attributed"]), reverse=True)   # biggest movers first
+    return drivers[:top]
+
+
 def daily_attribution(site_key: str, days: int = 1, top: int = 12,
                       start: str | None = None, end: str | None = None) -> dict[str, Any]:
-    """Attribution over a window ending at the last full operating day (or an
-    explicit start/end). Modeled BETA shares x authoritative RTCONG magnitude."""
+    """Node-side AND hub-side congestion attribution over the window. Each side =
+    modeled BETA shares x that pnode's authoritative avg RTCONG. basis congestion
+    = node avg - hub avg; showing both makes the (near-)cancellation visible."""
     site = SITES[site_key]
     if end is None:
         as_of = last_full_day()
         if as_of is None:
-            return {"site": site.key, "name": site.display_name, "as_of": None,
-                    "start": None, "days": days, "avg_congestion": 0.0, "drivers": []}
+            return {"site": site.key, "name": site.display_name, "as_of": None, "start": None,
+                    "days": days, "avg_congestion": 0.0, "drivers": [],
+                    "hub_name": site.hub_name, "hub_avg_congestion": 0.0, "hub_drivers": []}
         end = as_of.isoformat() if hasattr(as_of, "isoformat") else str(as_of)
     if start is None:
         days = max(1, int(days))
         start = (date.fromisoformat(end) - timedelta(days=days - 1)).isoformat()
 
-    # 1. Modeled congestion share per FACILITY over the window (BETA, daily/cheap).
-    #    Collapse contingencies into the monitored facility so a line that binds
-    #    under multiple contingencies shows once (matches the binding panel).
-    beta = query(f"""
-        SELECT FACILITYID,
-               ANY_VALUE(PNODENAME) AS PNODE,
-               SUM(-(SHADOW_PRICE * SHIFT_FACTOR)) AS MODELED,
-               AVG(QUALITY_METRIC)                 AS QUALITY,
-               COUNT(DISTINCT CONSTRAINT_DAY)      AS DAYS_BOUND
-        FROM {BETA}
-        WHERE ISO = 'PJMISO' AND PNODEID = {site.node_id}
-          AND CONSTRAINT_DAY BETWEEN '{start}' AND '{end}'
-        GROUP BY FACILITYID
-    """)
-    modeled = [r for r in beta if r["MODELED"] is not None]
-    total_modeled = sum(float(r["MODELED"]) for r in modeled) or 1.0
-
-    # 2. Authoritative magnitude: average node RTCONG over the window, from staged
-    #    daily aggregates + a live tail (fast for long windows).
-    avg_cong = _avg_node_cong(site.node_id, start, end)
-
-    # 3. Apportion the real congestion by modeled share.
-    names = _facility_names([r["FACILITYID"] for r in modeled])
-    drivers = []
-    for r in modeled:
-        share = float(r["MODELED"]) / total_modeled
-        drivers.append({
-            "facility_id": r["FACILITYID"],
-            "name": names.get(r["FACILITYID"], str(r["FACILITYID"])),
-            "share": share,
-            "attributed": avg_cong * share,           # $/MWh of real congestion
-            "days_bound": r["DAYS_BOUND"],
-            "quality": float(r["QUALITY"]) if r["QUALITY"] is not None else None,
-        })
-    drivers.sort(key=lambda d: d["attributed"])        # most negative (worst) first
+    node_avg = _avg_node_cong(site.node_id, start, end)
+    hub_avg = _avg_node_cong(site.hub_node_id, start, end)
     return {
         "site": site.key, "name": site.display_name,
         "as_of": end, "start": start,
         "days": (date.fromisoformat(end) - date.fromisoformat(start)).days + 1,
-        "avg_congestion": avg_cong, "drivers": drivers[:top],
+        "avg_congestion": node_avg, "drivers": _apportion(site.node_id, node_avg, start, end, top),
+        "hub_name": site.hub_name, "hub_avg_congestion": hub_avg,
+        "hub_drivers": _apportion(site.hub_node_id, hub_avg, start, end, top),
     }
 
 
