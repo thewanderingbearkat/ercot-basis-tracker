@@ -120,9 +120,9 @@
     </div>
     <div id="drivers" style="margin-top:12px;"><div class="empty">Loading&hellip;</div></div>
     <div class="note">Each line's contribution to the <b>basis congestion</b> = its effect on the node <i>minus</i> its
-      effect on the hub (each apportioned from authoritative RTCONG by <b>modeled</b> BETA shares; the <i>node &minus; hub</i>
-      under each row). They sum (+ &ldquo;other&rdquo;) to the basis congestion in the box below, which ties to the
-      <b>Congestion</b> line in the basis breakdown. The total is authoritative; the per-constraint split is modeled
+      effect on the hub (the <i>node &minus; hub</i> under each row). <b>Left = pushing basis down</b> (toward a cheaper
+      node), <b>right = pushing it up</b>; Down + Up nets to the basis congestion in the box, which ties to the
+      <b>Congestion</b> line in the basis breakdown. The net is authoritative; the per-constraint split is modeled
       (daily corr vs actual ~0.70 at NWOH, weak at Lordstown, near-zero at Lackawanna &mdash; read direction &amp; the big
       movers, not the last decimal). Click a row to locate it on the map.</div>
   </div>
@@ -327,18 +327,24 @@ async function loadMap(fresh){
         <div class="sub">node ${fmt(x.node_part)} &minus; hub ${fmt(x.hub_part)}</div>
       </div>`;
     };
-    let html = `<div id="drvgrid">` + drv.map(row).join("");
-    if (otherV){
-      html += `<div class="drv" style="opacity:.7;">
+    const otherRow = `<div class="drv" style="opacity:.7;">
         <div class="drow"><span class="nm">Other (${d.other_count} constraint${d.other_count>1?'s':''})</span><span class="v ${otherV<0?'neg':'pos'}">${fmt(otherV)} $/MWh</span></div>
         <div class="bar" style="width:${Math.max(2, Math.abs(otherV)/max*100)}%;background:${otherV<0?'#fca5a5':'#86efac'}"></div></div>`;
-    }
-    html += `</div>`;
-    const part = (lab, v) => `<span class="ck-lab">${lab}</span> <span class="v ${v<0?'neg':'pos'}">${fmt(v)}</span>`;
-    html += `<div class="checkbox">${part("Node congestion", d.avg_congestion)}<span class="ck-op">&minus;</span>` +
-      `${part("Hub congestion", d.hub_avg_congestion)}<span class="ck-op">=</span>` +
-      `${part("Basis congestion", d.congestion_basis)} <span style="color:#6b7280;">$/MWh</span>` +
-      `<div class="ck-foot">these drivers (+ other) sum to this, and it ties to the <b>Congestion</b> line in the basis breakdown</div></div>`;
+    // Split by sign: down-drivers (negative) left, up-drivers (positive) right.
+    const negs = drv.filter(x => x.attributed < 0).sort((a,b) => a.attributed - b.attributed);
+    const poss = drv.filter(x => x.attributed > 0).sort((a,b) => b.attributed - a.attributed);
+    const downTotal = negs.reduce((s,x)=>s+x.attributed,0) + (otherV<0?otherV:0);
+    const upTotal   = poss.reduce((s,x)=>s+x.attributed,0) + (otherV>0?otherV:0);
+    const left  = (negs.map(row).join("") + (otherV<0?otherRow:"")) || '<div class="empty">&mdash;</div>';
+    const right = (poss.map(row).join("") + (otherV>0?otherRow:"")) || '<div class="empty">&mdash;</div>';
+    let html = `<div class="twosided">` +
+      `<div class="side"><div class="side-h">Pushing basis down <span class="v neg">${fmt(downTotal)}</span></div>${left}</div>` +
+      `<div class="side"><div class="side-h">Pushing basis up <span class="v pos">${fmt(upTotal)}</span></div>${right}</div>` +
+      `</div>`;
+    html += `<div class="checkbox"><span class="ck-lab">Down</span> <span class="v neg">${fmt(downTotal)}</span>` +
+      `<span class="ck-op">+</span><span class="ck-lab">Up</span> <span class="v pos">${fmt(upTotal)}</span>` +
+      `<span class="ck-op">=</span><span class="ck-lab">Basis congestion</span> <span class="v ${d.congestion_basis<0?'neg':'pos'}">${fmt(d.congestion_basis)}</span> <span style="color:#6b7280;">$/MWh</span>` +
+      `<div class="ck-foot">= node ${fmt(d.avg_congestion)} &minus; hub ${fmt(d.hub_avg_congestion)} &middot; ties to the <b>Congestion</b> line in the basis breakdown</div></div>`;
     drvEl.innerHTML = html;
   } catch(e){ document.getElementById("mapMeta").textContent = "fetch error: " + e; drvEl.innerHTML = `<div class="empty">fetch error: ${e}</div>`; }
 }
