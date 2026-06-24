@@ -141,6 +141,18 @@
     </div>
   </div>
 
+  <div class="panel" style="margin-top:16px;">
+    <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+      <h2 style="margin:0;">Basis breakdown &mdash; constraints driving node vs hub</h2>
+      <span id="basisMeta" class="health" style="margin-left:auto;"></span>
+    </div>
+    <div id="basisHead" style="margin-top:8px;"></div>
+    <div id="basisDrivers" style="margin-top:10px;"><div class="empty">Loading&hellip;</div></div>
+    <div class="legend" style="margin-top:8px;">Basis = node LMP &minus; hub LMP, decomposed into the binding constraints
+      that drive it (authoritative SCED shift factors, last full operating day). The constraints <b>sum to the congestion</b>;
+      a small residual is timing/reference. ERCOT is lossless, so basis &asymp; all congestion. Follows the site selector above.</div>
+  </div>
+
 </div></div>
 
 <script>
@@ -326,7 +338,7 @@ function renderTabs() {
   document.getElementById("siteTabs").innerHTML = uniqueSites().map(s =>
     `<button data-sp="${s.settlement_point}" class="${s.settlement_point===curSP?'active':''}">${s.name}</button>`).join("");
   document.querySelectorAll("#siteTabs button").forEach(b =>
-    b.onclick = () => { curSP = b.dataset.sp; renderTabs(); renderBridge(); renderDrivers(); });
+    b.onclick = () => { curSP = b.dataset.sp; renderTabs(); renderBridge(); renderDrivers(); loadBasis(); });
   document.getElementById("winTabs").innerHTML = [7,30,90].map(d =>
     `<button data-d="${d}" class="${d===curDays?'active':''}">${d}d</button>`).join("");
   document.querySelectorAll("#winTabs button").forEach(b =>
@@ -386,12 +398,43 @@ function renderDrivers() {
       </div>`).join("");
 }
 
+// ---- Basis breakdown: constraints that sum to basis (authoritative) ------
+const basisCache = {};
+async function loadBasis() {
+  const el = document.getElementById("basisDrivers");
+  const s = bridgeData ? siteForSP(curSP) : null;
+  if (!s) return;
+  try {
+    let d = basisCache[s.key];
+    if (!d) { d = await (await fetch("/api/constraints/basis?site=" + s.key)).json(); basisCache[s.key] = d; }
+    if (d.error) { el.innerHTML = `<div class="empty">⚠️ ${d.error}</div>`; return; }
+    renderBasis(d);
+  } catch (e) { el.innerHTML = `<div class="empty">fetch error: ${e}</div>`; }
+}
+function renderBasis(d) {
+  const sgn = v => (v >= 0 ? "+" : "") + v.toFixed(2);
+  const red = "#b91c1c", grn = "#15803d";
+  document.getElementById("basisMeta").innerHTML = `vs ${d.hub_name} &middot; ${d.as_of}`;
+  document.getElementById("basisHead").innerHTML =
+    `<span style="font-size:14px;">Basis <b style="font-size:22px;color:${d.basis<0?red:grn};">${sgn(d.basis)} $/MWh</b>` +
+    ` <span style="color:#6b7280;font-size:12px;">= congestion ${sgn(d.congestion_basis)} + residual ${sgn(d.residual)} (loss/timing)</span></span>`;
+  const drv = (d.drivers || []).filter(x => Math.abs(x.contrib) >= 0.01);
+  const el = document.getElementById("basisDrivers");
+  if (!drv.length) { el.innerHTML = '<div class="empty">No constraints on this node for the day.</div>'; return; }
+  const max = Math.max(...drv.map(x => Math.abs(x.contrib)), 0.01);
+  el.innerHTML = drv.map(x => `
+    <div class="drv">
+      <div class="drow"><span class="nm">${x.name}</span><span style="color:${x.contrib<0?red:grn};font-weight:700;">${sgn(x.contrib)} $/MWh</span></div>
+      <div class="bar" style="width:${Math.max(2, Math.abs(x.contrib)/max*100)}%;background:${x.contrib<0?'#dc2626':'#16a34a'};"></div>
+    </div>`).join("");
+}
+
 async function loadBridge() {
   try {
     bridgeData = await (await fetch("/api/constraints/bridge")).json();
     if (bridgeData.error) { document.getElementById("bridge").innerHTML = `<div class="empty">⚠️ ${bridgeData.error}</div>`; return; }
     if (!curSP) { const u = uniqueSites(); curSP = (u[0]||{}).settlement_point; }
-    renderTabs(); renderBridge();
+    renderTabs(); renderBridge(); loadBasis();
   } catch (e) { document.getElementById("bridge").innerHTML = `<div class="empty">fetch error: ${e}</div>`; }
 }
 async function loadAttribution() {

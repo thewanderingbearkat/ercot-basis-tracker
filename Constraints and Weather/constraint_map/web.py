@@ -17,6 +17,7 @@ from dataclasses import asdict
 from flask import Blueprint, jsonify, render_template, request
 
 from .analytics import historical_attribution, price_bridge
+from .basis import basis_decomposition
 from .constraints import active_constraints
 from .geo import attach_geometry, load_basemap
 from .sites import SITES
@@ -121,4 +122,25 @@ def api_attribution():
         logger.exception("historical_attribution failed")
         return jsonify({"error": str(e)}), 502
     _attrib_cache[days] = (time.time(), data)
+    return jsonify({**data, "cache_age_seconds": 0})
+
+
+# Basis decomposition (last full day): which constraints drive node vs hub.
+_basis_cache: dict[str, tuple[float, dict]] = {}
+
+
+@constraints_bp.route("/api/constraints/basis")
+def api_basis():
+    site = request.args.get("site", next(iter(SITES)))
+    hit = _basis_cache.get(site)
+    if hit and (time.time() - hit[0]) < ATTRIB_CACHE_TTL and request.args.get("fresh") != "1":
+        return jsonify({**hit[1], "cache_age_seconds": round(time.time() - hit[0], 1)})
+    if site not in SITES:
+        return jsonify({"error": f"unknown site {site}"}), 400
+    try:
+        data = basis_decomposition(site)
+    except Exception as e:
+        logger.exception("ercot basis_decomposition failed")
+        return jsonify({"error": str(e)}), 502
+    _basis_cache[site] = (time.time(), data)
     return jsonify({**data, "cache_age_seconds": 0})
