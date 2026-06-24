@@ -111,9 +111,11 @@
     </div>
     <div id="drivers" style="margin-top:12px;"><div class="empty">Loading&hellip;</div></div>
     <div class="note">Authoritative node congestion ($/MWh) apportioned across constraints by <b>modeled</b>
-      shift-factor shares (Yes Energy BETA). The total is real (RTCONG); the per-constraint split is modeled and
-      its reliability varies by node &mdash; daily correlation vs actual is ~0.70 at NWOH but weak at Lordstown and
-      near-zero at Lackawanna, so treat the split there as indicative only. Click a row to locate it on the map.</div>
+      shift-factor shares (Yes Energy BETA). These sum to the <b>node's</b> congestion (the figure up top), <b>not</b>
+      the congestion component in the basis breakdown above &mdash; that one is node <i>minus hub</i>, and PJM's
+      modeled shift factors can't split that basis-congestion per constraint reliably. The total is real (RTCONG);
+      the per-constraint split is modeled and its reliability varies by node (daily corr vs actual ~0.70 at NWOH,
+      weak at Lordstown, near-zero at Lackawanna &mdash; indicative only). Click a row to locate it on the map.</div>
   </div>
 
   <div class="panel" style="margin-bottom:16px;">

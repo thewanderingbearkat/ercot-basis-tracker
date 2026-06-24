@@ -71,9 +71,11 @@ def daily_attribution(site_key: str, days: int = 1, top: int = 12,
         days = max(1, int(days))
         start = (date.fromisoformat(end) - timedelta(days=days - 1)).isoformat()
 
-    # 1. Modeled congestion share per constraint over the window (BETA, daily/cheap).
+    # 1. Modeled congestion share per FACILITY over the window (BETA, daily/cheap).
+    #    Collapse contingencies into the monitored facility so a line that binds
+    #    under multiple contingencies shows once (matches the binding panel).
     beta = query(f"""
-        SELECT FACILITYID, CONTINGENCYID,
+        SELECT FACILITYID,
                ANY_VALUE(PNODENAME) AS PNODE,
                SUM(-(SHADOW_PRICE * SHIFT_FACTOR)) AS MODELED,
                AVG(QUALITY_METRIC)                 AS QUALITY,
@@ -81,7 +83,7 @@ def daily_attribution(site_key: str, days: int = 1, top: int = 12,
         FROM {BETA}
         WHERE ISO = 'PJMISO' AND PNODEID = {site.node_id}
           AND CONSTRAINT_DAY BETWEEN '{start}' AND '{end}'
-        GROUP BY FACILITYID, CONTINGENCYID
+        GROUP BY FACILITYID
     """)
     modeled = [r for r in beta if r["MODELED"] is not None]
     total_modeled = sum(float(r["MODELED"]) for r in modeled) or 1.0
