@@ -145,3 +145,6 @@ data/
 Constraints and Weather/data/*
 !Constraints and Weather/data/tx_transmission_lines.geojson
 !Constraints and Weather/data/pjm_transmission_lines.geojson
+
+# Local raw-input cache for incremental PnL refresh (not deployed; pnl_history.json is the committed artifact)
+pnl_raw_cache.json.gz

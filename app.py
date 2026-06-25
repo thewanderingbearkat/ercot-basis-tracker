@@ -785,56 +785,56 @@ def fetch_hub_prices(start_date=None, end_date=None):
         start_dt = datetime.strptime(start_date, "%Y-%m-%d")
         end_dt = datetime.strptime(end_date, "%Y-%m-%d")
 
-        # Fetch day by day to avoid API limit (1,000,000 records max)
-        logger.info(f"Fetching hub prices ({HUB_SETTLEMENT_POINT}) from {start_date} to {end_date} (day by day)")
-        current_dt = start_dt
-        days_fetched = 0
+        # One request per day (the API caps a single response at 1M records), but
+        # run the days CONCURRENTLY. A full YTD window is ~180 sequential requests
+        # (several minutes) -- which blows past gunicorn's 120s request timeout on
+        # Render (so the Reload button died mid-fetch). A small thread pool cuts it
+        # to seconds. The bearer token / headers are read-only and safe to share.
+        logger.info(f"Fetching hub prices ({HUB_SETTLEMENT_POINT}) from {start_date} to {end_date} (concurrent)")
 
-        while current_dt <= end_dt:
-            day_str = current_dt.strftime("%Y-%m-%d")
-            params = {
-                "begin": f"{day_str}T00:00:00Z",
-                "end": f"{day_str}T23:59:59Z"
-            }
-
+        def _fetch_hub_day(day_str):
+            out = {}
+            params = {"begin": f"{day_str}T00:00:00Z", "end": f"{day_str}T23:59:59Z"}
             try:
                 response = requests.get(TENASKA_MARKET_PRICES_URL, headers=headers, params=params, timeout=60)
-
-                if response.status_code == 200:
-                    data = response.json()
-
-                    for item in data.get("data", []):
-                        if item.get("element") != HUB_SETTLEMENT_POINT:
-                            continue
-
-                        for data_point in item.get("dataPoints", []):
-                            if data_point.get("keyName") != "RTSPP":
-                                continue
-
-                            for value_entry in data_point.get("values", []):
-                                interval_start_utc = value_entry.get("intervalStartUtc")
-
-                                for nested_data in value_entry.get("data", []):
-                                    price = nested_data.get("value", 0)
-
-                                    try:
-                                        interval_dt = datetime.strptime(interval_start_utc, "%Y-%m-%dT%H:%M:%SZ")
-                                        interval_dt = interval_dt.replace(tzinfo=ZoneInfo("UTC")).astimezone(cst_tz)
-                                        interval_str = interval_dt.isoformat()
-
-                                        hub_prices[interval_str] = float(price) if price else 0
-                                    except:
-                                        continue
-                    days_fetched += 1
-                else:
+                if response.status_code != 200:
                     logger.warning(f"Hub prices API returned {response.status_code} for {day_str}")
-
+                    return out
+                for item in response.json().get("data", []):
+                    if item.get("element") != HUB_SETTLEMENT_POINT:
+                        continue
+                    for data_point in item.get("dataPoints", []):
+                        if data_point.get("keyName") != "RTSPP":
+                            continue
+                        for value_entry in data_point.get("values", []):
+                            interval_start_utc = value_entry.get("intervalStartUtc")
+                            for nested_data in value_entry.get("data", []):
+                                price = nested_data.get("value", 0)
+                                try:
+                                    interval_dt = datetime.strptime(interval_start_utc, "%Y-%m-%dT%H:%M:%SZ")
+                                    interval_dt = interval_dt.replace(tzinfo=ZoneInfo("UTC")).astimezone(cst_tz)
+                                    out[interval_dt.isoformat()] = float(price) if price else 0
+                                except Exception:
+                                    continue
             except requests.Timeout:
                 logger.warning(f"Hub prices request timed out for {day_str}")
             except Exception as e:
                 logger.warning(f"Error fetching hub prices for {day_str}: {e}")
+            return out
 
-            current_dt += timedelta(days=1)
+        day_strs = []
+        d = start_dt
+        while d <= end_dt:
+            day_strs.append(d.strftime("%Y-%m-%d"))
+            d += timedelta(days=1)
+
+        from concurrent.futures import ThreadPoolExecutor
+        days_fetched = 0
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            for day_map in pool.map(_fetch_hub_day, day_strs):
+                if day_map:
+                    days_fetched += 1
+                    hub_prices.update(day_map)
 
         logger.info(f"Fetched {len(hub_prices)} hub price intervals from {days_fetched} days")
         return hub_prices
