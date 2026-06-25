@@ -110,7 +110,7 @@
 <script>
 // transmission: distinct kV palette (matches the ERCOT/PJM constraint maps)
 const COLOR = { 500:[124,58,237], 345:[37,99,235], 230:[14,165,233], 138:[20,184,166] };
-function arcColor(v){ const c=v>=500?COLOR[500]:v>=345?COLOR[345]:v>=230?COLOR[230]:COLOR[138]; return [c[0],c[1],c[2],195]; }
+function arcColor(v){ const c=v>=500?COLOR[500]:v>=345?COLOR[345]:v>=230?COLOR[230]:COLOR[138]; return [c[0],c[1],c[2],235]; }
 // facilities: vivid accents, distinct from the violet grid
 const FAC_COLOR = { wind:[56,189,248], solar:[251,191,36], datacenter:[244,114,182] };
 
@@ -181,12 +181,14 @@ function layers(){
   const arcs = arcsByKv[loadedKv];
   if(state.arc && arcs){
     out.push(new deck.ArcLayer({
-      id:"transmission", data:arcs, getHeight:0.3, greatCircle:false,
+      id:"transmission", data:arcs, getHeight:0.22, greatCircle:false,
       getSourcePosition:d=>d.source, getTargetPosition:d=>d.target,
       getSourceColor:d=>arcColor(d.voltage), getTargetColor:d=>arcColor(d.voltage),
-      getWidth:d=>d.voltage>=500?2:d.voltage>=345?1.4:d.voltage>=230?1:0.7,
-      widthUnits:"pixels", widthMinPixels:0.6, widthMaxPixels:4, opacity:0.6,
-      pickable:true, autoHighlight:true, highlightColor:[255,255,255,200],
+      // width in meters -> lines thicken as you zoom in (clamped). Thin, clean
+      // overview; bold and legible up close even at the lower kV tiers.
+      getWidth:d=>d.voltage>=500?2400:d.voltage>=345?1700:d.voltage>=230?1100:750,
+      widthUnits:"meters", widthMinPixels:1.5, widthMaxPixels:7, opacity:0.9,
+      pickable:true, autoHighlight:true, highlightColor:[255,255,255,235],
     }));
   }
   if(state.fac && facilities){
