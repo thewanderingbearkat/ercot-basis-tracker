@@ -22,6 +22,16 @@
         pstyle: { radius: 3, color: "#334155", weight: 1, fillColor: "#94a3b8", fillOpacity: 0.85 } },
       { k: "pipelines",   label: "Pipelines",  type: "Pipeline",   kind: "dense", src: "/api/infra/dense/pipelines", minZoom: 9,
         lstyle: { color: "#ea580c", weight: 1.5, opacity: 0.75, dashArray: "4 3" } },
+      { k: "thermal", label: "Thermal", type: "Thermal plant", kind: "static", src: "/api/infra/thermal", filter: () => true,
+        dot: "#ef4444",
+        pstyleFn: f => { const c = { gas: "#ef4444", coal: "#6b7280", oil: "#b45309", nuclear: "#84cc16" }[(f.properties || {}).type] || "#ef4444";
+          return { radius: 3, color: c, weight: 1, fillColor: c, fillOpacity: 0.8 }; } },
+      { k: "ai", label: "AI campuses", type: "AI data center", kind: "static", src: "/api/infra/ai_datacenters", filter: () => true,
+        dot: "#fb923c",
+        pstyleFn: f => { const s = (f.properties || {}).status;
+          const c = { construction: "#fb923c", operational: "#2dd4bf", announced: "#94a3b8" }[s] || "#94a3b8";
+          return { radius: s === "construction" ? 6 : 5, color: s === "construction" ? "#fed7aa" : c,
+                   weight: s === "construction" ? 2 : 1, fillColor: c, fillOpacity: 0.9 }; } },
     ];
     const box = document.getElementById("mapDetails");
     const active = {}, groups = {}, staticCache = {};
@@ -53,21 +63,29 @@
       const volt = p.voltage || p.VOLTAGE;
       const vbadge = volt ? ` <span class="md-kv">${volt} kV</span>` : "";
       const rows = [];
+      if (p.status) {   // AI campus
+        rows.push(`Status&nbsp;<b>${p.status}</b>`);
+        if (p.target_mw) rows.push(`${p.current_mw || 0}&rarr;${p.target_mw} MW`);
+        if (p.expected_completion) rows.push(`complete ~${p.expected_completion}`);
+      }
       if (p.mw) rows.push(`Capacity&nbsp;<b>${(+p.mw).toLocaleString()} MW</b>`);
+      if (l.k === "thermal" && p.type) rows.push(`Fuel&nbsp;<b>${p.type}</b>`);
       if (p.substance) rows.push(`Carries&nbsp;<b>${p.substance}</b>`);
       if (p.source && l.kind === "static" && l.k !== "datacenters") rows.push(`Fuel&nbsp;<b>${p.source}</b>`);
       const c = centroid(f);
       if (c) rows.push(`<span style="color:#9ca3af;">${c[1].toFixed(4)}, ${c[0].toFixed(4)}</span>`);
+      const owner = p.operator || p.owner;
       box.innerHTML =
         `<div class="md-t">${p.name || l.type} <span class="md-kv" style="background:${badgeColor(l)};">${l.type}</span>${vbadge}</div>` +
-        `<div class="md-s">Owner&nbsp;&middot;&nbsp;${p.operator || "<i>not in OpenStreetMap</i>"}</div>` +
-        (rows.length ? `<div class="md-v">${rows.join(" &nbsp;&middot;&nbsp; ")}</div>` : "");
+        `<div class="md-s">Owner&nbsp;&middot;&nbsp;${owner || "<i>n/a</i>"}</div>` +
+        (rows.length ? `<div class="md-v">${rows.join(" &nbsp;&middot;&nbsp; ")}</div>` : "") +
+        (p.latest_note ? `<div class="md-s" style="margin-top:4px;font-style:italic;">&ldquo;${p.latest_note}&rdquo;</div>` : "");
     }
     function draw(gj, l) {
       const g = group(l.k);
       L.geoJSON(gj, {
         filter: l.filter,
-        pointToLayer: (f, ll) => L.circleMarker(ll, l.pstyle),
+        pointToLayer: (f, ll) => L.circleMarker(ll, l.pstyleFn ? l.pstyleFn(f) : l.pstyle),
         style: l.lstyle,
         onEachFeature: (f, ly) => ly.on("click", e => { L.DomEvent.stopPropagation(e); details(f, l); }),
       }).addTo(g);

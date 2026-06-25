@@ -68,8 +68,12 @@
   <input id="search" placeholder="search facilities by owner…" autocomplete="off">
   <div id="searchct"></div>
 
+  <div class="lyr"><span class="nm">Our assets <span class="ct" id="ct-sites"></span></span><div class="tog on" id="tog-sites"></div></div>
   <div class="lyr"><span class="nm">Transmission <span class="ct" id="ct-arc"></span></span><div class="tog on" id="tog-arc"></div></div>
-  <div class="lyr"><span class="nm">Facilities <span class="ct" id="ct-fac"></span></span><div class="tog on" id="tog-fac"></div></div>
+  <div class="lyr"><span class="nm">Renewables / DC <span class="ct" id="ct-fac"></span></span><div class="tog on" id="tog-fac"></div></div>
+  <div class="lyr"><span class="nm">Thermal plants <span class="ct" id="ct-thermal"></span></span><div class="tog" id="tog-thermal"></div></div>
+  <div class="lyr"><span class="nm">AI campuses <span class="ct" id="ct-ai"></span></span><div class="tog" id="tog-ai"></div></div>
+  <div class="lyr"><span class="nm">Pipelines <span class="ct" id="ct-pipe"></span></span><div class="tog" id="tog-pipe"></div></div>
   <div class="lyr"><span class="nm">Congestion <span class="ct" id="ct-cong"></span></span><div class="tog" id="tog-cong"></div></div>
 
   <div class="legend">
@@ -84,7 +88,25 @@
     <div class="lg-row">
       <span class="it"><span class="lg-dot" style="background:rgb(56,189,248)"></span>wind</span>
       <span class="it"><span class="lg-dot" style="background:rgb(251,191,36)"></span>solar</span>
-      <span class="it"><span class="lg-dot" style="background:rgb(244,114,182)"></span>data center</span>
+      <span class="it"><span class="lg-dot" style="background:rgb(244,114,182)"></span>data ctr</span>
+      <span class="it"><span class="lg-dot" style="background:rgb(255,255,255);border:2px solid rgb(245,158,11)"></span>our asset</span>
+    </div>
+    <div id="lg-thermal" style="display:none">
+      <div class="lg-h">Thermal plants</div>
+      <div class="lg-row">
+        <span class="it"><span class="lg-dot" style="background:rgb(239,68,68)"></span>gas</span>
+        <span class="it"><span class="lg-dot" style="background:rgb(107,114,128)"></span>coal</span>
+        <span class="it"><span class="lg-dot" style="background:rgb(180,83,9)"></span>oil</span>
+        <span class="it"><span class="lg-dot" style="background:rgb(132,204,22)"></span>nuclear</span>
+      </div>
+    </div>
+    <div id="lg-ai" style="display:none">
+      <div class="lg-h">AI campuses — size ∝ planned MW</div>
+      <div class="lg-row">
+        <span class="it"><span class="lg-dot" style="background:rgb(251,146,60);border:2px solid rgb(251,146,60)"></span>under construction</span>
+        <span class="it"><span class="lg-dot" style="background:rgb(45,212,191)"></span>operational</span>
+        <span class="it"><span class="lg-dot" style="background:rgb(148,163,184)"></span>announced</span>
+      </div>
     </div>
     <div id="lg-cong" style="display:none">
       <div class="lg-h">Congestion — shadow price</div>
@@ -113,6 +135,8 @@ const COLOR = { 500:[124,58,237], 345:[37,99,235], 230:[14,165,233], 138:[20,184
 function arcColor(v){ const c=v>=500?COLOR[500]:v>=345?COLOR[345]:v>=230?COLOR[230]:COLOR[138]; return [c[0],c[1],c[2],235]; }
 // facilities: vivid accents, distinct from the violet grid
 const FAC_COLOR = { wind:[56,189,248], solar:[251,191,36], datacenter:[244,114,182] };
+const THERMAL_COLOR = { gas:[239,68,68], coal:[107,114,128], oil:[180,83,9], nuclear:[132,204,22] };
+const DC_STATUS = { construction:[251,146,60], operational:[45,212,191], announced:[148,163,184] };
 
 let viewState = { longitude:-99.5, latitude:31.6, zoom:5.1, pitch:46, bearing:-10 };
 const deckgl = new deck.DeckGL({
@@ -124,11 +148,12 @@ const deckgl = new deck.DeckGL({
   onViewStateChange: ({viewState:vs}) => { viewState=vs; deckgl.setProps({viewState}); onZoom(vs.zoom); },
 });
 
-const state = { arc:true, fac:true, cong:false };
-const CONG_WIN = 1500, FEATURED = "NBOHR_RN";
+const state = { sites:true, arc:true, fac:true, thermal:false, ai:false, pipe:false, cong:false };
+const CONG_WIN = 1500, FEATURED = "NBOHR_RN", PIPE_MINZ = 7;
 let arcsByKv = {}, loadedKv = 345;
-let facilities=null, cong=null, seriesIdx=null, matches=null, searchQ="";
-let curT=0, playing=false, raf=null;
+let facilities=null, thermal=null, aidc=null, sites=null, pipelineGeo=null;
+let cong=null, seriesIdx=null, matches=null, searchQ="";
+let curT=0, playing=false, raf=null, pipeTimer=null;
 
 const $ = id => document.getElementById(id);
 function setTog(k){ $("tog-"+k).classList.toggle("on", state[k]); }
@@ -139,7 +164,10 @@ async function loadArcs(minKv){
   if(!arcsByKv[minKv]) arcsByKv[minKv] = await getJSON("/api/kepler/transmission?min_kv="+minKv);
   loadedKv = minKv; $("ct-arc").textContent = `${arcsByKv[minKv].length.toLocaleString()} ≥${minKv}kV`; render();
 }
-function onZoom(z){ if(!state.arc) return; const want=tierForZoom(z); if(want!==loadedKv) loadArcs(want); }
+function onZoom(z){
+  if(state.arc){ const want=tierForZoom(z); if(want!==loadedKv) loadArcs(want); }
+  if(state.pipe){ clearTimeout(pipeTimer); pipeTimer=setTimeout(loadPipelines, 320); }
+}
 
 async function loadFacilities(){
   if(facilities) return;
@@ -150,6 +178,35 @@ async function loadFacilities(){
   for(const f of dc.features){ const p=f.properties||{};
     pts.push({position:f.geometry.coordinates, type:"datacenter", name:p.name, operator:p.operator, mw:0}); }
   facilities = pts; $("ct-fac").textContent = `${pts.length.toLocaleString()}`; render();
+}
+async function loadThermal(){
+  if(thermal) return;
+  const gj = await getJSON("/api/infra/thermal");
+  thermal = gj.features.map(f => { const p=f.properties||{};
+    return {position:f.geometry.coordinates, type:p.type||"gas", name:p.name, operator:p.operator, mw:+p.mw||0}; });
+  $("ct-thermal").textContent = `${thermal.length.toLocaleString()}`; render();
+}
+async function loadAI(){
+  if(aidc) return;
+  const gj = await getJSON("/api/infra/ai_datacenters");
+  aidc = gj.features.map(f => ({position:f.geometry.coordinates, ...f.properties}));
+  $("ct-ai").textContent = `${aidc.length}`; render();
+}
+async function loadSites(){
+  if(sites) return;
+  sites = await getJSON("/api/kepler/sites");
+  $("ct-sites").textContent = `${sites.length}`; render();
+}
+// pipelines: zoom-gated live Overpass for the current viewport (reuses the dense proxy)
+async function loadPipelines(){
+  if(viewState.zoom < PIPE_MINZ){ pipelineGeo=null; $("ct-pipe").textContent="zoom in"; render(); return; }
+  const vp = new deck.WebMercatorViewport({...viewState, width: innerWidth, height: innerHeight});
+  const [w,s] = vp.unproject([0, innerHeight]), [e,n] = vp.unproject([innerWidth, 0]);
+  try {
+    pipelineGeo = await getJSON(`/api/infra/dense/pipelines?bbox=${s.toFixed(2)},${w.toFixed(2)},${n.toFixed(2)},${e.toFixed(2)}`);
+    $("ct-pipe").textContent = `${(pipelineGeo.features||[]).length} in view`;
+  } catch(e){ /* overpass hiccup */ }
+  render();
 }
 async function loadCong(){
   if(cong) return;
@@ -198,6 +255,29 @@ function layers(){
       opacity:1, pickable:true, stroked:false,
     }));
   }
+  if(state.thermal && thermal){
+    out.push(new deck.ScatterplotLayer({
+      id:"thermal", data:thermal, getPosition:d=>d.position,
+      getFillColor:d=>{ const c=THERMAL_COLOR[d.type]||[239,68,68];
+        return [c[0],c[1],c[2], d.mw?Math.round(70+Math.min(185,Math.sqrt(d.mw)*12)):95]; },
+      getRadius:3.4, radiusUnits:"pixels", radiusMinPixels:2.2, radiusMaxPixels:5, pickable:true, stroked:false,
+    }));
+  }
+  if(state.pipe && pipelineGeo && pipelineGeo.features){
+    out.push(new deck.GeoJsonLayer({
+      id:"pipelines", data:pipelineGeo, stroked:true, filled:false, pickable:true,
+      getLineColor:[234,88,12,175], getLineWidth:1.6, lineWidthUnits:"pixels", lineWidthMinPixels:1,
+    }));
+  }
+  if(state.ai && aidc){
+    out.push(new deck.ScatterplotLayer({
+      id:"ai", data:aidc, getPosition:d=>d.position,
+      getFillColor:d=>{ const c=DC_STATUS[d.status]||[148,163,184]; return [c[0],c[1],c[2], d.status==="construction"?235:170]; },
+      getRadius:d=>5+Math.sqrt(d.target_mw||50)/2.4, radiusUnits:"pixels", radiusMinPixels:4, radiusMaxPixels:16,
+      stroked:true, lineWidthUnits:"pixels", getLineWidth:d=>d.status==="construction"?2:0,
+      getLineColor:d=>d.status==="construction"?[254,215,170,255]:[0,0,0,0], pickable:true,
+    }));
+  }
   if(state.cong && cong && cong.lines.length){
     const vis = cong.lines.filter(d => d.t<=curT && d.t>curT-CONG_WIN);
     out.push(new deck.ArcLayer({
@@ -206,6 +286,18 @@ function layers(){
       getSourceColor:d=>heat(d.price), getTargetColor:d=>heat(d.price),
       getWidth:d=>1.2+Math.min(6,Math.abs(d.price)/16), widthMinPixels:1.2, widthMaxPixels:7,
       updateTriggers:{ getSourceColor:curT, getTargetColor:curT, getWidth:curT },
+    }));
+  }
+  if(state.sites && sites){   // our assets -- always on top, flagged + labeled
+    out.push(new deck.ScatterplotLayer({
+      id:"sites", data:sites, getPosition:d=>d.position,
+      getFillColor:[255,255,255,240], getRadius:6, radiusUnits:"pixels", radiusMinPixels:5,
+      stroked:true, getLineColor:[245,158,11,255], lineWidthUnits:"pixels", getLineWidth:2.5, lineWidthMinPixels:2, pickable:true,
+    }));
+    out.push(new deck.TextLayer({
+      id:"site-labels", data:sites, getPosition:d=>d.position, getText:d=>d.name,
+      getSize:11, getColor:[255,255,255,235], getPixelOffset:[0,-14], getTextAnchor:"middle",
+      fontWeight:600, background:true, getBackgroundColor:[10,13,19,205], backgroundPadding:[4,2],
     }));
   }
   return out;
@@ -218,8 +310,18 @@ function getTooltip({object, layer}){
     let s=`${d.sub1||"unnamed"} → ${d.sub2||"unnamed"}\n${d.voltage} kV`;
     if(d.owner) s+=` · ${d.owner}`;
     return {text:s}; }
-  if(layer.id==="facilities"){ const d=object;
-    let s=`${d.name||d.type}\n${d.type}`; if(d.operator) s+=`\nOwner: ${d.operator}`; if(d.mw) s+=`\n${d.mw.toLocaleString()} MW`;
+  if(layer.id==="facilities" || layer.id==="thermal"){ const d=object;
+    let s=`${d.name||d.type}\n${d.type}${layer.id==="thermal"?" plant":""}`;
+    if(d.operator) s+=`\nOwner: ${d.operator}`; if(d.mw) s+=`\n${d.mw.toLocaleString()} MW`;
+    return {text:s}; }
+  if(layer.id==="sites"){ const d=object; return {text:`★ ${d.name}\n${d.iso} · ${d.fuel}\n${d.node}`}; }
+  if(layer.id==="pipelines"){ const d=object.properties||{};
+    return {text:`Pipeline${d.substance?` · ${d.substance}`:""}${d.name?`\n${d.name}`:""}${d.operator?`\n${d.operator}`:""}`}; }
+  if(layer.id==="ai"){ const d=object;
+    let s=`${d.name}${d.owner?` · ${d.owner}`:""}\nStatus: ${d.status}`;
+    if(d.current_mw||d.target_mw) s+=`\n${d.current_mw} → ${d.target_mw} MW`;
+    if(d.expected_completion) s+=`\nExpected complete: ${d.expected_completion}`;
+    if(d.latest_note) s+=`\n“${d.latest_note}”`;
     return {text:s}; }
   if(layer.id==="congestion"){ const d=object;
     let s=`${d.name}\nShadow price: $${d.price}/MWh\n${fmtT(d.t)}`;
@@ -294,8 +396,15 @@ $("play").onclick = ()=>{ if(!cong||!cong.lines.length) return;
 $("tslider").oninput = e=>{ curT=+e.target.value; updateNodeBox(); render(); };
 
 // ---- toggles + reset ----
+$("tog-sites").onclick = ()=>{ state.sites=!state.sites; setTog("sites"); if(state.sites) loadSites(); else render(); };
 $("tog-arc").onclick = ()=>{ state.arc=!state.arc; setTog("arc"); if(state.arc) loadArcs(loadedKv); else render(); };
 $("tog-fac").onclick = ()=>{ state.fac=!state.fac; setTog("fac"); if(state.fac) loadFacilities(); else render(); };
+$("tog-thermal").onclick = ()=>{ state.thermal=!state.thermal; setTog("thermal");
+  $("lg-thermal").style.display = state.thermal?"block":"none"; if(state.thermal) loadThermal(); else render(); };
+$("tog-ai").onclick = ()=>{ state.ai=!state.ai; setTog("ai");
+  $("lg-ai").style.display = state.ai?"block":"none"; if(state.ai) loadAI(); else render(); };
+$("tog-pipe").onclick = ()=>{ state.pipe=!state.pipe; setTog("pipe");
+  if(state.pipe) loadPipelines(); else { pipelineGeo=null; $("ct-pipe").textContent=""; render(); } };
 $("tog-cong").onclick = ()=>{ state.cong=!state.cong; setTog("cong"); $("timebox").classList.toggle("show",state.cong);
   $("lg-cong").style.display = state.cong ? "block" : "none";
   if(state.cong) loadCong(); else { playing=false; $("play").textContent="▶"; clearTimeout(raf); render(); } };
@@ -303,7 +412,7 @@ $("reset").onclick = ()=>{ viewState={longitude:-99.5,latitude:31.6,zoom:5.1,pit
   transitionDuration:700,transitionInterpolator:new deck.FlyToInterpolator()}; deckgl.setProps({viewState}); };
 
 // initial
-loadArcs(345); loadFacilities();
+loadArcs(345); loadFacilities(); loadSites();
 </script>
 </body>
 </html>
