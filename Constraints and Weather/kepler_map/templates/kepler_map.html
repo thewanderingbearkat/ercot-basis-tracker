@@ -166,7 +166,6 @@ async function loadArcs(minKv){
 }
 function onZoom(z){
   if(state.arc){ const want=tierForZoom(z); if(want!==loadedKv) loadArcs(want); }
-  if(state.pipe){ clearTimeout(pipeTimer); pipeTimer=setTimeout(loadPipelines, 320); }
 }
 
 async function loadFacilities(){
@@ -197,15 +196,12 @@ async function loadSites(){
   sites = await getJSON("/api/kepler/sites");
   $("ct-sites").textContent = `${sites.length}`; render();
 }
-// pipelines: zoom-gated live Overpass for the current viewport (reuses the dense proxy)
+// pipelines: static US gas/oil transmission network. (A full-screen map's viewport
+// is too big for the live per-bbox Overpass proxy, so we ship the whole network.)
 async function loadPipelines(){
-  if(viewState.zoom < PIPE_MINZ){ pipelineGeo=null; $("ct-pipe").textContent="zoom in"; render(); return; }
-  const vp = new deck.WebMercatorViewport({...viewState, width: innerWidth, height: innerHeight});
-  const [w,s] = vp.unproject([0, innerHeight]), [e,n] = vp.unproject([innerWidth, 0]);
-  try {
-    pipelineGeo = await getJSON(`/api/infra/dense/pipelines?bbox=${s.toFixed(2)},${w.toFixed(2)},${n.toFixed(2)},${e.toFixed(2)}`);
-    $("ct-pipe").textContent = `${(pipelineGeo.features||[]).length} in view`;
-  } catch(e){ /* overpass hiccup */ }
+  if(pipelineGeo) return;
+  pipelineGeo = await getJSON("/api/infra/pipelines_us");
+  $("ct-pipe").textContent = `${(pipelineGeo.features||[]).length.toLocaleString()}`;
   render();
 }
 async function loadCong(){
@@ -403,8 +399,7 @@ $("tog-thermal").onclick = ()=>{ state.thermal=!state.thermal; setTog("thermal")
   $("lg-thermal").style.display = state.thermal?"block":"none"; if(state.thermal) loadThermal(); else render(); };
 $("tog-ai").onclick = ()=>{ state.ai=!state.ai; setTog("ai");
   $("lg-ai").style.display = state.ai?"block":"none"; if(state.ai) loadAI(); else render(); };
-$("tog-pipe").onclick = ()=>{ state.pipe=!state.pipe; setTog("pipe");
-  if(state.pipe) loadPipelines(); else { pipelineGeo=null; $("ct-pipe").textContent=""; render(); } };
+$("tog-pipe").onclick = ()=>{ state.pipe=!state.pipe; setTog("pipe"); if(state.pipe) loadPipelines(); else render(); };
 $("tog-cong").onclick = ()=>{ state.cong=!state.cong; setTog("cong"); $("timebox").classList.toggle("show",state.cong);
   $("lg-cong").style.display = state.cong ? "block" : "none";
   if(state.cong) loadCong(); else { playing=false; $("play").textContent="▶"; clearTimeout(raf); render(); } };

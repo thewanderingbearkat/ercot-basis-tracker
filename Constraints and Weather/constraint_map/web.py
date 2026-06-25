@@ -167,6 +167,7 @@ _INFRA_FILES = {
     "datacenters": "infra_datacenters.geojson",
     "thermal": "infra_thermal.geojson",              # gas/coal/oil/nuclear plants (OSM)
     "ai_datacenters": "infra_ai_datacenters.geojson",  # Epoch AI campuses + build status
+    "pipelines_us": "infra_pipelines_us.geojson",    # US gas/oil transmission pipelines (static)
 }
 _infra_bytes_cache: dict = {}
 
