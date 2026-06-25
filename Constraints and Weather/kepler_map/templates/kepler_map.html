@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kepler / deck.gl — Grid Explorer (BETA)</title>
+<script src="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.js"></script>
+<link href="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.css" rel="stylesheet">
+<script src="https://unpkg.com/deck.gl@8.9.35/dist.min.js"></script>
+<style>
+  html, body { margin:0; height:100%; background:#0b0e14; color:#e5e7eb;
+    font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+  #deckmap { position:fixed; inset:0; }
+  .maplibregl-ctrl-attrib { font-size:9px; opacity:.5; }
+  #panel { position:fixed; top:14px; left:14px; width:268px; z-index:5;
+    background:rgba(17,21,30,.92); border:1px solid #2a3344; border-radius:10px;
+    padding:14px 15px; box-shadow:0 8px 30px rgba(0,0,0,.5); backdrop-filter:blur(6px); }
+  #panel h1 { font-size:14px; margin:0 0 2px; font-weight:700; letter-spacing:-.01em; }
+  #panel .sub { font-size:10px; color:#7c8699; margin-bottom:12px; }
+  #panel .sub a { color:#60a5fa; text-decoration:none; }
+  .lyr { display:flex; align-items:center; gap:9px; padding:8px 0; border-top:1px solid #1f2734; }
+  .lyr:first-of-type { border-top:none; }
+  .sw { width:11px; height:11px; border-radius:3px; flex:none; }
+  .lyr .nm { font-size:12px; font-weight:600; flex:1; }
+  .lyr .ct { font-size:10px; color:#7c8699; }
+  .tog { position:relative; width:32px; height:18px; border-radius:9px; background:#2a3344;
+    cursor:pointer; transition:background .15s; flex:none; }
+  .tog.on { background:#7c3aed; }
+  .tog::after { content:""; position:absolute; top:2px; left:2px; width:14px; height:14px;
+    border-radius:50%; background:#fff; transition:transform .15s; }
+  .tog.on::after { transform:translateX(14px); }
+  #timebox { margin-top:12px; padding-top:12px; border-top:1px solid #1f2734; display:none; }
+  #timebox.show { display:block; }
+  .trow { display:flex; align-items:center; gap:8px; }
+  #play { width:30px; height:30px; border-radius:7px; border:none; background:#7c3aed; color:#fff;
+    cursor:pointer; font-size:13px; flex:none; }
+  #play:hover { background:#8b5cf6; }
+  #tslider { flex:1; accent-color:#7c3aed; }
+  #tlabel { font-size:11px; color:#cbd5e1; margin-top:7px; font-variant-numeric:tabular-nums; }
+  #tlabel b { color:#fff; }
+  .hint { font-size:10px; color:#6b7280; margin-top:6px; line-height:1.4; }
+  #spin { display:inline-block; }
+  .legend { font-size:10px; color:#94a3b8; margin-top:10px; line-height:1.5; }
+  .legend i { display:inline-block; width:9px; height:9px; border-radius:2px; margin-right:4px; vertical-align:middle; }
+</style>
+</head>
+<body>
+<div id="deckmap"></div>
+<div id="panel">
+  <h1>Grid Explorer <span style="font-size:9px;color:#a855f7;font-weight:700;vertical-align:super;">BETA</span></h1>
+  <div class="sub">deck.gl · <a href="/">← dashboard</a></div>
+
+  <div class="lyr">
+    <span class="sw" style="background:#2563eb;"></span>
+    <span class="nm">Transmission <span class="ct" id="ct-arc"></span></span>
+    <div class="tog on" id="tog-arc"></div>
+  </div>
+  <div class="lyr">
+    <span class="sw" style="background:#f59e0b;"></span>
+    <span class="nm">Facilities <span class="ct" id="ct-hex"></span></span>
+    <div class="tog on" id="tog-hex"></div>
+  </div>
+  <div class="lyr">
+    <span class="sw" style="background:#ef4444;"></span>
+    <span class="nm">Congestion <span class="ct" id="ct-cong"></span></span>
+    <div class="tog" id="tog-cong"></div>
+  </div>
+
+  <div id="timebox">
+    <div class="trow">
+      <button id="play">▶</button>
+      <input type="range" id="tslider" min="0" max="100" value="0">
+    </div>
+    <div id="tlabel">—</div>
+    <div class="legend">
+      <i style="background:#fde047;"></i>low shadow price &nbsp;
+      <i style="background:#ef4444;"></i>high &nbsp; · size ∝ $/MWh
+    </div>
+  </div>
+  <div class="hint" id="hint"></div>
+</div>
+
+<script>
+const COLOR = { 500:[124,58,237], 345:[37,99,235], 230:[14,165,233], lo:[20,184,166] };
+function arcColor(v){ return v>=500?COLOR[500]:v>=345?COLOR[345]:v>=230?COLOR[230]:COLOR.lo; }
+// kepler-ish sequential ramp for the hexagon density
+const HEX_RANGE = [[26,35,126],[37,99,235],[14,165,233],[16,185,129],[250,204,21],[239,68,68]];
+
+const deckgl = new deck.DeckGL({
+  container: "deckmap",
+  map: maplibregl,
+  mapStyle: "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json",
+  initialViewState: { longitude:-98.5, latitude:31.8, zoom:4.4, pitch:48, bearing:-12 },
+  controller: true,
+});
+
+const state = { arc:true, hex:true, cong:false };
+let arcs=null, facilities=null, cong=null, curT=0, playing=false, raf=null;
+
+const $ = id => document.getElementById(id);
+function setTog(k){ $("tog-"+k).classList.toggle("on", state[k]); }
+
+async function getJSON(u){ const r=await fetch(u); if(!r.ok) throw new Error(u+" "+r.status); return r.json(); }
+
+async function loadArcs(){
+  if(arcs) return;
+  arcs = await getJSON("/api/kepler/transmission?min_kv=345");
+  $("ct-arc").textContent = `${arcs.length.toLocaleString()} ≥345kV`;
+  render();
+}
+async function loadFacilities(){
+  if(facilities) return;
+  const [gen, dc] = await Promise.all([getJSON("/api/infra/generation"), getJSON("/api/infra/datacenters")]);
+  const pts = [];
+  for(const f of gen.features) pts.push({position:f.geometry.coordinates});
+  for(const f of dc.features) pts.push({position:f.geometry.coordinates});
+  facilities = pts;
+  $("ct-hex").textContent = `${pts.length.toLocaleString()} sites`;
+  render();
+}
+async function loadCong(){
+  if(cong) return;
+  $("hint").textContent = "Loading ERCOT congestion (Snowflake — can take ~10s on a cold warehouse)…";
+  try {
+    cong = await getJSON("/api/kepler/congestion");
+  } catch(e){ $("hint").textContent = "Congestion load failed: "+e.message; cong={points:[]}; return; }
+  const n = cong.points.length;
+  $("ct-cong").textContent = n ? `${n.toLocaleString()} pts` : "no data";
+  $("hint").textContent = "";
+  if(cong.t0){ curT = cong.t0; $("tslider").min=cong.t0; $("tslider").max=cong.t1; $("tslider").step=300; $("tslider").value=cong.t0; }
+  updateTimeLabel();
+  render();
+}
+
+function fmtT(epoch){
+  const d = new Date(epoch*1000);
+  return d.toLocaleString("en-US",{month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"});
+}
+function updateTimeLabel(){
+  if(!cong || !cong.t0){ $("tlabel").textContent="—"; return; }
+  $("tlabel").innerHTML = `<b>${fmtT(curT)}</b>`;
+}
+
+function layers(){
+  const out = [];
+  if(state.hex && facilities){
+    out.push(new deck.HexagonLayer({
+      id:"facilities", data:facilities, getPosition:d=>d.position,
+      radius:14000, elevationScale:60, extruded:true, pickable:true,
+      colorRange:HEX_RANGE, coverage:0.85, opacity:0.55, upperPercentile:99,
+    }));
+  }
+  if(state.arc && arcs){
+    out.push(new deck.ArcLayer({
+      id:"transmission", data:arcs,
+      getSourcePosition:d=>d.source, getTargetPosition:d=>d.target,
+      getSourceColor:d=>arcColor(d.voltage), getTargetColor:d=>arcColor(d.voltage),
+      getWidth:d=>d.voltage>=500?2.2:d.voltage>=345?1.4:1, opacity:0.5, pickable:true,
+      getHeight:0.3,
+    }));
+  }
+  if(state.cong && cong && cong.points.length){
+    const win = 1800; // show a 30-min trailing window of binding intervals
+    const vis = cong.points.filter(p => p.t<=curT && p.t>curT-win);
+    out.push(new deck.ScatterplotLayer({
+      id:"congestion", data:vis, getPosition:d=>d.position,
+      getRadius:d=>Math.min(45000, 4000+Math.abs(d.price)*900),
+      getFillColor:d=>{ const m=Math.min(1,Math.abs(d.price)/60);
+        return [253-Math.round(m*14), Math.round(221-m*153), Math.round(71-m*40), 200]; },
+      radiusUnits:"meters", pickable:true, stroked:true, getLineColor:[255,255,255,120], lineWidthMinPixels:0.5,
+    }));
+  }
+  return out;
+}
+function render(){ deckgl.setProps({ layers:layers(), getTooltip }); }
+
+function getTooltip({object, layer}){
+  if(!object) return null;
+  if(layer.id==="transmission") return {text:`${object.voltage} kV line`};
+  if(layer.id==="congestion") return {text:`${object.name}\n$${object.price}/MWh · ${fmtT(object.t)}`};
+  if(layer.id==="facilities") return {text:`${object.points.length} facilities in cell`};
+  return null;
+}
+
+// ---- time animation ----
+function tick(){
+  if(!playing) return;
+  curT += 300;                       // advance one 5-min SCED interval per frame-ish
+  if(curT > cong.t1) curT = cong.t0; // loop
+  $("tslider").value = curT;
+  updateTimeLabel(); render();
+  raf = setTimeout(()=>requestAnimationFrame(tick), 120);
+}
+$("play").onclick = ()=>{
+  if(!cong || !cong.points.length) return;
+  playing = !playing; $("play").textContent = playing?"❚❚":"▶";
+  if(playing) tick(); else clearTimeout(raf);
+};
+$("tslider").oninput = e=>{ curT=+e.target.value; updateTimeLabel(); render(); };
+
+// ---- layer toggles ----
+$("tog-arc").onclick = ()=>{ state.arc=!state.arc; setTog("arc"); if(state.arc) loadArcs(); else render(); };
+$("tog-hex").onclick = ()=>{ state.hex=!state.hex; setTog("hex"); if(state.hex) loadFacilities(); else render(); };
+$("tog-cong").onclick = ()=>{
+  state.cong=!state.cong; setTog("cong");
+  $("timebox").classList.toggle("show", state.cong);
+  if(state.cong) loadCong(); else { playing=false; $("play").textContent="▶"; clearTimeout(raf); render(); }
+};
+
+// initial layers (on by default)
+loadArcs(); loadFacilities();
+</script>
+</body>
+</html>

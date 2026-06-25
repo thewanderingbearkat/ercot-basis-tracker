@@ -35,6 +35,16 @@ TENASKA_ENERGY_IMBALANCE_URL = "https://api.ptp.energy/v1/markets/ERCOTNodal/end
 # Storage file for PnL data
 PNL_HISTORY_FILE = 'pnl_history.json'
 
+# Raw-input cache for INCREMENTAL refresh. Holds the raw Tenaska records + hub
+# prices that aggregate_excel_pnl() consumes, so a refresh only fetches the days
+# since the last pull (the network is the slow part -- ~1 request/day for hub
+# prices) instead of re-downloading the whole year every time. Gzipped, local
+# only (gitignored); the committed pnl_history.json remains the aggregated output.
+PNL_RAW_CACHE_FILE = 'pnl_raw_cache.json.gz'
+# Re-fetch this many trailing days on every refresh so late-arriving settlement
+# restatements get picked up (they're overwritten, never double-counted).
+PNL_REFRESH_OVERLAP_DAYS = 3
+
 # Local Excel file for testing (Predictive Real-Time Energy Imbalance report)
 ENERGY_IMBALANCE_EXCEL = r"C:\Users\TylerMartin\Downloads\Real-TimeEnergyImbalance_2026-01-26_2026-01-28.xlsx"
 
@@ -196,6 +206,14 @@ try:
     app.register_blueprint(pjm_constraints_bp)
 except Exception as _pjm_err:
     logger.exception("PJM Constraint Map blueprint failed to load; other tabs unaffected: %s", _pjm_err)
+
+# Kepler / deck.gl experimental viz tab (transmission arcs, facility hexagons,
+# time-animated ERCOT congestion). Same isolation; reuses constraint_map.db/geo.
+try:
+    from kepler_map.web import kepler_bp
+    app.register_blueprint(kepler_bp)
+except Exception as _kep_err:
+    logger.exception("Kepler blueprint failed to load; other tabs unaffected: %s", _kep_err)
 
 # Configuration - ERCOT
 NODE_1 = "NBOHR_RN"
@@ -983,6 +1001,87 @@ def load_pnl_data():
     except Exception as e:
         logger.error(f"Error loading PnL data: {e}")
         return None
+
+
+# ---------------------------------------------------------------------------
+# Incremental refresh: cache raw inputs, fetch only new days, re-aggregate.
+# ---------------------------------------------------------------------------
+def _day_of(interval):
+    """First 10 chars of an interval/timestamp string -> 'YYYY-MM-DD' (sortable)."""
+    return str(interval or "")[:10]
+
+
+def load_raw_cache():
+    """Load the raw-input cache {records, hub_prices, fetched_through} or None."""
+    try:
+        if os.path.exists(PNL_RAW_CACHE_FILE):
+            import gzip
+            with gzip.open(PNL_RAW_CACHE_FILE, 'rt', encoding='utf-8') as f:
+                return json.load(f)
+    except Exception as e:
+        logger.error(f"Error loading raw PnL cache: {e}")
+    return None
+
+
+def save_raw_cache(records, hub_prices, fetched_through):
+    """Persist the merged raw inputs so the next refresh can be incremental."""
+    try:
+        import gzip
+        with gzip.open(PNL_RAW_CACHE_FILE, 'wt', encoding='utf-8') as f:
+            json.dump({"records": records, "hub_prices": hub_prices,
+                       "fetched_through": fetched_through}, f, default=str)
+        logger.info(f"Saved raw PnL cache: {len(records)} records, "
+                    f"{len(hub_prices)} hub intervals, through {fetched_through}")
+    except Exception as e:
+        logger.error(f"Error saving raw PnL cache: {e}")
+
+
+def compute_pnl_incremental(overlap_days=PNL_REFRESH_OVERLAP_DAYS, force_full=False):
+    """Refresh PnL by fetching ONLY the days since the last cached pull (minus an
+    overlap to catch restatements), merging into the cached raw inputs, and
+    re-running aggregate_excel_pnl over the full merged set.
+
+    The aggregation is CPU-only and fast; the network (day-by-day hub prices) is
+    the slow part, and that's what becomes incremental. Returns the aggregated
+    dict, or None if the fetch came back empty (caller keeps existing data).
+    Falls back to a full YTD backfill when there is no cache or force_full=True.
+    """
+    cache = None if force_full else load_raw_cache()
+    cached_records = (cache or {}).get("records", []) or []
+    cached_hub = (cache or {}).get("hub_prices", {}) or {}
+    fetched_through = (cache or {}).get("fetched_through") if cache else None
+
+    if cached_records and fetched_through:
+        from_dt = datetime.strptime(_day_of(fetched_through), "%Y-%m-%d") - timedelta(days=overlap_days)
+        from_day = max(from_dt.strftime("%Y-%m-%d"), TENASKA_FETCH_START_DATE)
+        logger.info(f"Incremental PnL refresh from {from_day} "
+                    f"(cache: {len(cached_records)} records through {fetched_through})")
+    else:
+        from_day = TENASKA_FETCH_START_DATE
+        logger.info(f"No raw cache (or force_full) -- full backfill from {from_day}")
+
+    new_records = fetch_energy_imbalance_data(start_date=from_day)
+    if not new_records:
+        logger.warning("Incremental fetch returned no records; keeping existing data")
+        return None
+    new_hub = fetch_hub_prices(start_date=from_day)
+
+    # Splice on the day boundary: keep cached days strictly before from_day, and
+    # take the fresh pull from from_day onward. Records are a list (filter both
+    # sides to avoid TZ-boundary duplicates); hub prices are a dict keyed by
+    # interval, so a plain update() dedupes naturally.
+    merged_records = [r for r in cached_records if _day_of(r.get("interval", "")) < from_day]
+    merged_records += [r for r in new_records if _day_of(r.get("interval", "")) >= from_day]
+    merged_hub = {k: v for k, v in cached_hub.items() if _day_of(k) < from_day}
+    merged_hub.update(new_hub)
+
+    today = datetime.now(ZoneInfo("America/Chicago")).strftime("%Y-%m-%d")
+    save_raw_cache(merged_records, merged_hub, today)
+
+    logger.info(f"Merged raw inputs: {len(merged_records)} records "
+                f"(+{len(new_records)} fetched), re-aggregating...")
+    return aggregate_excel_pnl(merged_records, hub_prices=merged_hub)
+
 
 def load_energy_imbalance_from_excel(file_path=None):
     """
@@ -3266,33 +3365,25 @@ def background_data_fetch():
         source: "api", "excel", or "auto" (try API first, then Excel)
         """
         nonlocal last_tenaska_fetch_time
-        records = []
-        hub_prices = {}
+        aggregated = None
 
         if source in ("api", "auto") and TENASKA_AUTO_FETCH:
-            logger.info(f"Fetching PnL data from Tenaska API (start_date={TENASKA_FETCH_START_DATE})...")
-            records = fetch_energy_imbalance_data(start_date=TENASKA_FETCH_START_DATE)
-            if records:
-                logger.info(f"Successfully fetched {len(records)} records from Tenaska API")
-                # Also fetch hub prices for basis calculation
-                logger.info("Fetching hub prices from Tenaska API...")
-                hub_prices = fetch_hub_prices(start_date=TENASKA_FETCH_START_DATE)
+            # Incremental: only fetch days since the last cached pull, then merge
+            # and re-aggregate. Full backfill happens automatically on first run.
+            aggregated = compute_pnl_incremental()
+            if aggregated:
                 last_tenaska_fetch_time = datetime.now()
 
-        # Fall back to Excel if API returned nothing
-        if not records and source in ("excel", "auto"):
+        # Fall back to Excel if the API returned nothing
+        if aggregated is None and source in ("excel", "auto"):
             logger.info("Loading PnL data from Excel file...")
             records = load_energy_imbalance_from_excel()
             if records:
                 logger.info(f"Loaded {len(records)} records from Excel file")
-                # Try to fetch hub prices for basis calculation
-                if TENASKA_AUTO_FETCH and not hub_prices:
-                    logger.info("Fetching hub prices from Tenaska API for Excel data...")
-                    hub_prices = fetch_hub_prices(start_date=TENASKA_FETCH_START_DATE)
+                hub_prices = fetch_hub_prices(start_date=TENASKA_FETCH_START_DATE) if TENASKA_AUTO_FETCH else {}
+                aggregated = aggregate_excel_pnl(records, hub_prices=hub_prices)
 
-        if records:
-            # Pass hub prices for basis calculation
-            aggregated = aggregate_excel_pnl(records, hub_prices=hub_prices)
+        if aggregated:
             with data_lock:
                 pnl_data["daily_pnl"] = aggregated["daily"]
                 pnl_data["monthly_pnl"] = aggregated["monthly"]
@@ -3862,43 +3953,35 @@ def reload_pnl():
     Force reload PnL data.
     Query params:
     - source: "api", "excel", or "auto" (default: "auto")
-    - days: number of days to fetch from API (default: TENASKA_FETCH_DAYS_BACK)
+    - full: "1" to force a full YTD backfill instead of an incremental refresh
     """
     global pnl_data
 
     source = request.args.get('source', 'auto')
-    start_date = request.args.get('start_date', TENASKA_FETCH_START_DATE)
+    force_full = request.args.get('full') == '1'
 
     try:
-        records = []
-        hub_prices = {}
+        aggregated = None
         data_source = ""
 
-        # Try API first if requested
+        # Try API first (incremental: only fetches days since the last cached pull)
         if source in ("api", "auto") and TENASKA_AUTO_FETCH:
-            logger.info(f"Reloading PnL data from Tenaska API (start_date={start_date})...")
-            records = fetch_energy_imbalance_data(start_date=start_date)
-            if records:
+            logger.info(f"Reloading PnL data from Tenaska API (incremental, full={force_full})...")
+            aggregated = compute_pnl_incremental(force_full=force_full)
+            if aggregated:
                 data_source = "api"
-                logger.info(f"Loaded {len(records)} records from Tenaska API")
-                # Also fetch hub prices
-                hub_prices = fetch_hub_prices(start_date=start_date)
 
-        # Fall back to Excel if API returned nothing
-        if not records and source in ("excel", "auto"):
+        # Fall back to Excel if the API returned nothing
+        if aggregated is None and source in ("excel", "auto"):
             logger.info("Reloading PnL data from Excel file...")
             records = load_energy_imbalance_from_excel()
             if records:
                 data_source = "excel"
                 logger.info(f"Loaded {len(records)} records from Excel file")
-                # Fetch hub prices for basis calculation
-                if TENASKA_AUTO_FETCH:
-                    hub_prices = fetch_hub_prices(start_date=start_date)
+                hub_prices = fetch_hub_prices(start_date=TENASKA_FETCH_START_DATE) if TENASKA_AUTO_FETCH else {}
+                aggregated = aggregate_excel_pnl(records, hub_prices=hub_prices)
 
-        if records:
-            # Aggregate the data with hub prices for basis calculation
-            aggregated = aggregate_excel_pnl(records, hub_prices=hub_prices)
-
+        if aggregated:
             with data_lock:
                 pnl_data["daily_pnl"] = aggregated["daily"]
                 pnl_data["monthly_pnl"] = aggregated["monthly"]
@@ -4610,6 +4693,7 @@ def dashboard():
         <a href="/hail" style="display: inline-block; padding: 8px 16px; font-size: 13px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.25; color: #6b7280; text-decoration: none; border-bottom: 2px solid transparent; margin-bottom: -2px; font-weight: 500;">Hail Monitor</a>
         <a href="/constraints" style="display: inline-block; padding: 8px 16px; font-size: 13px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.25; color: #6b7280; text-decoration: none; border-bottom: 2px solid transparent; margin-bottom: -2px; font-weight: 500;">ERCOT Constraint Map</a>
         <a href="/pjm-constraints" style="display: inline-block; padding: 8px 16px; font-size: 13px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.25; color: #6b7280; text-decoration: none; border-bottom: 2px solid transparent; margin-bottom: -2px; font-weight: 500;">PJM Constraint Map</a>
+        <a href="/kepler" style="display: inline-block; padding: 8px 16px; font-size: 13px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.25; color: #6b7280; text-decoration: none; border-bottom: 2px solid transparent; margin-bottom: -2px; font-weight: 500;">Kepler <span style="font-size:9px; color:#a855f7; font-weight:700; vertical-align:super;">BETA</span></a>
     </div>
     <div class="p-3 md:p-4" style="background: linear-gradient(135deg, #f8f9fa 0%, #ffffff 100%);">
         <div class="max-w-7xl mx-auto">
