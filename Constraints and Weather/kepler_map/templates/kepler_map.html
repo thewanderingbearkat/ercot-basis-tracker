@@ -12,14 +12,17 @@
     font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
   #deckmap { position:fixed; inset:0; }
   .maplibregl-ctrl-attrib { font-size:9px; opacity:.5; }
-  #panel { position:fixed; top:14px; left:14px; width:280px; z-index:5;
+  #panel { position:fixed; top:14px; left:14px; width:282px; z-index:5;
     background:rgba(17,21,30,.93); border:1px solid #2a3344; border-radius:10px;
     padding:14px 15px; box-shadow:0 8px 30px rgba(0,0,0,.5); backdrop-filter:blur(6px); }
   #panel h1 { font-size:14px; margin:0 0 2px; font-weight:700; letter-spacing:-.01em; }
   #panel .sub { font-size:10px; color:#7c8699; margin-bottom:10px; }
-  #panel .sub a { color:#60a5fa; text-decoration:none; }
+  #panel .sub a, #panel .sub span.lnk { color:#60a5fa; text-decoration:none; cursor:pointer; }
+  #search { width:100%; box-sizing:border-box; background:#0d1220; border:1px solid #2a3344;
+    border-radius:7px; color:#e5e7eb; font-size:12px; padding:7px 9px; outline:none; }
+  #search:focus { border-color:#7c3aed; }
+  #searchct { font-size:10px; color:#a78bfa; margin:4px 0 2px; min-height:12px; }
   .lyr { display:flex; align-items:center; gap:9px; padding:8px 0; border-top:1px solid #1f2734; }
-  .lyr:first-of-type { border-top:none; }
   .sw { width:11px; height:11px; border-radius:3px; flex:none; }
   .lyr .nm { font-size:12px; font-weight:600; flex:1; }
   .lyr .ct { font-size:10px; color:#7c8699; font-weight:500; }
@@ -35,8 +38,7 @@
   #timebox { margin-top:12px; padding-top:12px; border-top:1px solid #1f2734; display:none; }
   #timebox.show { display:block; }
   .trow { display:flex; align-items:center; gap:8px; }
-  #play { width:30px; height:30px; border-radius:7px; border:none; background:#7c3aed; color:#fff;
-    cursor:pointer; font-size:13px; flex:none; }
+  #play { width:30px; height:30px; border-radius:7px; border:none; background:#7c3aed; color:#fff; cursor:pointer; font-size:13px; flex:none; }
   #play:hover { background:#8b5cf6; }
   #tslider { flex:1; accent-color:#7c3aed; }
   #tlabel { font-size:11px; color:#cbd5e1; margin-top:6px; font-variant-numeric:tabular-nums; text-align:center; }
@@ -47,9 +49,9 @@
   .nrow .nlab { flex:1; color:#cbd5e1; }
   .nrow .nval { font-variant-numeric:tabular-nums; font-weight:700; }
   #spark { width:100%; height:42px; display:block; margin-top:8px; background:#0d1220; border-radius:5px; }
-  .hint { font-size:10px; color:#6b7280; margin-top:8px; line-height:1.4; }
+  .hint { font-size:10px; color:#6b7280; margin-top:9px; line-height:1.45; border-top:1px solid #1f2734; padding-top:9px; }
   .heat { font-size:10px; color:#94a3b8; margin-top:8px; }
-  .heat .bar { display:inline-block; width:90px; height:8px; border-radius:4px; vertical-align:middle; margin:0 5px;
+  .heat .bar { display:inline-block; width:84px; height:8px; border-radius:4px; vertical-align:middle; margin:0 5px;
     background:linear-gradient(90deg,#7a3b12,#f59e0b,#fde047,#fff7d6); }
 </style>
 </head>
@@ -57,7 +59,10 @@
 <div id="deckmap"></div>
 <div id="panel">
   <h1>Grid Explorer <span style="font-size:9px;color:#a855f7;font-weight:700;vertical-align:super;">BETA</span></h1>
-  <div class="sub">deck.gl · <a href="/">← dashboard</a></div>
+  <div class="sub">deck.gl · <a href="/">← dashboard</a> · <span class="lnk" id="reset">⟲ reset view</span></div>
+
+  <input id="search" placeholder="search facilities by owner…" autocomplete="off">
+  <div id="searchct"></div>
 
   <div class="lyr">
     <span class="sw" style="background:#2563eb;"></span>
@@ -71,6 +76,7 @@
   </div>
   <div class="faclegend" id="faclegend">
     <i style="background:#22d3ee;"></i>wind <i style="background:#f59e0b;"></i>solar <i style="background:#e879f9;"></i>data center
+    <div style="margin:4px 0 0 8px;color:#7c8699;">size & glow ∝ MW</div>
   </div>
   <div class="lyr">
     <span class="sw" style="background:#fde047;"></span>
@@ -79,10 +85,7 @@
   </div>
 
   <div id="timebox">
-    <div class="trow">
-      <button id="play">▶</button>
-      <input type="range" id="tslider" min="0" max="100" value="0">
-    </div>
+    <div class="trow"><button id="play">▶</button><input type="range" id="tslider" min="0" max="100" value="0"></div>
     <div id="tlabel">—</div>
     <div id="nodebox">
       <div class="nbh">Congestion push at our nodes ($/MWh)</div>
@@ -91,118 +94,130 @@
     </div>
     <div class="heat">line brightness = shadow price <span class="bar"></span></div>
   </div>
-  <div class="hint" id="hint"></div>
+
+  <div class="hint">drag to pan · <b>right-drag (or ctrl-drag) to spin &amp; tilt</b> · scroll to zoom · zoom in for more lines</div>
 </div>
 
 <script>
-const COLOR = { 500:[124,58,237], 345:[37,99,235], 230:[14,165,233], lo:[20,184,166] };
-function arcColor(v){ return v>=500?COLOR[500]:v>=345?COLOR[345]:v>=230?COLOR[230]:COLOR.lo; }
+const COLOR = { 500:[149,97,255], 345:[56,130,255], 230:[34,197,255], lo:[34,211,170] };
+function arcColor(v){ const c=v>=500?COLOR[500]:v>=345?COLOR[345]:v>=230?COLOR[230]:COLOR.lo; return [c[0],c[1],c[2],210]; }
 const FAC_COLOR = { wind:[34,211,238], solar:[245,158,11], datacenter:[232,121,249] };
 
+let viewState = { longitude:-99.5, latitude:31.6, zoom:5.1, pitch:48, bearing:-12 };
 const deckgl = new deck.DeckGL({
-  container: "deckmap",
-  map: maplibregl,
-  mapStyle: "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json",
-  initialViewState: { longitude:-99.5, latitude:31.6, zoom:5.1, pitch:50, bearing:-15 },
-  controller: true,
+  container:"deckmap", map:maplibregl,
+  mapStyle:"https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json",
+  viewState,
+  controller:{ dragRotate:true, touchRotate:true, keyboard:true, inertia:320 },
+  onViewStateChange: ({viewState:vs}) => { viewState=vs; deckgl.setProps({viewState}); onZoom(vs.zoom); },
 });
 
 const state = { arc:true, fac:true, cong:false };
-const CONG_WIN = 1500;             // trailing seconds of binding intervals shown
-const FEATURED = "NBOHR_RN";       // node featured in the sparkline (Bearkat/McCrae)
-let arcs=null, facilities=null, cong=null, seriesIdx=null;
+const CONG_WIN = 1500, FEATURED = "NBOHR_RN";
+let arcsByKv = {}, loadedKv = 345;
+let facilities=null, cong=null, seriesIdx=null, matches=null, searchQ="";
 let curT=0, playing=false, raf=null;
 
 const $ = id => document.getElementById(id);
 function setTog(k){ $("tog-"+k).classList.toggle("on", state[k]); }
 async function getJSON(u){ const r=await fetch(u); if(!r.ok) throw new Error(u+" "+r.status); return r.json(); }
 
-async function loadArcs(){
-  if(arcs) return;
-  arcs = await getJSON("/api/kepler/transmission?min_kv=345");
-  $("ct-arc").textContent = `${arcs.length.toLocaleString()} ≥345kV`;
+// progressively reveal lower-voltage lines as you zoom in
+function tierForZoom(z){ return z>=8 ? 138 : z>=6.5 ? 230 : 345; }
+async function loadArcs(minKv){
+  if(!arcsByKv[minKv]) arcsByKv[minKv] = await getJSON("/api/kepler/transmission?min_kv="+minKv);
+  loadedKv = minKv;
+  $("ct-arc").textContent = `${arcsByKv[minKv].length.toLocaleString()} ≥${minKv}kV`;
   render();
 }
+function onZoom(z){ if(!state.arc) return; const want=tierForZoom(z); if(want!==loadedKv) loadArcs(want); }
+
 async function loadFacilities(){
   if(facilities) return;
   const [gen, dc] = await Promise.all([getJSON("/api/infra/generation"), getJSON("/api/infra/datacenters")]);
   const pts = [];
   for(const f of gen.features){ const p=f.properties||{};
-    pts.push({position:f.geometry.coordinates, type:p.source||"solar", name:p.name, operator:p.operator, mw:p.mw}); }
+    pts.push({position:f.geometry.coordinates, type:p.source||"solar", name:p.name, operator:p.operator, mw:+p.mw||0}); }
   for(const f of dc.features){ const p=f.properties||{};
-    pts.push({position:f.geometry.coordinates, type:"datacenter", name:p.name, operator:p.operator}); }
+    pts.push({position:f.geometry.coordinates, type:"datacenter", name:p.name, operator:p.operator, mw:0}); }
   facilities = pts;
   $("ct-fac").textContent = `${pts.length.toLocaleString()}`;
   render();
 }
 async function loadCong(){
   if(cong) return;
-  $("hint").textContent = "Loading ERCOT congestion (Snowflake — ~10s on a cold warehouse)…";
+  $("ct-cong").textContent = "loading…";
   try { cong = await getJSON("/api/kepler/congestion"); }
-  catch(e){ $("hint").textContent = "Congestion load failed: "+e.message; cong={lines:[]}; return; }
-  $("hint").textContent = "";
+  catch(e){ $("ct-cong").textContent="failed"; cong={lines:[]}; return; }
   $("ct-cong").textContent = cong.lines.length ? `${cong.lines.length.toLocaleString()} events` : "no data";
   if(cong.t0){
-    curT = cong.t0;
-    $("tslider").min=cong.t0; $("tslider").max=cong.t1; $("tslider").step=300; $("tslider").value=cong.t0;
-    // index node series by timestamp for fast lookup at the playhead
-    seriesIdx = {};
-    for(const sp in cong.node_series){ const m={}; for(const e of cong.node_series[sp]) m[e.t]=e.impact; seriesIdx[sp]=m; }
+    curT=cong.t0; $("tslider").min=cong.t0; $("tslider").max=cong.t1; $("tslider").step=300; $("tslider").value=cong.t0;
+    seriesIdx={}; for(const sp in cong.node_series){ const m={}; for(const e of cong.node_series[sp]) m[e.t]=e.impact; seriesIdx[sp]=m; }
   }
   updateNodeBox(); render();
 }
 
+// ---- facility visual encoding: size + glow by MW ----
+function facRadius(d){ return 1100 + Math.sqrt(d.mw||14)*430; }     // meters; grows on zoom-in
+function facColor(d){ const c=FAC_COLOR[d.type]||[148,163,184];
+  const a = d.mw ? Math.min(255, 120+Math.sqrt(d.mw)*10) : 150;
+  return [c[0],c[1],c[2],a]; }
+
 function fmtT(epoch){ return new Date(epoch*1000).toLocaleString("en-US",{month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"}); }
-function nearestImpact(sp){
-  // largest interval <= curT (snap playhead to the 5-min grid)
-  const m = seriesIdx && seriesIdx[sp]; if(!m) return null;
-  let t = Math.floor(curT/300)*300;
-  for(let k=0;k<4;k++){ if(m[t]!==undefined) return m[t]; t-=300; }
-  return 0;
-}
+function nearestImpact(sp){ const m=seriesIdx&&seriesIdx[sp]; if(!m) return null;
+  let t=Math.floor(curT/300)*300; for(let k=0;k<4;k++){ if(m[t]!==undefined) return m[t]; t-=300; } return 0; }
+function heat(price){ const m=Math.min(1,Math.abs(price)/120);
+  return [255, Math.round(120+m*135), Math.round(20+m*200), Math.round(120+m*135)]; }
 
 function layers(){
   const out = [];
+  const arcs = arcsByKv[loadedKv];
   if(state.arc && arcs){
     out.push(new deck.ArcLayer({
-      id:"transmission", data:arcs, getHeight:0.25, greatCircle:false,
+      id:"transmission", data:arcs, getHeight:0.4, greatCircle:false,
       getSourcePosition:d=>d.source, getTargetPosition:d=>d.target,
       getSourceColor:d=>arcColor(d.voltage), getTargetColor:d=>arcColor(d.voltage),
-      getWidth:d=>d.voltage>=500?1.8:1, opacity:0.32, pickable:true,
+      getWidth:d=>d.voltage>=500?4:d.voltage>=345?3:d.voltage>=230?2:1.4,
+      widthUnits:"pixels", widthMinPixels:1.6, widthMaxPixels:9, opacity:0.78,
+      pickable:true, autoHighlight:true, highlightColor:[255,255,255,200],
     }));
   }
   if(state.fac && facilities){
     out.push(new deck.ScatterplotLayer({
       id:"facilities", data:facilities, getPosition:d=>d.position,
-      getFillColor:d=>FAC_COLOR[d.type]||[148,163,184],
-      radiusUnits:"pixels", getRadius:d=>d.type==="datacenter"?3.4:2.4,
-      radiusMinPixels:1.5, opacity:0.85, pickable:true, stroked:false,
+      getFillColor:facColor, getRadius:facRadius,
+      radiusUnits:"meters", radiusMinPixels:2, radiusMaxPixels:60,
+      opacity:1, pickable:true, stroked:false,
+      parameters:{ blend:true, blendFunc:[770,1], blendEquation:32774 },   // additive glow
+    }));
+  }
+  if(matches && matches.length){
+    out.push(new deck.ScatterplotLayer({
+      id:"search-hi", data:matches, getPosition:d=>d.position,
+      getFillColor:[255,255,255,235], getRadius:d=>facRadius(d)*1.5,
+      radiusUnits:"meters", radiusMinPixels:5, radiusMaxPixels:90,
+      stroked:true, getLineColor:[167,139,250,255], lineWidthMinPixels:2, pickable:true,
     }));
   }
   if(state.cong && cong && cong.lines.length){
     const vis = cong.lines.filter(d => d.t<=curT && d.t>curT-CONG_WIN);
     out.push(new deck.ArcLayer({
-      id:"congestion", data:vis, getHeight:0.35, pickable:true,
+      id:"congestion", data:vis, getHeight:0.35, pickable:true, autoHighlight:true,
       getSourcePosition:d=>d.source, getTargetPosition:d=>d.target,
       getSourceColor:d=>heat(d.price), getTargetColor:d=>heat(d.price),
-      getWidth:d=>1.2+Math.min(7,Math.abs(d.price)/16),
+      getWidth:d=>1.6+Math.min(8,Math.abs(d.price)/14), widthMinPixels:1.5,
       updateTriggers:{ getSourceColor:curT, getTargetColor:curT, getWidth:curT },
     }));
   }
   return out;
-}
-// shadow price -> "lighting up" heat ramp (dim ember -> bright white-hot)
-function heat(price){
-  const m = Math.min(1, Math.abs(price)/120);
-  return [255, Math.round(120+m*135), Math.round(20+m*200), Math.round(110+m*145)];
 }
 function render(){ deckgl.setProps({ layers:layers(), getTooltip }); }
 
 function getTooltip({object, layer}){
   if(!object) return null;
   if(layer.id==="transmission") return {text:`Transmission · ${object.voltage} kV`};
-  if(layer.id==="facilities"){ const d=object;
-    let s=`${d.name||d.type}\n${d.type}`; if(d.operator) s+=`\n${d.operator}`; if(d.mw) s+=`\n${(+d.mw).toLocaleString()} MW`;
+  if(layer.id==="facilities" || layer.id==="search-hi"){ const d=object;
+    let s=`${d.name||d.type}\n${d.type}`; if(d.operator) s+=`\nOwner: ${d.operator}`; if(d.mw) s+=`\n${d.mw.toLocaleString()} MW`;
     return {text:s}; }
   if(layer.id==="congestion"){ const d=object;
     let s=`${d.name}\nShadow price: $${d.price}/MWh\n${fmtT(d.t)}`;
@@ -213,33 +228,51 @@ function getTooltip({object, layer}){
 }
 function shortLab(sp){ const l=cong&&cong.node_labels&&cong.node_labels[sp]; return l?l.split(" / ")[0]:sp; }
 
+// ---- search by owner ----
+function fitTo(pts){
+  let minx=180,miny=90,maxx=-180,maxy=-90;
+  for(const p of pts){ const [x,y]=p.position; minx=Math.min(minx,x);maxx=Math.max(maxx,x);miny=Math.min(miny,y);maxy=Math.max(maxy,y); }
+  const span=Math.max(maxx-minx,maxy-miny,0.05);
+  const zoom=Math.max(3.2, Math.min(9.5, 8.3 - Math.log2(span)));
+  viewState = {...viewState, longitude:(minx+maxx)/2, latitude:(miny+maxy)/2, zoom,
+    transitionDuration:850, transitionInterpolator:new deck.FlyToInterpolator()};
+  deckgl.setProps({viewState}); onZoom(zoom);
+}
+function runSearch(){
+  searchQ = $("search").value.trim().toLowerCase();
+  if(!searchQ){ matches=null; $("searchct").textContent=""; render(); return; }
+  if(!facilities){ loadFacilities().then(runSearch); return; }
+  matches = facilities.filter(d => (d.operator||"").toLowerCase().includes(searchQ));
+  const owners = new Set(matches.map(d=>d.operator));
+  $("searchct").textContent = matches.length
+    ? `${matches.length.toLocaleString()} sites · ${owners.size} owner${owners.size>1?"s":""}` : "no match";
+  if(matches.length) fitTo(matches);
+  render();
+}
+let st; $("search").oninput = ()=>{ clearTimeout(st); st=setTimeout(runSearch, 280); };
+
 // ---- node-impact box ----
 function updateNodeBox(){
-  if(!cong || !cong.t0){ return; }
+  if(!cong || !cong.t0) return;
   $("tlabel").innerHTML = `<b>${fmtT(curT)}</b>`;
-  const rows = [];
+  const rows=[];
   for(const sp of cong.settlement_points){
-    const v = nearestImpact(sp); if(v===null) continue;
-    const down = v < 0;
-    const col = Math.abs(v)<0.05 ? "#94a3b8" : (down ? "#f87171" : "#4ade80");
+    const v=nearestImpact(sp); if(v===null) continue;
+    const down=v<0, col=Math.abs(v)<0.05?"#94a3b8":(down?"#f87171":"#4ade80");
     rows.push(`<div class="nrow"><span class="nlab">${shortLab(sp)}</span>`+
       `<span class="nval" style="color:${col}">${v>0?"+":""}${v.toFixed(2)}</span>`+
       `<span style="color:${col};width:12px">${Math.abs(v)<0.05?"·":(down?"▼":"▲")}</span></div>`);
   }
-  $("nrows").innerHTML = rows.join("");
-  drawSpark();
+  $("nrows").innerHTML = rows.join(""); drawSpark();
 }
 function drawSpark(){
-  const cv=$("spark"), ctx=cv.getContext("2d"); const W=cv.width, H=cv.height;
-  ctx.clearRect(0,0,W,H);
-  const ser = cong.node_series[FEATURED]; if(!ser||!ser.length) return;
-  const t0=cong.t0, t1=cong.t1, span=Math.max(1,t1-t0);
-  let lo=0, hi=0; for(const e of ser){ lo=Math.min(lo,e.impact); hi=Math.max(hi,e.impact); }
+  const cv=$("spark"), ctx=cv.getContext("2d"), W=cv.width, H=cv.height; ctx.clearRect(0,0,W,H);
+  const ser=cong.node_series[FEATURED]; if(!ser||!ser.length) return;
+  const t0=cong.t0,t1=cong.t1,span=Math.max(1,t1-t0); let lo=0,hi=0;
+  for(const e of ser){ lo=Math.min(lo,e.impact); hi=Math.max(hi,e.impact); }
   const pad=(hi-lo)*0.1||1; lo-=pad; hi+=pad;
   const x=t=>((t-t0)/span)*W, y=v=>H-((v-lo)/(hi-lo))*H;
-  // zero line
   ctx.strokeStyle="#2a3344"; ctx.lineWidth=1; ctx.beginPath(); ctx.moveTo(0,y(0)); ctx.lineTo(W,y(0)); ctx.stroke();
-  // area + line
   ctx.beginPath(); ctx.moveTo(x(ser[0].t),y(ser[0].impact));
   for(const e of ser) ctx.lineTo(x(e.t),y(e.impact));
   ctx.lineTo(x(ser[ser.length-1].t),y(0)); ctx.lineTo(x(ser[0].t),y(0)); ctx.closePath();
@@ -247,37 +280,28 @@ function drawSpark(){
   ctx.beginPath(); ctx.moveTo(x(ser[0].t),y(ser[0].impact));
   for(const e of ser) ctx.lineTo(x(e.t),y(e.impact));
   ctx.strokeStyle="#a78bfa"; ctx.lineWidth=1.4; ctx.stroke();
-  // playhead
   const px=x(curT); ctx.strokeStyle="#fde047"; ctx.lineWidth=1.5;
   ctx.beginPath(); ctx.moveTo(px,0); ctx.lineTo(px,H); ctx.stroke();
 }
 
 // ---- time animation ----
-function tick(){
-  if(!playing) return;
-  curT += 300; if(curT>cong.t1) curT=cong.t0;
-  $("tslider").value=curT; updateNodeBox(); render();
-  raf = setTimeout(()=>requestAnimationFrame(tick), 110);
-}
-$("play").onclick = ()=>{
-  if(!cong || !cong.lines.length) return;
-  playing=!playing; $("play").textContent=playing?"❚❚":"▶";
-  if(playing) tick(); else clearTimeout(raf);
-};
+function tick(){ if(!playing) return; curT+=300; if(curT>cong.t1) curT=cong.t0;
+  $("tslider").value=curT; updateNodeBox(); render(); raf=setTimeout(()=>requestAnimationFrame(tick),110); }
+$("play").onclick = ()=>{ if(!cong||!cong.lines.length) return;
+  playing=!playing; $("play").textContent=playing?"❚❚":"▶"; if(playing) tick(); else clearTimeout(raf); };
 $("tslider").oninput = e=>{ curT=+e.target.value; updateNodeBox(); render(); };
 
-// ---- layer toggles ----
-$("tog-arc").onclick = ()=>{ state.arc=!state.arc; setTog("arc"); if(state.arc) loadArcs(); else render(); };
+// ---- toggles + reset ----
+$("tog-arc").onclick = ()=>{ state.arc=!state.arc; setTog("arc"); if(state.arc) loadArcs(loadedKv); else render(); };
 $("tog-fac").onclick = ()=>{ state.fac=!state.fac; setTog("fac"); $("faclegend").classList.toggle("show",state.fac); if(state.fac) loadFacilities(); else render(); };
-$("tog-cong").onclick = ()=>{
-  state.cong=!state.cong; setTog("cong");
-  $("timebox").classList.toggle("show", state.cong);
-  if(state.cong) loadCong(); else { playing=false; $("play").textContent="▶"; clearTimeout(raf); render(); }
-};
+$("tog-cong").onclick = ()=>{ state.cong=!state.cong; setTog("cong"); $("timebox").classList.toggle("show",state.cong);
+  if(state.cong) loadCong(); else { playing=false; $("play").textContent="▶"; clearTimeout(raf); render(); } };
+$("reset").onclick = ()=>{ viewState={longitude:-99.5,latitude:31.6,zoom:5.1,pitch:48,bearing:-12,
+  transitionDuration:700,transitionInterpolator:new deck.FlyToInterpolator()}; deckgl.setProps({viewState}); };
 
 // initial
 $("faclegend").classList.add("show");
-loadArcs(); loadFacilities();
+loadArcs(345); loadFacilities();
 </script>
 </body>
 </html>
