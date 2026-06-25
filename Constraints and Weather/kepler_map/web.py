@@ -75,6 +75,27 @@ def _site_labels():
             for sp, keys in SITES_BY_SP.items()}
 
 
+@kepler_bp.route("/api/kepler/sites")
+def api_sites():
+    """Our own assets (ERCOT + PJM site configs) so the map can flag them."""
+    out = []
+    try:
+        from constraint_map.sites import SITES as E
+        for s in E.values():
+            out.append({"name": s.display_name, "position": [s.lon, s.lat],
+                        "fuel": s.fuel, "iso": "ERCOT", "node": s.settlement_point})
+    except Exception:
+        logger.exception("ercot sites load failed")
+    try:
+        from pjm_constraint_map.sites import SITES as P
+        for s in P.values():
+            out.append({"name": s.display_name, "position": [s.lon, s.lat],
+                        "fuel": s.fuel, "iso": "PJM", "node": s.pnode_name})
+    except Exception:
+        logger.exception("pjm sites load failed")
+    return jsonify(out)
+
+
 @kepler_bp.route("/api/kepler/congestion")
 def api_congestion_time():
     """ERCOT binding constraints over a day, as time-stamped LINES (the constrained

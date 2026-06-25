@@ -165,6 +165,8 @@ _DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
 _INFRA_FILES = {
     "generation": "infra_generation.geojson",
     "datacenters": "infra_datacenters.geojson",
+    "thermal": "infra_thermal.geojson",              # gas/coal/oil/nuclear plants (OSM)
+    "ai_datacenters": "infra_ai_datacenters.geojson",  # Epoch AI campuses + build status
 }
 _infra_bytes_cache: dict = {}
 
