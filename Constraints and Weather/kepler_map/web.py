@@ -169,20 +169,28 @@ def api_congestion_time():
         if not dt:
             continue
         epoch = int(dt.timestamp())
+        ni = impact_by_key.get((r["CONSTRAINTID"], epoch))
+        if not ni:
+            continue   # only show constraints that actually touch one of our nodes
         t0 = epoch if t0 is None else min(t0, epoch)
         t1 = epoch if t1 is None else max(t1, epoch)
-        ni = impact_by_key.get((r["CONSTRAINTID"], epoch))
         lines.append({
             "source": [round(frm["lon"], 5), round(frm["lat"], 5)],
             "target": [round(to["lon"], 5), round(to["lat"], 5)],
             "t": epoch,
             "price": round(float(r["PRICE"]), 2) if r["PRICE"] is not None else 0,
             "name": r["REPORTED_NAME"] or r["CONSTRAINTNAME"],
-            "node_impact": {k: round(v, 2) for k, v in ni.items()} if ni else None,
+            "node_impact": {k: round(v, 2) for k, v in ni.items()},
         })
 
     node_series = {sp: [{"t": t, "impact": round(v, 3)} for t, v in sorted(pts.items())]
                    for sp, pts in series.items()}
+    # widen the time range to the full node-impact series so the slider/sparkline
+    # cover the whole day even if the touching-lines are sparse at the edges.
+    for pts in node_series.values():
+        for e in pts:
+            t0 = e["t"] if t0 is None else min(t0, e["t"])
+            t1 = e["t"] if t1 is None else max(t1, e["t"])
     out = {"lines": lines, "node_series": node_series, "node_labels": _site_labels(),
            "settlement_points": list(SETTLEMENT_POINTS), "t0": t0, "t1": t1}
     _cong_cache[key] = (time.time(), out)
