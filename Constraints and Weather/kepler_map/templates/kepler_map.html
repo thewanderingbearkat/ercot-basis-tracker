@@ -120,6 +120,7 @@ const deckgl = new deck.DeckGL({
   mapStyle:"https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json",
   viewState,
   controller:{ dragRotate:true, touchRotate:true, keyboard:true, inertia:320 },
+  pickingRadius:14,   // hover snaps to the nearest object within 14px -- no pixel-perfect aiming
   onViewStateChange: ({viewState:vs}) => { viewState=vs; deckgl.setProps({viewState}); onZoom(vs.zoom); },
 });
 
