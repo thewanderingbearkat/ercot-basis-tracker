@@ -9,12 +9,15 @@
 
 Routes use bare paths; the host app registers the blueprint directly (see app.py).
 """
+import json
 import logging
 import os
 import time
+import urllib.parse
+import urllib.request
 from dataclasses import asdict
 
-from flask import Blueprint, jsonify, render_template, request
+from flask import Blueprint, Response, jsonify, render_template, request
 
 from .analytics import historical_attribution, price_bridge
 from .basis import basis_decomposition
@@ -153,3 +156,93 @@ def api_basis():
         return jsonify({"error": str(e)}), 502
     _basis_cache[key] = (time.time(), data)
     return jsonify({**data, "cache_age_seconds": 0})
+
+
+# ---------------------------------------------------------------------------
+# Infrastructure overlays (shared by both map tabs). OpenStreetMap data, ODbL.
+#   /api/infra/<layer>            -- static nationwide GeoJSON (wind/solar, data centers)
+#   /api/infra/dense/<layer>      -- live viewport Overpass proxy (substations, pipelines)
+#   /static/infra_layers.js       -- the shared frontend module
+# ---------------------------------------------------------------------------
+_DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
+_INFRA_FILES = {"generation": "infra_generation.geojson", "datacenters": "infra_datacenters.geojson"}
+_infra_static_cache: dict = {}
+
+
+@constraints_bp.route("/api/infra/<layer>")
+def api_infra(layer):
+    fname = _INFRA_FILES.get(layer)
+    if not fname:
+        return jsonify({"error": f"unknown infra layer {layer}"}), 404
+    if layer not in _infra_static_cache:
+        with open(os.path.join(_DATA_DIR, fname), encoding="utf-8") as fh:
+            _infra_static_cache[layer] = json.load(fh)
+    return jsonify(_infra_static_cache[layer])
+
+
+_OVERPASS_EP = "https://overpass-api.de/api/interpreter"
+_DENSE_Q = {
+    "substations": '[out:json][timeout:60];(way["power"="substation"]({bbox});'
+                   'node["power"="substation"]({bbox}););out center tags;',
+    "pipelines": '[out:json][timeout:60];way["man_made"="pipeline"]({bbox});out geom tags;',
+}
+_infra_dense_cache: dict = {}
+
+
+def _overpass_geojson(query):
+    """POST an Overpass query and convert elements to a GeoJSON FeatureCollection."""
+    req = urllib.request.Request(
+        _OVERPASS_EP,
+        data=urllib.parse.urlencode({"data": query}).encode(),
+        headers={"User-Agent": "constraint-map-infra/1.0"},
+    )
+    payload = json.load(urllib.request.urlopen(req, timeout=70))
+    feats = []
+    for el in payload.get("elements", []):
+        tg = el.get("tags", {})
+        if el.get("type") == "way" and el.get("geometry"):          # pipelines -> lines
+            co = [[round(g["lon"], 5), round(g["lat"], 5)] for g in el["geometry"]]
+            if len(co) < 2:
+                continue
+            geom = {"type": "LineString", "coordinates": co}
+        else:                                                       # substations -> points
+            c = el.get("center")
+            if not c and el.get("lat") is not None:
+                c = {"lat": el["lat"], "lon": el["lon"]}
+            if not c:
+                continue
+            geom = {"type": "Point", "coordinates": [round(c["lon"], 5), round(c["lat"], 5)]}
+        feats.append({"type": "Feature", "geometry": geom, "properties": {
+            "name": tg.get("name"), "operator": tg.get("operator"),
+            "substance": tg.get("substance"), "voltage": tg.get("voltage")}})
+    return {"type": "FeatureCollection", "features": feats}
+
+
+@constraints_bp.route("/api/infra/dense/<layer>")
+def api_infra_dense(layer):
+    if layer not in _DENSE_Q:
+        return jsonify({"error": f"unknown dense layer {layer}"}), 404
+    try:
+        s, w, n, e = (round(float(x), 2) for x in request.args.get("bbox", "").split(","))
+    except Exception:
+        return jsonify({"error": "bad bbox"}), 400
+    if (n - s) * (e - w) > 3.0:        # guard: viewport too large -> only serve when zoomed in
+        return jsonify({"type": "FeatureCollection", "features": [], "note": "zoom in"})
+    key = (layer, s, w, n, e)
+    hit = _infra_dense_cache.get(key)
+    if hit and (time.time() - hit[0]) < 86400:
+        return jsonify(hit[1])
+    try:
+        gj = _overpass_geojson(_DENSE_Q[layer].format(bbox=f"{s},{w},{n},{e}"))
+    except Exception as ex:
+        logger.warning("overpass dense fetch failed (%s): %s", layer, ex)
+        return jsonify({"type": "FeatureCollection", "features": []})
+    _infra_dense_cache[key] = (time.time(), gj)
+    return jsonify(gj)
+
+
+@constraints_bp.route("/static/infra_layers.js")
+def infra_layers_js():
+    path = os.path.join(os.path.dirname(__file__), "..", "static", "infra_layers.js")
+    with open(path, encoding="utf-8") as fh:
+        return Response(fh.read(), mimetype="application/javascript")

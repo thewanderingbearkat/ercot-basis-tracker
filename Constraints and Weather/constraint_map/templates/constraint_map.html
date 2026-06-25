@@ -8,6 +8,7 @@
       integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script src="/static/infra_layers.js"></script>
 <style>
   html, body { margin:0; padding:0; background:#f8f9fa; }
   body { font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color:#0E2C51; }
@@ -30,6 +31,7 @@
   .dwin input { font-size:11px; padding:2px 4px; border:1px solid #d1d5db; border-radius:3px; color:#0E2C51; }
   .vflab { font-size:11px; color:#6b7280; font-weight:600; }
   .seg-v button { padding:2px 7px; font-size:10px; }
+  .ic-dot { display:inline-block; width:7px; height:7px; border-radius:50%; margin-right:4px; vertical-align:middle; }
   .map-details { margin-top:8px; border:1px solid #e5e7eb; border-radius:6px; padding:9px 12px; background:#f9fafb; min-height:20px; }
   .map-details .md-hint { color:#9ca3af; font-size:12px; }
   .map-details .md-t { font-weight:700; font-size:14px; }
@@ -103,6 +105,8 @@
     <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
       <h2 style="margin:0;">Where the basis comes from</h2>
       <span class="vflab">grid kV</span><span id="vFilter" class="seg seg-v"></span>
+      <span class="vflab" style="margin-left:6px;">infra</span><span id="infraFilter" class="seg seg-v"></span>
+      <span class="vflab" id="infraHint" style="color:#ea580c; font-weight:600;"></span>
       <span class="health" id="mapMeta" style="margin-left:auto;"></span>
     </div>
     <div id="map" style="margin-top:10px;"></div>
@@ -400,6 +404,7 @@ document.getElementById("dApply").onclick = applyCustom;
 renderSiteTabs();
 renderWinTabs();
 renderVFilter();
+initInfraLayers(map, document.getElementById("infraFilter"), document.getElementById("infraHint"));
 loadBasemap();
 loadBasis();
 preloadPresets();
