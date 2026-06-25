@@ -22,12 +22,17 @@
         pstyle: { radius: 3, color: "#334155", weight: 1, fillColor: "#94a3b8", fillOpacity: 0.85 } },
       { k: "pipelines",   label: "Pipelines",  type: "Pipeline",   kind: "dense", src: "/api/infra/dense/pipelines", minZoom: 9,
         lstyle: { color: "#ea580c", weight: 1.5, opacity: 0.75, dashArray: "4 3" } },
+      { k: "transmission", label: "Transmission", type: "Transmission line", kind: "static", src: "/api/infra/transmission",
+        dot: "#ea580c",
+        lstyle: f => { const v = (f.properties && f.properties.VOLTAGE) || 0;
+          return { color: v >= 500 ? "#dc2626" : v >= 345 ? "#ea580c" : "#eab308",
+                   weight: v >= 500 ? 1.6 : v >= 345 ? 1.2 : 0.8, opacity: 0.6 }; } },
     ];
     const box = document.getElementById("mapDetails");
     const active = {}, groups = {}, staticCache = {};
 
-    function swatch(l) { return l.pstyle ? l.pstyle.fillColor : l.lstyle.color; }       // chip dot
-    function badgeColor(l) { return l.pstyle ? l.pstyle.color : l.lstyle.color; }       // darker, for white text
+    function swatch(l) { return l.dot || (l.pstyle ? l.pstyle.fillColor : l.lstyle.color); }   // chip dot
+    function badgeColor(l) { return l.dot || (l.pstyle ? l.pstyle.color : l.lstyle.color); }   // darker, for white text
     function chips() {
       const allOn = LAYERS.every(l => active[l.k]);
       el.innerHTML =
@@ -43,13 +48,15 @@
       if (!g) return null;
       if (g.type === "Point") return g.coordinates;
       if (g.type === "LineString" && g.coordinates.length) return g.coordinates[Math.floor(g.coordinates.length / 2)];
+      if (g.type === "MultiLineString" && g.coordinates.length) { const s = g.coordinates[0]; return s[Math.floor(s.length / 2)]; }
       return null;
     }
     // Show a clicked feature in the shared bottom details box (like a constraint).
     function details(f, l) {
       if (!box) return;
       const p = f.properties || {};
-      const vbadge = p.voltage ? ` <span class="md-kv">${p.voltage} kV</span>` : "";
+      const volt = p.voltage || p.VOLTAGE;
+      const vbadge = volt ? ` <span class="md-kv">${volt} kV</span>` : "";
       const rows = [];
       if (p.mw) rows.push(`Capacity&nbsp;<b>${(+p.mw).toLocaleString()} MW</b>`);
       if (p.substance) rows.push(`Carries&nbsp;<b>${p.substance}</b>`);

@@ -165,19 +165,39 @@ def api_basis():
 #   /static/infra_layers.js       -- the shared frontend module
 # ---------------------------------------------------------------------------
 _DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
-_INFRA_FILES = {"generation": "infra_generation.geojson", "datacenters": "infra_datacenters.geojson"}
-_infra_static_cache: dict = {}
+_INFRA_FILES = {
+    "generation": "infra_generation.geojson",
+    "datacenters": "infra_datacenters.geojson",
+    "transmission": "infra_transmission.geojson",   # nationwide >=230kV backbone
+}
+_infra_bytes_cache: dict = {}
 
 
 @constraints_bp.route("/api/infra/<layer>")
 def api_infra(layer):
+    """Serve a static nationwide GeoJSON. Prefers a pre-gzipped sibling (.gz)
+    with Content-Encoding so big layers (transmission ~16MB raw) ship ~4x smaller;
+    the browser decodes transparently. Falls back to the raw file."""
     fname = _INFRA_FILES.get(layer)
     if not fname:
         return jsonify({"error": f"unknown infra layer {layer}"}), 404
-    if layer not in _infra_static_cache:
-        with open(os.path.join(_DATA_DIR, fname), encoding="utf-8") as fh:
-            _infra_static_cache[layer] = json.load(fh)
-    return jsonify(_infra_static_cache[layer])
+    if layer not in _infra_bytes_cache:
+        raw = os.path.join(_DATA_DIR, fname)
+        gz = raw + ".gz"
+        if os.path.exists(gz):
+            with open(gz, "rb") as fh:
+                _infra_bytes_cache[layer] = (fh.read(), True)
+        elif os.path.exists(raw):
+            with open(raw, "rb") as fh:
+                _infra_bytes_cache[layer] = (fh.read(), False)
+        else:
+            return jsonify({"error": f"infra layer {layer} not deployed"}), 404
+    body, gzipped = _infra_bytes_cache[layer]
+    resp = Response(body, mimetype="application/json")
+    if gzipped:
+        resp.headers["Content-Encoding"] = "gzip"
+        resp.headers["Vary"] = "Accept-Encoding"
+    return resp
 
 
 _OVERPASS_EP = "https://overpass-api.de/api/interpreter"
