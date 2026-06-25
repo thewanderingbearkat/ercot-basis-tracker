@@ -19,6 +19,7 @@ from flask import Blueprint, jsonify, render_template, request
 from constraint_map.constraints import latest_interval
 from constraint_map.db import YES, query
 from constraint_map.geo import facility_geometry
+from constraint_map.sites import SETTLEMENT_POINTS, SITES, SITES_BY_SP
 
 logger = logging.getLogger(__name__)
 
@@ -75,13 +76,28 @@ _cong_cache: dict = {}
 _CONG_TTL = 600
 
 
+def _sp_in_clause():
+    return ", ".join(f"'{sp}'" for sp in SETTLEMENT_POINTS)
+
+
+def _site_labels():
+    """settlement point -> a friendly label of the sites that settle there."""
+    return {sp: " / ".join(SITES[k].display_name for k in keys)
+            for sp, keys in SITES_BY_SP.items()}
+
+
 @kepler_bp.route("/api/kepler/congestion")
 def api_congestion_time():
-    """Time-stamped, geolocated ERCOT binding constraints for a day.
+    """ERCOT binding constraints over a day, as time-stamped LINES (the constrained
+    element's from->to geometry) plus the per-interval congestion push at each of
+    our settlement points.
 
-    ?date=YYYY-MM-DD (default: the most recent 24h of SCED data). Each point is a
-    binding constraint at one SCED interval, placed at its constrained facility's
-    midpoint, carrying the shadow price -> the time layer animates these.
+    ?date=YYYY-MM-DD (default: the most recent 24h of SCED data). Returns:
+      lines        [{source,target,t,price,name,node_impact}]  -- light up over time
+      node_series  {sp: [{t, impact}]}   -- congestion $/MWh at our node per interval
+      node_labels  {sp: "Bearkat I / McCrae (BKII)"}
+    node_impact / impact sign: NEGATIVE = constraint pushing the node's price (and
+    our basis) DOWN; positive = lifting it. impact = -(shadow_price * shift_factor).
     """
     date = request.args.get("date") or None
     key = date or "_latest"
@@ -90,55 +106,85 @@ def api_congestion_time():
         return jsonify(hit[1])
 
     if date:
-        d0_sql = "%(date)s::DATE"
-        d1_sql = "DATEADD('day', 1, %(date)s::DATE)"
+        d0_sql, d1_sql = "%(date)s::DATE", "DATEADD('day', 1, %(date)s::DATE)"
         params = {"date": date}
     else:
         latest = latest_interval()
         if not latest:
-            return jsonify({"points": [], "t0": None, "t1": None, "note": "no SCED data"})
-        # most recent 24h ending at the latest interval
+            return jsonify({"lines": [], "node_series": {}, "node_labels": {}, "t0": None, "t1": None})
         d0_sql = "DATEADD('day', -1, %(latest)s::TIMESTAMP_NTZ)"
         d1_sql = "DATEADD('minute', 5, %(latest)s::TIMESTAMP_NTZ)"
         params = {"latest": latest}
 
-    sql = f"""
-        SELECT c.DATETIME, c.FACILITYID, c.CONSTRAINTNAME, c.REPORTED_NAME, c.PRICE
+    # (A) every binding constraint over the window -> the lines that light up.
+    lines_sql = f"""
+        SELECT c.DATETIME, c.CONSTRAINTID, c.FACILITYID, c.CONSTRAINTNAME, c.REPORTED_NAME, c.PRICE
         FROM {YES}.CONSTRAINTS c
         WHERE c.ISO = 'ERCOT' AND c.PRICE <> 0 AND c.FACILITYID IS NOT NULL
           AND c.DATETIME >= {d0_sql} AND c.DATETIME < {d1_sql}
     """
+    # (B) the congestion push at OUR settlement points, per (constraint, interval).
+    impact_sql = f"""
+        SELECT c.DATETIME, c.CONSTRAINTID, sf.SETTLEMENTPOINT,
+               -(c.PRICE * sf.SHIFTFACTOR) AS IMPACT
+        FROM {YES}.CONSTRAINTS c
+        JOIN {YES}.ERCOT_SCED_SHIFT_FACTORS sf
+          ON sf.DATETIME = c.DATETIME AND sf.CONSTRAINTID = c.CONSTRAINTID
+        WHERE c.ISO = 'ERCOT' AND c.PRICE <> 0
+          AND sf.SETTLEMENTPOINT IN ({_sp_in_clause()})
+          AND c.DATETIME >= {d0_sql} AND c.DATETIME < {d1_sql}
+          AND sf.DATETIME >= {d0_sql} AND sf.DATETIME < {d1_sql}
+    """
     try:
-        rows = query(sql, params)
+        line_rows = query(lines_sql, params)
+        impact_rows = query(impact_sql, params)
     except Exception as e:
         logger.exception("kepler congestion query failed")
         return jsonify({"error": str(e)}), 502
 
-    geo = facility_geometry({r["FACILITYID"] for r in rows})
-    points, t0, t1 = [], None, None
-    for r in rows:
+    # Per-(constraint, interval) impact on each of our SPs -> attach to lines + roll
+    # up into a per-SP, per-interval net series for the node box.
+    impact_by_key: dict = {}
+    series: dict = {sp: {} for sp in SETTLEMENT_POINTS}
+    for r in impact_rows:
+        dt = r["DATETIME"]
+        if not dt:
+            continue
+        epoch = int(dt.timestamp())
+        imp = round(float(r["IMPACT"]), 3) if r["IMPACT"] is not None else 0.0
+        sp = r["SETTLEMENTPOINT"]
+        impact_by_key.setdefault((r["CONSTRAINTID"], epoch), {})[sp] = imp
+        series[sp][epoch] = series[sp].get(epoch, 0.0) + imp
+
+    geo = facility_geometry({r["FACILITYID"] for r in line_rows})
+    lines, t0, t1 = [], None, None
+    for r in line_rows:
         g = geo.get(r["FACILITYID"])
         if not g:
             continue
         frm, to = g.get("from"), g.get("to")
-        pts = [p for p in (frm, to) if p]
-        if not pts:
+        if not frm or not to:
             continue
-        lon = sum(p["lon"] for p in pts) / len(pts)
-        lat = sum(p["lat"] for p in pts) / len(pts)
         dt = r["DATETIME"]
-        epoch = int(dt.timestamp()) if dt else None
-        if epoch is None:
+        if not dt:
             continue
+        epoch = int(dt.timestamp())
         t0 = epoch if t0 is None else min(t0, epoch)
         t1 = epoch if t1 is None else max(t1, epoch)
-        points.append({
-            "position": [round(lon, 5), round(lat, 5)],
+        ni = impact_by_key.get((r["CONSTRAINTID"], epoch))
+        lines.append({
+            "source": [round(frm["lon"], 5), round(frm["lat"], 5)],
+            "target": [round(to["lon"], 5), round(to["lat"], 5)],
             "t": epoch,
             "price": round(float(r["PRICE"]), 2) if r["PRICE"] is not None else 0,
             "name": r["REPORTED_NAME"] or r["CONSTRAINTNAME"],
+            "node_impact": {k: round(v, 2) for k, v in ni.items()} if ni else None,
         })
-    out = {"points": points, "t0": t0, "t1": t1}
+
+    node_series = {sp: [{"t": t, "impact": round(v, 3)} for t, v in sorted(pts.items())]
+                   for sp, pts in series.items()}
+    out = {"lines": lines, "node_series": node_series, "node_labels": _site_labels(),
+           "settlement_points": list(SETTLEMENT_POINTS), "t0": t0, "t1": t1}
     _cong_cache[key] = (time.time(), out)
-    logger.info("kepler congestion: %d points over %s", len(points), key)
+    logger.info("kepler congestion: %d lines, %d impact rows over %s", len(lines), len(impact_rows), key)
     return jsonify(out)
