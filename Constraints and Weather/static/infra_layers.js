@@ -22,11 +22,6 @@
         pstyle: { radius: 3, color: "#334155", weight: 1, fillColor: "#94a3b8", fillOpacity: 0.85 } },
       { k: "pipelines",   label: "Pipelines",  type: "Pipeline",   kind: "dense", src: "/api/infra/dense/pipelines", minZoom: 9,
         lstyle: { color: "#ea580c", weight: 1.5, opacity: 0.75, dashArray: "4 3" } },
-      { k: "transmission", label: "Transmission", type: "Transmission line", kind: "static", src: "/api/infra/transmission",
-        dot: "#ea580c",
-        lstyle: f => { const v = (f.properties && f.properties.VOLTAGE) || 0;
-          return { color: v >= 500 ? "#dc2626" : v >= 345 ? "#ea580c" : "#eab308",
-                   weight: v >= 500 ? 1.6 : v >= 345 ? 1.2 : 0.8, opacity: 0.6 }; } },
     ];
     const box = document.getElementById("mapDetails");
     const active = {}, groups = {}, staticCache = {};

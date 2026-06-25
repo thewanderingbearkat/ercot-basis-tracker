@@ -70,12 +70,9 @@ def api_active():
 
 @constraints_bp.route("/api/constraints/basemap")
 def api_basemap():
-    """TX transmission-line basemap. ?min_kv=N filters by voltage (default 100)."""
-    try:
-        min_kv = int(request.args.get("min_kv", 100))
-    except ValueError:
-        min_kv = 100
-    return jsonify(load_basemap(min_kv))
+    """Nationwide HIFLD transmission basemap (>=69kV), gzipped. The client filters
+    by voltage class, so min_kv is accepted for compatibility but ignored."""
+    return serve_basemap()
 
 
 @constraints_bp.route("/api/constraints/sites")
@@ -168,9 +165,25 @@ _DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
 _INFRA_FILES = {
     "generation": "infra_generation.geojson",
     "datacenters": "infra_datacenters.geojson",
-    "transmission": "infra_transmission.geojson",   # nationwide >=230kV backbone
 }
 _infra_bytes_cache: dict = {}
+
+# Nationwide transmission basemap (>=69kV, HIFLD), pre-gzipped. Shared by both tabs
+# in place of the old regional files; the kV-class filter (incl. its All/off toggle)
+# is what shows/hides it client-side. Voltage-colored violet/blue/teal in the UI.
+_BASEMAP_GZ = os.path.join(_DATA_DIR, "transmission_us.geojson.gz")
+_basemap_gz_bytes = None
+
+
+def serve_basemap():
+    global _basemap_gz_bytes
+    if _basemap_gz_bytes is None:
+        with open(_BASEMAP_GZ, "rb") as fh:
+            _basemap_gz_bytes = fh.read()
+    resp = Response(_basemap_gz_bytes, mimetype="application/json")
+    resp.headers["Content-Encoding"] = "gzip"
+    resp.headers["Vary"] = "Accept-Encoding"
+    return resp
 
 
 @constraints_bp.route("/api/infra/<layer>")

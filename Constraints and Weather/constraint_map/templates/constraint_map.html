@@ -232,15 +232,28 @@ const kvWeight = v => v >= 500 ? 2.8 : v >= 345 ? 2.3 : v >= 230 ? 1.8 : v >= 13
 function kvClass(v){ return v >= 500 ? "500" : v >= 345 ? "345" : v >= 230 ? "230" : v >= 138 ? "138" : "lo"; }
 
 let basemapGeo = null;
+let basemapGroups = null;   // {kvClass: L.featureGroup} built once -- toggling a class
+                            // just add/removes its group (no re-parse of ~76k lines)
 const vClasses = new Set(["lo","138","230","345","500"]);   // kV classes currently shown
-function renderBasemap(){
+function buildBasemapGroups(){
   basemapLayer.clearLayers();
-  if (!basemapGeo) return;
+  basemapGroups = {};
+  for (const [k] of VCLASSES) basemapGroups[k] = L.featureGroup();
   L.geoJSON(basemapGeo, {
-    filter: f => vClasses.has(kvClass((f.properties&&f.properties.VOLTAGE)||0)),
     style: f => { const v=(f.properties&&f.properties.VOLTAGE)||0;
-      return { color: kvColor(v), weight: kvWeight(v), opacity: 0.8 }; }
-  }).addTo(basemapLayer);
+      return { color: kvColor(v), weight: kvWeight(v), opacity: 0.8 }; },
+    onEachFeature: (f, ly) => { const c = kvClass((f.properties&&f.properties.VOLTAGE)||0);
+      if (basemapGroups[c]) basemapGroups[c].addLayer(ly); }
+  });
+  renderBasemap();
+}
+function renderBasemap(){
+  if (!basemapGroups) return;
+  for (const [k] of VCLASSES){
+    const g = basemapGroups[k];
+    if (vClasses.has(k)) { if (!basemapLayer.hasLayer(g)) basemapLayer.addLayer(g); }
+    else if (basemapLayer.hasLayer(g)) basemapLayer.removeLayer(g);
+  }
 }
 const VCLASSES = [["lo","69–115"],["138","138"],["230","230"],["345","345"],["500","500+"]];
 function renderVFilter(){
@@ -259,7 +272,7 @@ function renderVFilter(){
 async function loadBasemap(){
   try {
     basemapGeo = await (await fetch("/api/constraints/basemap?min_kv=69")).json();
-    renderBasemap();
+    buildBasemapGroups();
   } catch(e){ console.warn("basemap load failed", e); }
 }
 

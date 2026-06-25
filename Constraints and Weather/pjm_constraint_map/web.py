@@ -56,12 +56,10 @@ def api_sites():
 
 @pjm_constraints_bp.route("/api/pjm/basemap")
 def api_basemap():
-    """PJM-east transmission backbone (>=min_kv). Static file, no Snowflake."""
-    try:
-        min_kv = int(request.args.get("min_kv", 230))
-    except ValueError:
-        min_kv = 230
-    return jsonify(load_basemap(min_kv, path=PJM_BASEMAP))
+    """Nationwide HIFLD transmission basemap (>=69kV), gzipped -- shared with the
+    ERCOT tab. The client filters by voltage class, so min_kv is ignored."""
+    from constraint_map.web import serve_basemap
+    return serve_basemap()
 
 
 @pjm_constraints_bp.route("/api/pjm/congestion")
