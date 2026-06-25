@@ -75,10 +75,10 @@
   <div class="legend">
     <div class="lg-h">Transmission — kV</div>
     <div class="lg-row">
-      <span class="it"><span class="lg-line" style="background:rgb(192,132,252)"></span>500</span>
-      <span class="it"><span class="lg-line" style="background:rgb(168,85,247)"></span>345</span>
-      <span class="it"><span class="lg-line" style="background:rgb(139,92,246)"></span>230</span>
-      <span class="it"><span class="lg-line" style="background:rgb(124,58,237)"></span>138</span>
+      <span class="it"><span class="lg-line" style="background:rgb(124,58,237)"></span>500</span>
+      <span class="it"><span class="lg-line" style="background:rgb(37,99,235)"></span>345</span>
+      <span class="it"><span class="lg-line" style="background:rgb(14,165,233)"></span>230</span>
+      <span class="it"><span class="lg-line" style="background:rgb(20,184,166)"></span>138</span>
     </div>
     <div class="lg-h">Facilities — brightness ∝ MW</div>
     <div class="lg-row">
@@ -108,9 +108,9 @@
 </div>
 
 <script>
-// transmission: violet ramp, lighter = higher kV -- a cool grid that recedes
-const COLOR = { 500:[192,132,252], 345:[168,85,247], 230:[139,92,246], 138:[124,58,237] };
-function arcColor(v){ const c=v>=500?COLOR[500]:v>=345?COLOR[345]:v>=230?COLOR[230]:COLOR[138]; return [c[0],c[1],c[2],170]; }
+// transmission: distinct kV palette (matches the ERCOT/PJM constraint maps)
+const COLOR = { 500:[124,58,237], 345:[37,99,235], 230:[14,165,233], 138:[20,184,166] };
+function arcColor(v){ const c=v>=500?COLOR[500]:v>=345?COLOR[345]:v>=230?COLOR[230]:COLOR[138]; return [c[0],c[1],c[2],195]; }
 // facilities: vivid accents, distinct from the violet grid
 const FAC_COLOR = { wind:[56,189,248], solar:[251,191,36], datacenter:[244,114,182] };
 
