@@ -29,9 +29,12 @@
     function swatch(l) { return l.pstyle ? l.pstyle.fillColor : l.lstyle.color; }       // chip dot
     function badgeColor(l) { return l.pstyle ? l.pstyle.color : l.lstyle.color; }       // darker, for white text
     function chips() {
-      el.innerHTML = LAYERS.map(l =>
-        `<button data-k="${l.k}" class="${active[l.k] ? "active" : ""}">` +
-        `<span class="ic-dot" style="background:${swatch(l)}"></span>${l.label}</button>`).join("");
+      const allOn = LAYERS.every(l => active[l.k]);
+      el.innerHTML =
+        `<button data-k="__all" class="${allOn ? "active" : ""}">All</button>` +
+        LAYERS.map(l =>
+          `<button data-k="${l.k}" class="${active[l.k] ? "active" : ""}">` +
+          `<span class="ic-dot" style="background:${swatch(l)}"></span>${l.label}</button>`).join("");
       el.querySelectorAll("button").forEach(b => b.onclick = () => toggle(b.dataset.k));
     }
     function group(k) { if (!groups[k]) groups[k] = L.layerGroup().addTo(map); return groups[k]; }
@@ -84,12 +87,21 @@
       } catch (e) { /* overpass hiccup -- ignore, will retry on next move */ }
     }
     function refresh(l) { if (active[l.k]) (l.kind === "static" ? loadStatic : loadDense)(l); }
+    function setActive(l, on) {
+      if (on === active[l.k]) return;
+      active[l.k] = on;
+      if (on) refresh(l);
+      else if (groups[l.k]) { map.removeLayer(groups[l.k]); delete groups[l.k]; }
+    }
     function toggle(k) {
-      const l = LAYERS.find(x => x.k === k);
-      active[k] = !active[k]; chips();
-      if (active[k]) refresh(l);
-      else if (groups[k]) { map.removeLayer(groups[k]); delete groups[k]; }
-      showHint();
+      if (k === "__all") {
+        const turnOn = !LAYERS.every(l => active[l.k]);
+        LAYERS.forEach(l => setActive(l, turnOn));
+      } else {
+        const l = LAYERS.find(x => x.k === k);
+        setActive(l, !active[l.k]);
+      }
+      chips(); showHint();
     }
     function showHint() {
       if (!hintEl) return;

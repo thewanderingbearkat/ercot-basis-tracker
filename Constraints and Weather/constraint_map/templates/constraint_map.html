@@ -246,9 +246,13 @@ const VCLASSES = [["lo","69–115"],["138","138"],["230","230"],["345","345"],["
 function renderVFilter(){
   const el = document.getElementById("vFilter");
   if (!el) return;
-  el.innerHTML = VCLASSES.map(([k,lab]) => `<button data-v="${k}" class="${vClasses.has(k)?'active':''}">${lab}</button>`).join("");
+  const allOn = vClasses.size === VCLASSES.length;
+  el.innerHTML = `<button data-v="__all" class="${allOn?'active':''}">All</button>` +
+    VCLASSES.map(([k,lab]) => `<button data-v="${k}" class="${vClasses.has(k)?'active':''}">${lab}</button>`).join("");
   el.querySelectorAll("button").forEach(b => b.onclick = () => {
-    const k = b.dataset.v; vClasses.has(k) ? vClasses.delete(k) : vClasses.add(k);
+    const k = b.dataset.v;
+    if (k === "__all") { vClasses.size === VCLASSES.length ? vClasses.clear() : VCLASSES.forEach(([c]) => vClasses.add(c)); }
+    else { vClasses.has(k) ? vClasses.delete(k) : vClasses.add(k); }
     renderVFilter(); renderBasemap();
   });
 }
