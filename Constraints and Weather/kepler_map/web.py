@@ -26,7 +26,11 @@ logger = logging.getLogger(__name__)
 kepler_bp = Blueprint("kepler_map", __name__, template_folder="templates")
 
 _DATA = os.path.join(os.path.dirname(__file__), "..", "data")
-_TRANSMISSION_GZ = os.path.join(_DATA, "transmission_us.geojson.gz")
+# Pre-built arcs (>=138kV) carrying endpoint substation names (SUB_1/SUB_2) and
+# OWNER from HIFLD, so the hover can read "substation -> substation, kV". The
+# basemap file (transmission_us.geojson.gz) stays name-free / lean.
+_TRANSMISSION_ARCS_GZ = os.path.join(_DATA, "transmission_arcs.json.gz")
+_arcs_all = None
 _arc_cache: dict[int, list] = {}
 
 
@@ -35,40 +39,25 @@ def kepler_page():
     return render_template("kepler_map.html")
 
 
-def _line_endpoints(geom):
-    """First and last coordinate of a (Multi)LineString -> (source, target)."""
-    t, co = geom.get("type"), geom.get("coordinates") or []
-    if t == "LineString":
-        return (co[0], co[-1]) if len(co) >= 2 else (None, None)
-    if t == "MultiLineString":
-        segs = [s for s in co if s]
-        if segs and len(segs[0]) and len(segs[-1]):
-            return segs[0][0], segs[-1][-1]
-    return None, None
+def _load_all_arcs():
+    global _arcs_all
+    if _arcs_all is None:
+        with gzip.open(_TRANSMISSION_ARCS_GZ, "rt", encoding="utf-8") as fh:
+            _arcs_all = json.load(fh)
+    return _arcs_all
 
 
 @kepler_bp.route("/api/kepler/transmission")
 def api_transmission_arcs():
-    """Transmission lines as great-circle arcs. Defaults to the >=345kV backbone
-    (~3.5k arcs) so the ArcLayer stays snappy; ?min_kv=N to widen."""
+    """Transmission lines as arcs with endpoint substation names + owner (HIFLD).
+    Defaults to the >=345kV backbone; ?min_kv=N (down to 138) widens."""
     try:
         min_kv = int(request.args.get("min_kv", 345))
     except ValueError:
         min_kv = 345
     if min_kv not in _arc_cache:
-        with gzip.open(_TRANSMISSION_GZ, "rt", encoding="utf-8") as fh:
-            gj = json.load(fh)
-        arcs = []
-        for ft in gj.get("features", []):
-            v = (ft.get("properties") or {}).get("VOLTAGE") or 0
-            if v < min_kv:
-                continue
-            s, t = _line_endpoints(ft.get("geometry") or {})
-            if not s or not t:
-                continue
-            arcs.append({"source": s, "target": t, "voltage": v})
-        _arc_cache[min_kv] = arcs
-        logger.info("kepler transmission arcs >=%skV: %d", min_kv, len(arcs))
+        _arc_cache[min_kv] = [a for a in _load_all_arcs() if a["voltage"] >= min_kv]
+        logger.info("kepler transmission arcs >=%skV: %d", min_kv, len(_arc_cache[min_kv]))
     return jsonify(_arc_cache[min_kv])
 
 

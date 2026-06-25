@@ -211,7 +211,10 @@ function render(){ deckgl.setProps({ layers:layers(), getTooltip }); }
 
 function getTooltip({object, layer}){
   if(!object) return null;
-  if(layer.id==="transmission") return {text:`Transmission · ${object.voltage} kV`};
+  if(layer.id==="transmission"){ const d=object;
+    let s=`${d.sub1||"unnamed"} → ${d.sub2||"unnamed"}\n${d.voltage} kV`;
+    if(d.owner) s+=` · ${d.owner}`;
+    return {text:s}; }
   if(layer.id==="facilities"){ const d=object;
     let s=`${d.name||d.type}\n${d.type}`; if(d.operator) s+=`\nOwner: ${d.operator}`; if(d.mw) s+=`\n${d.mw.toLocaleString()} MW`;
     return {text:s}; }
