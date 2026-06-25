@@ -3,85 +3,95 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Kepler / deck.gl — Grid Explorer (BETA)</title>
+<title>Grid Explorer — deck.gl</title>
 <script src="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.js"></script>
 <link href="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.css" rel="stylesheet">
 <script src="https://unpkg.com/deck.gl@8.9.35/dist.min.js"></script>
 <style>
-  html, body { margin:0; height:100%; background:#0b0e14; color:#e5e7eb;
-    font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+  :root { --bg:#0a0d13; --panel:rgba(15,18,26,.92); --line:#1c2230; --line2:#262d3d;
+    --txt:#e6e9ef; --mut:#7a8699; --accent:#8b5cf6; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--txt);
+    font-family:-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', Roboto, sans-serif; }
   #deckmap { position:fixed; inset:0; }
-  .maplibregl-ctrl-attrib { font-size:9px; opacity:.5; }
-  #panel { position:fixed; top:14px; left:14px; width:282px; z-index:5;
-    background:rgba(17,21,30,.93); border:1px solid #2a3344; border-radius:10px;
-    padding:14px 15px; box-shadow:0 8px 30px rgba(0,0,0,.5); backdrop-filter:blur(6px); }
-  #panel h1 { font-size:14px; margin:0 0 2px; font-weight:700; letter-spacing:-.01em; }
-  #panel .sub { font-size:10px; color:#7c8699; margin-bottom:10px; }
-  #panel .sub a, #panel .sub span.lnk { color:#60a5fa; text-decoration:none; cursor:pointer; }
-  #search { width:100%; box-sizing:border-box; background:#0d1220; border:1px solid #2a3344;
-    border-radius:7px; color:#e5e7eb; font-size:12px; padding:7px 9px; outline:none; }
-  #search:focus { border-color:#7c3aed; }
-  #searchct { font-size:10px; color:#a78bfa; margin:4px 0 2px; min-height:12px; }
-  .lyr { display:flex; align-items:center; gap:9px; padding:8px 0; border-top:1px solid #1f2734; }
-  .sw { width:11px; height:11px; border-radius:3px; flex:none; }
-  .lyr .nm { font-size:12px; font-weight:600; flex:1; }
-  .lyr .ct { font-size:10px; color:#7c8699; font-weight:500; }
-  .tog { position:relative; width:32px; height:18px; border-radius:9px; background:#2a3344;
-    cursor:pointer; transition:background .15s; flex:none; }
-  .tog.on { background:#7c3aed; }
-  .tog::after { content:""; position:absolute; top:2px; left:2px; width:14px; height:14px;
-    border-radius:50%; background:#fff; transition:transform .15s; }
-  .tog.on::after { transform:translateX(14px); }
-  .faclegend { font-size:10px; color:#9aa4b5; margin:6px 0 0 20px; display:none; }
-  .faclegend.show { display:block; }
-  .faclegend i { display:inline-block; width:8px; height:8px; border-radius:50%; margin:0 3px 0 8px; vertical-align:middle; }
-  #timebox { margin-top:12px; padding-top:12px; border-top:1px solid #1f2734; display:none; }
+  .maplibregl-ctrl-attrib { font-size:9px; opacity:.45; }
+  #panel { position:fixed; top:16px; left:16px; width:272px; z-index:5;
+    background:var(--panel); border:1px solid var(--line2); border-radius:12px;
+    padding:15px 16px; box-shadow:0 10px 36px rgba(0,0,0,.55); backdrop-filter:blur(8px); }
+  #panel h1 { font-size:13px; margin:0; font-weight:650; letter-spacing:.005em; }
+  #panel h1 .b { font-size:8px; color:var(--accent); font-weight:700; letter-spacing:.08em;
+    border:1px solid var(--accent); border-radius:3px; padding:1px 3px; margin-left:5px; vertical-align:2px; }
+  #panel .sub { font-size:10.5px; color:var(--mut); margin:3px 0 11px; }
+  #panel .sub a, #panel .sub span.lnk { color:#7aa2ff; text-decoration:none; cursor:pointer; }
+  #search { width:100%; box-sizing:border-box; background:#0c0f17; border:1px solid var(--line2);
+    border-radius:8px; color:var(--txt); font-size:12px; padding:8px 10px; outline:none; transition:border .15s; }
+  #search:focus { border-color:var(--accent); }
+  #searchct { font-size:10px; color:#a78bfa; margin:5px 0 0; min-height:12px; }
+  .lyr { display:flex; align-items:center; gap:10px; padding:9px 0; border-top:1px solid var(--line); }
+  .lyr .nm { font-size:12px; font-weight:550; flex:1; }
+  .lyr .ct { font-size:10px; color:var(--mut); font-weight:400; }
+  .tog { position:relative; width:30px; height:17px; border-radius:9px; background:#2a3344; cursor:pointer; transition:background .15s; flex:none; }
+  .tog.on { background:var(--accent); }
+  .tog::after { content:""; position:absolute; top:2px; left:2px; width:13px; height:13px; border-radius:50%; background:#fff; transition:transform .15s; }
+  .tog.on::after { transform:translateX(13px); }
+  .legend { margin-top:12px; padding-top:11px; border-top:1px solid var(--line); }
+  .lg-h { font-size:9px; text-transform:uppercase; letter-spacing:.06em; color:var(--mut); margin:9px 0 5px; }
+  .lg-h:first-child { margin-top:0; }
+  .lg-row { font-size:11px; color:#c3cad6; display:flex; flex-wrap:wrap; align-items:center; gap:4px 9px; }
+  .lg-row .it { display:inline-flex; align-items:center; gap:4px; }
+  .lg-line { display:inline-block; width:15px; height:3px; border-radius:2px; }
+  .lg-dot { display:inline-block; width:8px; height:8px; border-radius:50%; }
+  .lg-bar { display:inline-block; width:74px; height:7px; border-radius:4px;
+    background:linear-gradient(90deg,#7a3b12,#f59e0b,#fde047,#fff7d6); }
+  #timebox { margin-top:12px; padding-top:11px; border-top:1px solid var(--line); display:none; }
   #timebox.show { display:block; }
-  .trow { display:flex; align-items:center; gap:8px; }
-  #play { width:30px; height:30px; border-radius:7px; border:none; background:#7c3aed; color:#fff; cursor:pointer; font-size:13px; flex:none; }
-  #play:hover { background:#8b5cf6; }
-  #tslider { flex:1; accent-color:#7c3aed; }
-  #tlabel { font-size:11px; color:#cbd5e1; margin-top:6px; font-variant-numeric:tabular-nums; text-align:center; }
+  .trow { display:flex; align-items:center; gap:9px; }
+  #play { width:29px; height:29px; border-radius:8px; border:none; background:var(--accent); color:#fff; cursor:pointer; font-size:12px; flex:none; }
+  #play:hover { background:#9b6ef8; }
+  #tslider { flex:1; accent-color:var(--accent); }
+  #tlabel { font-size:11px; color:#c3cad6; margin-top:7px; font-variant-numeric:tabular-nums; text-align:center; }
   #tlabel b { color:#fff; }
   #nodebox { margin-top:11px; }
-  #nodebox .nbh { font-size:10px; text-transform:uppercase; letter-spacing:.04em; color:#7c8699; margin-bottom:5px; }
+  #nodebox .nbh { font-size:9px; text-transform:uppercase; letter-spacing:.05em; color:var(--mut); margin-bottom:6px; }
   .nrow { display:flex; align-items:center; gap:6px; font-size:11.5px; padding:2px 0; }
-  .nrow .nlab { flex:1; color:#cbd5e1; }
-  .nrow .nval { font-variant-numeric:tabular-nums; font-weight:700; }
-  #spark { width:100%; height:42px; display:block; margin-top:8px; background:#0d1220; border-radius:5px; }
-  .hint { font-size:10px; color:#6b7280; margin-top:9px; line-height:1.45; border-top:1px solid #1f2734; padding-top:9px; }
-  .heat { font-size:10px; color:#94a3b8; margin-top:8px; }
-  .heat .bar { display:inline-block; width:84px; height:8px; border-radius:4px; vertical-align:middle; margin:0 5px;
-    background:linear-gradient(90deg,#7a3b12,#f59e0b,#fde047,#fff7d6); }
+  .nrow .nlab { flex:1; color:#c3cad6; }
+  .nrow .nval { font-variant-numeric:tabular-nums; font-weight:650; }
+  #spark { width:100%; height:40px; display:block; margin-top:8px; background:#0c0f17; border-radius:6px; }
+  .hint { font-size:10px; color:#5d6678; margin-top:11px; line-height:1.5; border-top:1px solid var(--line); padding-top:10px; }
 </style>
 </head>
 <body>
 <div id="deckmap"></div>
 <div id="panel">
-  <h1>Grid Explorer <span style="font-size:9px;color:#a855f7;font-weight:700;vertical-align:super;">BETA</span></h1>
-  <div class="sub">deck.gl · <a href="/">← dashboard</a> · <span class="lnk" id="reset">⟲ reset view</span></div>
+  <h1>Grid Explorer<span class="b">BETA</span></h1>
+  <div class="sub">deck.gl · <a href="/">← dashboard</a> · <span class="lnk" id="reset">reset view</span></div>
 
   <input id="search" placeholder="search facilities by owner…" autocomplete="off">
   <div id="searchct"></div>
 
-  <div class="lyr">
-    <span class="sw" style="background:#2563eb;"></span>
-    <span class="nm">Transmission <span class="ct" id="ct-arc"></span></span>
-    <div class="tog on" id="tog-arc"></div>
-  </div>
-  <div class="lyr">
-    <span class="sw" style="background:#22d3ee;"></span>
-    <span class="nm">Facilities <span class="ct" id="ct-fac"></span></span>
-    <div class="tog on" id="tog-fac"></div>
-  </div>
-  <div class="faclegend" id="faclegend">
-    <i style="background:#22d3ee;"></i>wind <i style="background:#f59e0b;"></i>solar <i style="background:#e879f9;"></i>data center
-    <div style="margin:4px 0 0 8px;color:#7c8699;">size & glow ∝ MW</div>
-  </div>
-  <div class="lyr">
-    <span class="sw" style="background:#fde047;"></span>
-    <span class="nm">Congestion <span class="ct" id="ct-cong"></span></span>
-    <div class="tog" id="tog-cong"></div>
+  <div class="lyr"><span class="nm">Transmission <span class="ct" id="ct-arc"></span></span><div class="tog on" id="tog-arc"></div></div>
+  <div class="lyr"><span class="nm">Facilities <span class="ct" id="ct-fac"></span></span><div class="tog on" id="tog-fac"></div></div>
+  <div class="lyr"><span class="nm">Congestion <span class="ct" id="ct-cong"></span></span><div class="tog" id="tog-cong"></div></div>
+
+  <div class="legend">
+    <div class="lg-h">Transmission — kV</div>
+    <div class="lg-row">
+      <span class="it"><span class="lg-line" style="background:rgb(192,132,252)"></span>500</span>
+      <span class="it"><span class="lg-line" style="background:rgb(168,85,247)"></span>345</span>
+      <span class="it"><span class="lg-line" style="background:rgb(139,92,246)"></span>230</span>
+      <span class="it"><span class="lg-line" style="background:rgb(124,58,237)"></span>138</span>
+    </div>
+    <div class="lg-h">Facilities — brightness ∝ MW</div>
+    <div class="lg-row">
+      <span class="it"><span class="lg-dot" style="background:rgb(56,189,248)"></span>wind</span>
+      <span class="it"><span class="lg-dot" style="background:rgb(251,191,36)"></span>solar</span>
+      <span class="it"><span class="lg-dot" style="background:rgb(244,114,182)"></span>data center</span>
+    </div>
+    <div id="lg-cong" style="display:none">
+      <div class="lg-h">Congestion — shadow price</div>
+      <div class="lg-row"><span class="lg-bar"></span>
+        <span class="it" style="color:#f87171">▼ basis down</span>
+        <span class="it" style="color:#4ade80">▲ up</span></div>
+    </div>
   </div>
 
   <div id="timebox">
@@ -90,20 +100,21 @@
     <div id="nodebox">
       <div class="nbh">Congestion push at our nodes ($/MWh)</div>
       <div id="nrows"></div>
-      <canvas id="spark" width="250" height="42"></canvas>
+      <canvas id="spark" width="244" height="40"></canvas>
     </div>
-    <div class="heat">line brightness = shadow price <span class="bar"></span></div>
   </div>
 
   <div class="hint">drag to pan · <b>right-drag (or ctrl-drag) to spin &amp; tilt</b> · scroll to zoom · zoom in for more lines</div>
 </div>
 
 <script>
-const COLOR = { 500:[149,97,255], 345:[56,130,255], 230:[34,197,255], lo:[34,211,170] };
-function arcColor(v){ const c=v>=500?COLOR[500]:v>=345?COLOR[345]:v>=230?COLOR[230]:COLOR.lo; return [c[0],c[1],c[2],210]; }
-const FAC_COLOR = { wind:[34,211,238], solar:[245,158,11], datacenter:[232,121,249] };
+// transmission: violet ramp, lighter = higher kV -- a cool grid that recedes
+const COLOR = { 500:[192,132,252], 345:[168,85,247], 230:[139,92,246], 138:[124,58,237] };
+function arcColor(v){ const c=v>=500?COLOR[500]:v>=345?COLOR[345]:v>=230?COLOR[230]:COLOR[138]; return [c[0],c[1],c[2],170]; }
+// facilities: vivid accents, distinct from the violet grid
+const FAC_COLOR = { wind:[56,189,248], solar:[251,191,36], datacenter:[244,114,182] };
 
-let viewState = { longitude:-99.5, latitude:31.6, zoom:5.1, pitch:48, bearing:-12 };
+let viewState = { longitude:-99.5, latitude:31.6, zoom:5.1, pitch:46, bearing:-10 };
 const deckgl = new deck.DeckGL({
   container:"deckmap", map:maplibregl,
   mapStyle:"https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json",
@@ -122,13 +133,10 @@ const $ = id => document.getElementById(id);
 function setTog(k){ $("tog-"+k).classList.toggle("on", state[k]); }
 async function getJSON(u){ const r=await fetch(u); if(!r.ok) throw new Error(u+" "+r.status); return r.json(); }
 
-// progressively reveal lower-voltage lines as you zoom in
 function tierForZoom(z){ return z>=8 ? 138 : z>=6.5 ? 230 : 345; }
 async function loadArcs(minKv){
   if(!arcsByKv[minKv]) arcsByKv[minKv] = await getJSON("/api/kepler/transmission?min_kv="+minKv);
-  loadedKv = minKv;
-  $("ct-arc").textContent = `${arcsByKv[minKv].length.toLocaleString()} ≥${minKv}kV`;
-  render();
+  loadedKv = minKv; $("ct-arc").textContent = `${arcsByKv[minKv].length.toLocaleString()} ≥${minKv}kV`; render();
 }
 function onZoom(z){ if(!state.arc) return; const want=tierForZoom(z); if(want!==loadedKv) loadArcs(want); }
 
@@ -140,9 +148,7 @@ async function loadFacilities(){
     pts.push({position:f.geometry.coordinates, type:p.source||"solar", name:p.name, operator:p.operator, mw:+p.mw||0}); }
   for(const f of dc.features){ const p=f.properties||{};
     pts.push({position:f.geometry.coordinates, type:"datacenter", name:p.name, operator:p.operator, mw:0}); }
-  facilities = pts;
-  $("ct-fac").textContent = `${pts.length.toLocaleString()}`;
-  render();
+  facilities = pts; $("ct-fac").textContent = `${pts.length.toLocaleString()}`; render();
 }
 async function loadCong(){
   if(cong) return;
@@ -157,10 +163,10 @@ async function loadCong(){
   updateNodeBox(); render();
 }
 
-// ---- facility visual encoding: size + glow by MW ----
-function facRadius(d){ return 1100 + Math.sqrt(d.mw||14)*430; }     // meters; grows on zoom-in
+// uniform dot size; MW encoded as brightness (alpha). Big plants read bright,
+// small ones fade toward the dark basemap. Data centers have no MW -> fixed mid.
 function facColor(d){ const c=FAC_COLOR[d.type]||[148,163,184];
-  const a = d.mw ? Math.min(255, 120+Math.sqrt(d.mw)*10) : 150;
+  const a = d.type==="datacenter" ? 185 : (d.mw ? Math.round(55+Math.min(200,Math.sqrt(d.mw)*16)) : 75);
   return [c[0],c[1],c[2],a]; }
 
 function fmtT(epoch){ return new Date(epoch*1000).toLocaleString("en-US",{month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"}); }
@@ -174,38 +180,28 @@ function layers(){
   const arcs = arcsByKv[loadedKv];
   if(state.arc && arcs){
     out.push(new deck.ArcLayer({
-      id:"transmission", data:arcs, getHeight:0.4, greatCircle:false,
+      id:"transmission", data:arcs, getHeight:0.3, greatCircle:false,
       getSourcePosition:d=>d.source, getTargetPosition:d=>d.target,
       getSourceColor:d=>arcColor(d.voltage), getTargetColor:d=>arcColor(d.voltage),
-      getWidth:d=>d.voltage>=500?4:d.voltage>=345?3:d.voltage>=230?2:1.4,
-      widthUnits:"pixels", widthMinPixels:1.6, widthMaxPixels:9, opacity:0.78,
+      getWidth:d=>d.voltage>=500?2:d.voltage>=345?1.4:d.voltage>=230?1:0.7,
+      widthUnits:"pixels", widthMinPixels:0.6, widthMaxPixels:4, opacity:0.6,
       pickable:true, autoHighlight:true, highlightColor:[255,255,255,200],
     }));
   }
   if(state.fac && facilities){
     out.push(new deck.ScatterplotLayer({
-      id:"facilities", data:facilities, getPosition:d=>d.position,
-      getFillColor:facColor, getRadius:facRadius,
-      radiusUnits:"meters", radiusMinPixels:2, radiusMaxPixels:60,
+      id:"facilities", data: (searchQ && matches) ? matches : facilities, getPosition:d=>d.position,
+      getFillColor:facColor, getRadius:3.4, radiusUnits:"pixels", radiusMinPixels:2.2, radiusMaxPixels:5,
       opacity:1, pickable:true, stroked:false,
-      parameters:{ blend:true, blendFunc:[770,1], blendEquation:32774 },   // additive glow
-    }));
-  }
-  if(matches && matches.length){
-    out.push(new deck.ScatterplotLayer({
-      id:"search-hi", data:matches, getPosition:d=>d.position,
-      getFillColor:[255,255,255,235], getRadius:d=>facRadius(d)*1.5,
-      radiusUnits:"meters", radiusMinPixels:5, radiusMaxPixels:90,
-      stroked:true, getLineColor:[167,139,250,255], lineWidthMinPixels:2, pickable:true,
     }));
   }
   if(state.cong && cong && cong.lines.length){
     const vis = cong.lines.filter(d => d.t<=curT && d.t>curT-CONG_WIN);
     out.push(new deck.ArcLayer({
-      id:"congestion", data:vis, getHeight:0.35, pickable:true, autoHighlight:true,
+      id:"congestion", data:vis, getHeight:0.3, pickable:true, autoHighlight:true,
       getSourcePosition:d=>d.source, getTargetPosition:d=>d.target,
       getSourceColor:d=>heat(d.price), getTargetColor:d=>heat(d.price),
-      getWidth:d=>1.6+Math.min(8,Math.abs(d.price)/14), widthMinPixels:1.5,
+      getWidth:d=>1.2+Math.min(6,Math.abs(d.price)/16), widthMinPixels:1.2, widthMaxPixels:7,
       updateTriggers:{ getSourceColor:curT, getTargetColor:curT, getWidth:curT },
     }));
   }
@@ -216,7 +212,7 @@ function render(){ deckgl.setProps({ layers:layers(), getTooltip }); }
 function getTooltip({object, layer}){
   if(!object) return null;
   if(layer.id==="transmission") return {text:`Transmission · ${object.voltage} kV`};
-  if(layer.id==="facilities" || layer.id==="search-hi"){ const d=object;
+  if(layer.id==="facilities"){ const d=object;
     let s=`${d.name||d.type}\n${d.type}`; if(d.operator) s+=`\nOwner: ${d.operator}`; if(d.mw) s+=`\n${d.mw.toLocaleString()} MW`;
     return {text:s}; }
   if(layer.id==="congestion"){ const d=object;
@@ -228,13 +224,13 @@ function getTooltip({object, layer}){
 }
 function shortLab(sp){ const l=cong&&cong.node_labels&&cong.node_labels[sp]; return l?l.split(" / ")[0]:sp; }
 
-// ---- search by owner ----
+// ---- search by owner: keep ONLY the matching owner's sites ----
 function fitTo(pts){
   let minx=180,miny=90,maxx=-180,maxy=-90;
   for(const p of pts){ const [x,y]=p.position; minx=Math.min(minx,x);maxx=Math.max(maxx,x);miny=Math.min(miny,y);maxy=Math.max(maxy,y); }
   const span=Math.max(maxx-minx,maxy-miny,0.05);
   const zoom=Math.max(3.2, Math.min(9.5, 8.3 - Math.log2(span)));
-  viewState = {...viewState, longitude:(minx+maxx)/2, latitude:(miny+maxy)/2, zoom,
+  viewState={...viewState, longitude:(minx+maxx)/2, latitude:(miny+maxy)/2, zoom,
     transitionDuration:850, transitionInterpolator:new deck.FlyToInterpolator()};
   deckgl.setProps({viewState}); onZoom(zoom);
 }
@@ -245,7 +241,7 @@ function runSearch(){
   matches = facilities.filter(d => (d.operator||"").toLowerCase().includes(searchQ));
   const owners = new Set(matches.map(d=>d.operator));
   $("searchct").textContent = matches.length
-    ? `${matches.length.toLocaleString()} sites · ${owners.size} owner${owners.size>1?"s":""}` : "no match";
+    ? `showing ${matches.length.toLocaleString()} sites · ${owners.size} owner${owners.size>1?"s":""}` : "no match";
   if(matches.length) fitTo(matches);
   render();
 }
@@ -272,11 +268,11 @@ function drawSpark(){
   for(const e of ser){ lo=Math.min(lo,e.impact); hi=Math.max(hi,e.impact); }
   const pad=(hi-lo)*0.1||1; lo-=pad; hi+=pad;
   const x=t=>((t-t0)/span)*W, y=v=>H-((v-lo)/(hi-lo))*H;
-  ctx.strokeStyle="#2a3344"; ctx.lineWidth=1; ctx.beginPath(); ctx.moveTo(0,y(0)); ctx.lineTo(W,y(0)); ctx.stroke();
+  ctx.strokeStyle="#262d3d"; ctx.lineWidth=1; ctx.beginPath(); ctx.moveTo(0,y(0)); ctx.lineTo(W,y(0)); ctx.stroke();
   ctx.beginPath(); ctx.moveTo(x(ser[0].t),y(ser[0].impact));
   for(const e of ser) ctx.lineTo(x(e.t),y(e.impact));
   ctx.lineTo(x(ser[ser.length-1].t),y(0)); ctx.lineTo(x(ser[0].t),y(0)); ctx.closePath();
-  ctx.fillStyle="rgba(124,58,237,.25)"; ctx.fill();
+  ctx.fillStyle="rgba(139,92,246,.22)"; ctx.fill();
   ctx.beginPath(); ctx.moveTo(x(ser[0].t),y(ser[0].impact));
   for(const e of ser) ctx.lineTo(x(e.t),y(e.impact));
   ctx.strokeStyle="#a78bfa"; ctx.lineWidth=1.4; ctx.stroke();
@@ -293,14 +289,14 @@ $("tslider").oninput = e=>{ curT=+e.target.value; updateNodeBox(); render(); };
 
 // ---- toggles + reset ----
 $("tog-arc").onclick = ()=>{ state.arc=!state.arc; setTog("arc"); if(state.arc) loadArcs(loadedKv); else render(); };
-$("tog-fac").onclick = ()=>{ state.fac=!state.fac; setTog("fac"); $("faclegend").classList.toggle("show",state.fac); if(state.fac) loadFacilities(); else render(); };
+$("tog-fac").onclick = ()=>{ state.fac=!state.fac; setTog("fac"); if(state.fac) loadFacilities(); else render(); };
 $("tog-cong").onclick = ()=>{ state.cong=!state.cong; setTog("cong"); $("timebox").classList.toggle("show",state.cong);
+  $("lg-cong").style.display = state.cong ? "block" : "none";
   if(state.cong) loadCong(); else { playing=false; $("play").textContent="▶"; clearTimeout(raf); render(); } };
-$("reset").onclick = ()=>{ viewState={longitude:-99.5,latitude:31.6,zoom:5.1,pitch:48,bearing:-12,
+$("reset").onclick = ()=>{ viewState={longitude:-99.5,latitude:31.6,zoom:5.1,pitch:46,bearing:-10,
   transitionDuration:700,transitionInterpolator:new deck.FlyToInterpolator()}; deckgl.setProps({viewState}); };
 
 // initial
-$("faclegend").classList.add("show");
 loadArcs(345); loadFacilities();
 </script>
 </body>
