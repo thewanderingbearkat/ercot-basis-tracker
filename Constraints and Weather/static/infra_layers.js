@@ -9,23 +9,25 @@
 (function () {
   window.initInfraLayers = function (map, el, hintEl) {
     const LAYERS = [
-      { k: "wind",        label: "Wind",      kind: "static", src: "/api/infra/generation",
+      { k: "wind",        label: "Wind",      type: "Wind farm",   kind: "static", src: "/api/infra/generation",
         filter: f => f.properties.source === "wind",
         pstyle: { radius: 3, color: "#0e7490", weight: 1, fillColor: "#06b6d4", fillOpacity: 0.75 } },
-      { k: "solar",       label: "Solar",     kind: "static", src: "/api/infra/generation",
+      { k: "solar",       label: "Solar",     type: "Solar farm",  kind: "static", src: "/api/infra/generation",
         filter: f => f.properties.source === "solar",
         pstyle: { radius: 3, color: "#b45309", weight: 1, fillColor: "#f59e0b", fillOpacity: 0.75 } },
-      { k: "datacenters", label: "Data centers", kind: "static", src: "/api/infra/datacenters",
+      { k: "datacenters", label: "Data centers", type: "Data center", kind: "static", src: "/api/infra/datacenters",
         filter: () => true,
         pstyle: { radius: 4, color: "#9d174d", weight: 1, fillColor: "#db2777", fillOpacity: 0.85 } },
-      { k: "substations", label: "Substations", kind: "dense", src: "/api/infra/dense/substations", minZoom: 9,
+      { k: "substations", label: "Substations", type: "Substation", kind: "dense", src: "/api/infra/dense/substations", minZoom: 9,
         pstyle: { radius: 3, color: "#334155", weight: 1, fillColor: "#94a3b8", fillOpacity: 0.85 } },
-      { k: "pipelines",   label: "Pipelines",  kind: "dense", src: "/api/infra/dense/pipelines", minZoom: 9,
+      { k: "pipelines",   label: "Pipelines",  type: "Pipeline",   kind: "dense", src: "/api/infra/dense/pipelines", minZoom: 9,
         lstyle: { color: "#ea580c", weight: 1.5, opacity: 0.75, dashArray: "4 3" } },
     ];
+    const box = document.getElementById("mapDetails");
     const active = {}, groups = {}, staticCache = {};
 
-    function swatch(l) { return l.pstyle ? l.pstyle.fillColor : l.lstyle.color; }
+    function swatch(l) { return l.pstyle ? l.pstyle.fillColor : l.lstyle.color; }       // chip dot
+    function badgeColor(l) { return l.pstyle ? l.pstyle.color : l.lstyle.color; }       // darker, for white text
     function chips() {
       el.innerHTML = LAYERS.map(l =>
         `<button data-k="${l.k}" class="${active[l.k] ? "active" : ""}">` +
@@ -33,19 +35,36 @@
       el.querySelectorAll("button").forEach(b => b.onclick = () => toggle(b.dataset.k));
     }
     function group(k) { if (!groups[k]) groups[k] = L.layerGroup().addTo(map); return groups[k]; }
-    function popup(f, l) {
+    function centroid(f) {
+      const g = f.geometry;
+      if (!g) return null;
+      if (g.type === "Point") return g.coordinates;
+      if (g.type === "LineString" && g.coordinates.length) return g.coordinates[Math.floor(g.coordinates.length / 2)];
+      return null;
+    }
+    // Show a clicked feature in the shared bottom details box (like a constraint).
+    function details(f, l) {
+      if (!box) return;
       const p = f.properties || {};
-      return `<b>${p.name || l.label}</b>` + (p.operator ? "<br>" + p.operator : "") +
-        (p.mw ? "<br>" + p.mw + " MW" : "") + (p.source ? "<br>" + p.source : "") +
-        (p.substance ? "<br>" + p.substance : "") + (p.voltage ? "<br>" + p.voltage + " kV" : "");
+      const vbadge = p.voltage ? ` <span class="md-kv">${p.voltage} kV</span>` : "";
+      const rows = [];
+      if (p.mw) rows.push(`Capacity&nbsp;<b>${(+p.mw).toLocaleString()} MW</b>`);
+      if (p.substance) rows.push(`Carries&nbsp;<b>${p.substance}</b>`);
+      if (p.source && l.kind === "static" && l.k !== "datacenters") rows.push(`Fuel&nbsp;<b>${p.source}</b>`);
+      const c = centroid(f);
+      if (c) rows.push(`<span style="color:#9ca3af;">${c[1].toFixed(4)}, ${c[0].toFixed(4)}</span>`);
+      box.innerHTML =
+        `<div class="md-t">${p.name || l.type} <span class="md-kv" style="background:${badgeColor(l)};">${l.type}</span>${vbadge}</div>` +
+        `<div class="md-s">Owner&nbsp;&middot;&nbsp;${p.operator || "<i>not in OpenStreetMap</i>"}</div>` +
+        (rows.length ? `<div class="md-v">${rows.join(" &nbsp;&middot;&nbsp; ")}</div>` : "");
     }
     function draw(gj, l) {
       const g = group(l.k);
       L.geoJSON(gj, {
         filter: l.filter,
-        pointToLayer: (f, ll) => L.circleMarker(ll, l.pstyle).bindPopup(popup(f, l)),
+        pointToLayer: (f, ll) => L.circleMarker(ll, l.pstyle),
         style: l.lstyle,
-        onEachFeature: (f, ly) => { if (f.geometry.type !== "Point") ly.bindPopup(popup(f, l)); },
+        onEachFeature: (f, ly) => ly.on("click", e => { L.DomEvent.stopPropagation(e); details(f, l); }),
       }).addTo(g);
     }
     async function loadStatic(l) {
