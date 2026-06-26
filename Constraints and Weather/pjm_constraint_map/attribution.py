@@ -68,6 +68,11 @@ def _modeled(pnode_id: int, start: str, end: str, days: int) -> dict[Any, dict[s
     Sign note: -(price * shift_factor) gives the LMP congestion-component convention
     (negative = constraint depressing the node), so node - hub ties to basis. The
     colleague's raw cong_d omits the leading minus (so their sign is flipped)."""
+    # Operating day on FIXED EST (Etc/GMT+5, no DST) to match the colleague's slice:
+    # the data is America/New_York (observes DST), so their EST day starts an hour
+    # earlier in summer -> one boundary interval differs. The raw DATETIME guard keeps
+    # partition pruning; the converted date picks the exact operating-day intervals.
+    # (sf still joins on the data-date, same as the colleague.)
     rows = query(f"""
         SELECT con.FACILITYID,
                SUM(-(con.PRICE * sf.SHIFT_FACTOR)) AS MODELED_SUM,
@@ -77,7 +82,9 @@ def _modeled(pnode_id: int, start: str, end: str, days: int) -> dict[Any, dict[s
           ON con.FACILITYID = sf.FACILITYID AND con.CONTINGENCYID = sf.CONTINGENCYID
              AND sf.CONSTRAINT_DAY = CAST(con.DATETIME AS DATE)
         WHERE con.ISO = 'PJMISO' AND sf.PNODEID = {pnode_id}
-          AND con.DATETIME >= '{start}' AND con.DATETIME < DATEADD('day', 1, '{end}')
+          AND con.DATETIME >= DATEADD('day', -1, '{start}') AND con.DATETIME < DATEADD('day', 2, '{end}')
+          AND CONVERT_TIMEZONE('America/New_York', 'Etc/GMT+5', con.DATETIME)::DATE
+                BETWEEN '{start}' AND '{end}'
         GROUP BY con.FACILITYID
     """)
     rows = [r for r in rows if r["MODELED_SUM"] is not None]
