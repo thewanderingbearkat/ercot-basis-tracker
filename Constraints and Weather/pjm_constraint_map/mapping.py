@@ -38,6 +38,7 @@ def driver_map(site_key: str, days: int = 1, top: int = 15,
                  "lat": s.lat, "lon": s.lon, "fuel": s.fuel},
         "avg_congestion": attr["avg_congestion"], "hub_name": attr["hub_name"],
         "hub_avg_congestion": attr["hub_avg_congestion"], "congestion_basis": attr["congestion_basis"],
+        "modeled_basis": attr["modeled_basis"], "model_noise": attr["model_noise"],
         "as_of": attr["as_of"], "start": attr["start"], "days": attr["days"],
         "drivers": drivers, "other_contrib": attr["other_contrib"], "other_count": attr["other_count"],
     }

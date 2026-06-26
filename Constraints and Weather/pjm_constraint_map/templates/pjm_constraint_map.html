@@ -118,7 +118,7 @@
   <div class="panel" style="margin-bottom:16px;">
     <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
       <h2 style="margin:0;">Basis congestion drivers</h2>
-      <span class="badge" style="color:#92400e; background:#fef3c7;">modeled split</span>
+      <span class="badge" style="color:#92400e; background:#fef3c7;">raw shift-factor model</span>
       <span id="winTabs" class="seg" style="margin-left:auto;"></span>
       <span class="dwin"><input type="date" id="dStart"><span>&rarr;</span><input type="date" id="dEnd"><button class="btn sm" id="dApply">Apply</button></span>
       <span id="dayLabel" class="health"></span>
@@ -126,10 +126,12 @@
     <div id="drivers" style="margin-top:12px;"><div class="empty">Loading&hellip;</div></div>
     <div class="note">Each line's contribution to the <b>basis congestion</b> = its effect on the node <i>minus</i> its
       effect on the hub (the <i>node &minus; hub</i> under each row). <b>Left = pushing basis down</b> (toward a cheaper
-      node), <b>right = pushing it up</b>; Down + Up nets to the basis congestion in the box, which ties to the
-      <b>Congestion</b> line in the basis breakdown. The net is authoritative; the per-constraint split is modeled
-      (daily corr vs actual ~0.70 at NWOH, weak at Lordstown, near-zero at Lackawanna &mdash; read direction &amp; the big
-      movers, not the last decimal). Click a row to locate it on the map.</div>
+      node), <b>right = pushing it up</b>. Each value is the <b>raw</b> daily shift-factor model
+      (&minus;shadow&nbsp;price &times; shift&nbsp;factor), <i>not</i> rescaled. Down + Up gives the modeled basis
+      congestion; <b>model noise</b> closes the gap to the authoritative RTCONG (the daily/modeled shift factors don't
+      carry loss &amp; topology), so the box still ties to the <b>Congestion</b> line. Shift-factor correlation vs actual
+      is ~0.70 at NWOH, weak at Lordstown, near-zero at Lackawanna &mdash; read direction &amp; the big movers, not the
+      last decimal. Click a row to locate it on the map.</div>
   </div>
 
   <div class="panel" style="margin-bottom:16px;">
@@ -390,8 +392,9 @@ async function loadMap(fresh){
       `</div>`;
     html += `<div class="checkbox"><span class="ck-lab">Down</span> <span class="v neg">${fmt(downTotal)}</span>` +
       `<span class="ck-op">+</span><span class="ck-lab">Up</span> <span class="v pos">${fmt(upTotal)}</span>` +
+      `<span class="ck-op">+</span><span class="ck-lab">Model noise</span> <span class="v" style="color:#6b7280;">${fmt(d.model_noise)}</span>` +
       `<span class="ck-op">=</span><span class="ck-lab">Basis congestion</span> <span class="v ${d.congestion_basis<0?'neg':'pos'}">${fmt(d.congestion_basis)}</span> <span style="color:#6b7280;">$/MWh</span>` +
-      `<div class="ck-foot">= node ${fmt(d.avg_congestion)} &minus; hub ${fmt(d.hub_avg_congestion)} &middot; ties to the <b>Congestion</b> line in the basis breakdown</div></div>`;
+      `<div class="ck-foot">Down + Up = raw shift-factor model <b>${fmt(downTotal+upTotal)}</b> &middot; model noise = gap to authoritative RTCONG (daily/modeled shift factors + loss &amp; topology) &middot; authoritative = node ${fmt(d.avg_congestion)} &minus; hub ${fmt(d.hub_avg_congestion)}, ties to the <b>Congestion</b> line</div></div>`;
     drvEl.innerHTML = html;
   } catch(e){ document.getElementById("mapMeta").textContent = "fetch error: " + e; drvEl.innerHTML = `<div class="empty">fetch error: ${e}</div>`; }
 }

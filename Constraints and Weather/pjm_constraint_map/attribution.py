@@ -56,74 +56,92 @@ def last_full_day():
     return d.date() if (d is not None and hasattr(d, "date")) else d
 
 
-def _apportion(pnode_id: int, avg_cong: float, start: str, end: str) -> dict[Any, dict[str, Any]]:
-    """Apportion a pnode's authoritative avg RTCONG across constraints by modeled
-    BETA shares (grouped by FACILITY). Returns {facility_id: {name, attributed}}."""
-    beta = query(f"""
-        SELECT FACILITYID,
-               SUM(-(SHADOW_PRICE * SHIFT_FACTOR)) AS MODELED,
-               COUNT(DISTINCT CONSTRAINT_DAY)      AS DAYS_BOUND
-        FROM {BETA}
-        WHERE ISO = 'PJMISO' AND PNODEID = {pnode_id}
-          AND CONSTRAINT_DAY BETWEEN '{start}' AND '{end}'
-        GROUP BY FACILITYID
+def _modeled(pnode_id: int, start: str, end: str, days: int) -> dict[Any, dict[str, Any]]:
+    """Raw modeled congestion per facility at a pnode -- the colleague's exact method:
+    join the BINDING constraints (ALL_CONSTRAINTS_PMV.price) to the BETA shift factors
+    on facility + contingency + day, take -(price * shift_factor) summed over the
+    window's hours, and divide by the hours in the window (24/day) -> a daily-average
+    $/MWh. NOT rescaled to authoritative RTCONG -- the gap is surfaced as model noise
+    (BETA shift factors are daily + modeled; the residual also absorbs loss/topology
+    effects the shift-factor model doesn't carry). Returns {facility_id:{name,modeled}}.
+
+    Sign note: -(price * shift_factor) gives the LMP congestion-component convention
+    (negative = constraint depressing the node), so node - hub ties to basis. The
+    colleague's raw cong_d omits the leading minus (so their sign is flipped)."""
+    rows = query(f"""
+        SELECT con.FACILITYID,
+               SUM(-(con.PRICE * sf.SHIFT_FACTOR)) AS MODELED_SUM,
+               COUNT(DISTINCT con.DATETIME)        AS HOURS_BOUND
+        FROM {YES}.ALL_CONSTRAINTS_PMV con
+        JOIN {BETA} sf
+          ON con.FACILITYID = sf.FACILITYID AND con.CONTINGENCYID = sf.CONTINGENCYID
+             AND sf.CONSTRAINT_DAY = CAST(con.DATETIME AS DATE)
+        WHERE con.ISO = 'PJMISO' AND sf.PNODEID = {pnode_id}
+          AND con.DATETIME >= '{start}' AND con.DATETIME < DATEADD('day', 1, '{end}')
+        GROUP BY con.FACILITYID
     """)
-    modeled = [r for r in beta if r["MODELED"] is not None]
-    total = sum(float(r["MODELED"]) for r in modeled) or 1.0
-    names = _facility_names([r["FACILITYID"] for r in modeled])
+    rows = [r for r in rows if r["MODELED_SUM"] is not None]
+    names = _facility_names([r["FACILITYID"] for r in rows])
+    denom = 24.0 * max(1, days)
     return {r["FACILITYID"]: {"name": names.get(r["FACILITYID"], str(r["FACILITYID"])),
-                              "attributed": avg_cong * (float(r["MODELED"]) / total),
-                              "days_bound": r["DAYS_BOUND"]}
-            for r in modeled}
+                              "modeled": float(r["MODELED_SUM"]) / denom,
+                              "days_bound": r["HOURS_BOUND"]}
+            for r in rows}
 
 
 def daily_attribution(site_key: str, days: int = 1, top: int = 14,
                       start: str | None = None, end: str | None = None) -> dict[str, Any]:
-    """Per-constraint contribution to the BASIS congestion (node - hub), modeled.
-    Each side is apportioned from authoritative RTCONG by BETA shares, then
-    differenced per facility, so the drivers SUM to the congestion component of
-    basis (= node avg - hub avg). Biggest basis movers first + an 'other' row."""
+    """Per-constraint contribution to the BASIS congestion (node - hub), using the
+    RAW shift-factor model (the colleague's methodology): each side is the direct
+    window-average of -(shadow_price * shift_factor), differenced per facility -- NOT
+    rescaled to authoritative RTCONG. The drivers sum to the MODELED basis congestion;
+    the gap to the authoritative RTCONG basis (model error + loss/topology effects) is
+    returned as `model_noise`, so drivers + other + noise tie to the Congestion line."""
     site = SITES[site_key]
     if end is None:
         as_of = last_full_day()
         if as_of is None:
             return {"site": site.key, "name": site.display_name, "as_of": None, "start": None,
                     "days": days, "avg_congestion": 0.0, "hub_name": site.hub_name,
-                    "hub_avg_congestion": 0.0, "congestion_basis": 0.0, "drivers": [],
+                    "hub_avg_congestion": 0.0, "congestion_basis": 0.0, "modeled_basis": 0.0,
+                    "model_noise": 0.0, "drivers": [],
                     "other_contrib": 0.0, "other_count": 0, "n_constraints": 0}
         end = as_of.isoformat() if hasattr(as_of, "isoformat") else str(as_of)
     if start is None:
         days = max(1, int(days))
         start = (date.fromisoformat(end) - timedelta(days=days - 1)).isoformat()
+    days_n = (date.fromisoformat(end) - date.fromisoformat(start)).days + 1
 
     node_avg = _avg_node_cong(site.node_id, start, end)
     hub_avg = _avg_node_cong(site.hub_node_id, start, end)
-    nmap = _apportion(site.node_id, node_avg, start, end)
-    hmap = _apportion(site.hub_node_id, hub_avg, start, end)
+    nmap = _modeled(site.node_id, start, end, days_n)
+    hmap = _modeled(site.hub_node_id, start, end, days_n)
 
     drivers = []
     for fid in set(nmap) | set(hmap):
         n, h = nmap.get(fid), hmap.get(fid)
-        node_part = n["attributed"] if n else 0.0
-        hub_part = h["attributed"] if h else 0.0
+        node_part = n["modeled"] if n else 0.0
+        hub_part = h["modeled"] if h else 0.0
         drivers.append({
             "facility_id": fid, "name": (n or h)["name"],
             "node_part": node_part, "hub_part": hub_part,
-            "attributed": node_part - hub_part,   # contribution to BASIS congestion
+            "attributed": node_part - hub_part,   # raw modeled contribution to BASIS congestion
             "days_bound": (n or h)["days_bound"],
         })
-    congestion_basis = sum(d["attributed"] for d in drivers)   # == node_avg - hub_avg
+    modeled_basis = sum(d["attributed"] for d in drivers)   # raw shift-factor model total
+    authoritative_basis = node_avg - hub_avg                # RTCONG -- the real congestion in basis
+    model_noise = authoritative_basis - modeled_basis       # residual: model error + loss/topology
     n_constraints = len(drivers)
     drivers.sort(key=lambda d: abs(d["attributed"]), reverse=True)
     shown = drivers[:top]
-    other = congestion_basis - sum(d["attributed"] for d in shown)
+    other = modeled_basis - sum(d["attributed"] for d in shown)
     return {
         "site": site.key, "name": site.display_name,
-        "as_of": end, "start": start,
-        "days": (date.fromisoformat(end) - date.fromisoformat(start)).days + 1,
+        "as_of": end, "start": start, "days": days_n,
         "avg_congestion": node_avg, "hub_name": site.hub_name, "hub_avg_congestion": hub_avg,
-        "congestion_basis": congestion_basis, "drivers": shown,
-        "other_contrib": other, "other_count": n_constraints - len(shown),
+        "congestion_basis": authoritative_basis,   # authoritative -- ties to the Congestion line
+        "modeled_basis": modeled_basis, "model_noise": model_noise,
+        "drivers": shown, "other_contrib": other, "other_count": n_constraints - len(shown),
         "n_constraints": n_constraints,
     }
 
