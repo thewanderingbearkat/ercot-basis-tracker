@@ -65,7 +65,14 @@
   <h1>Grid Explorer<span class="b">BETA</span></h1>
   <div class="sub">deck.gl · <a href="/">← dashboard</a> · <span class="lnk" id="reset">reset view</span></div>
 
-  <input id="search" placeholder="search facilities by owner…" autocomplete="off">
+  <div style="display:flex; gap:6px; align-items:center;">
+    <select id="searchField" style="background:#0c0f17; border:1px solid var(--line2); border-radius:8px; color:var(--txt); font-size:12px; padding:7px 6px; outline:none; cursor:pointer;">
+      <option value="operator">Owner</option>
+      <option value="name">Facility</option>
+    </select>
+    <input id="search" list="searchOptions" placeholder="search… (type to autocomplete)" autocomplete="off" style="flex:1; width:auto;">
+  </div>
+  <datalist id="searchOptions"></datalist>
   <div id="searchct"></div>
 
   <div class="lyr"><span class="nm">Our assets <span class="ct" id="ct-sites"></span></span><div class="tog on" id="tog-sites"></div></div>
@@ -338,18 +345,34 @@ function fitTo(pts){
     transitionDuration:850, transitionInterpolator:new deck.FlyToInterpolator()};
   deckgl.setProps({viewState}); onZoom(zoom);
 }
+function searchFieldKey(){ return $("searchField").value; }   // 'operator' | 'name'
+// rebuild the autocomplete suggestions for the current field + partial text (handles
+// slightly-off names: type a fragment, see the actual values, pick one)
+function updateOptions(){
+  if(!facilities){ return; }
+  const field = searchFieldKey(), q = $("search").value.trim().toLowerCase();
+  const seen = new Set(), opts = [];
+  for(const d of facilities){ const v = d[field]; if(!v) continue;
+    if(q && !v.toLowerCase().includes(q)) continue;
+    if(seen.has(v)) continue; seen.add(v); opts.push(v);
+    if(opts.length >= 60) break; }
+  $("searchOptions").innerHTML = opts.map(v => `<option value="${v.replace(/"/g,"&quot;")}">`).join("");
+}
 function runSearch(){
   searchQ = $("search").value.trim().toLowerCase();
+  const field = searchFieldKey();
   if(!searchQ){ matches=null; $("searchct").textContent=""; render(); return; }
   if(!facilities){ loadFacilities().then(runSearch); return; }
-  matches = facilities.filter(d => (d.operator||"").toLowerCase().includes(searchQ));
-  const owners = new Set(matches.map(d=>d.operator));
+  matches = facilities.filter(d => (d[field]||"").toLowerCase().includes(searchQ));
+  const owners = new Set(matches.map(d=>d.operator).filter(Boolean));
   $("searchct").textContent = matches.length
-    ? `showing ${matches.length.toLocaleString()} sites · ${owners.size} owner${owners.size>1?"s":""}` : "no match";
+    ? `showing ${matches.length.toLocaleString()} sites${field==="operator"?` · ${owners.size} owner${owners.size>1?"s":""}`:""}` : "no match";
   if(matches.length) fitTo(matches);
   render();
 }
-let st; $("search").oninput = ()=>{ clearTimeout(st); st=setTimeout(runSearch, 280); };
+let st; $("search").oninput = ()=>{ updateOptions(); clearTimeout(st); st=setTimeout(runSearch, 280); };
+$("searchField").onchange = ()=>{ $("search").placeholder = searchFieldKey()==="operator" ? "search owner…" : "search facility…";
+  updateOptions(); if(searchQ) runSearch(); };
 
 // ---- node-impact box ----
 function updateNodeBox(){

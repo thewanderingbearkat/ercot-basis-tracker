@@ -56,8 +56,17 @@
   .drv .sub { color:#6b7280; font-size:10px; margin-top:1px; }
   .drv.clk { cursor:pointer; border-radius:4px; margin:0 -6px 9px; padding:3px 6px; transition:background .1s; }
   .drv.clk:hover { background:#f1f5f9; }
-  #basisDrivers, #drivers { display:grid; grid-template-columns:1fr; gap:2px 28px; }
-  @media (min-width:760px){ #basisDrivers, #drivers { grid-template-columns:1fr 1fr; } }
+  #basisDrivers { display:block; }
+  .twosided { display:grid; grid-template-columns:1fr; gap:14px 28px; }
+  @media (min-width:760px){ .twosided { grid-template-columns:1fr 1fr; } }
+  .side-h { font-size:12px; font-weight:700; margin:0 0 7px; padding-bottom:5px; border-bottom:1px solid #eef1f4; }
+  .side-h .v { float:right; font-weight:700; }
+  .checkbox { margin-top:14px; padding:10px 12px; background:#f1f5f9; border:1px solid #e5e7eb; border-radius:6px; text-align:center; font-size:14px; }
+  .checkbox .ck-lab { color:#6b7280; font-size:10px; text-transform:uppercase; letter-spacing:.3px; }
+  .checkbox .ck-op { color:#9ca3af; margin:0 8px; font-weight:700; }
+  .checkbox .v { font-weight:800; margin-left:4px; }
+  .checkbox .v.neg { color:#b91c1c; } .checkbox .v.pos { color:#15803d; }
+  .checkbox .ck-foot { color:#9ca3af; font-size:11px; margin-top:3px; }
   .legend { font-size:11px; color:#6b7280; margin-top:8px; line-height:1.7; }
   .legend .sw { display:inline-block; width:12px; height:4px; vertical-align:middle; margin-right:4px; border-radius:2px; }
   .legend .dot { display:inline-block; width:10px; height:10px; border-radius:50%; vertical-align:middle; margin-right:4px; }
@@ -90,15 +99,19 @@
   <div class="panel" style="margin-bottom:16px;">
     <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
       <h2 style="margin:0;">Basis breakdown</h2>
+      <span style="font-size:11px; font-weight:600; color:#166534; background:#dcfce7; border-radius:4px; padding:2px 7px;">authoritative shift factors</span>
       <span id="winTabs" class="seg" style="margin-left:auto;"></span>
       <span class="dwin"><input type="date" id="dStart"><span>&rarr;</span><input type="date" id="dEnd"><button class="btn sm" id="dApply">Apply</button></span>
       <span class="health" id="basisMeta"></span>
     </div>
     <div id="basisHead" style="margin-top:10px;"></div>
     <div id="basisDrivers" style="margin-top:10px;"><div class="empty">Loading&hellip;</div></div>
-    <div class="note">Basis = node LMP &minus; hub LMP, decomposed into the binding constraints that drive it
-      (authoritative ERCOT shift factors). The constraints <b>sum to the congestion</b>; a small residual is
-      5-min/hourly timing + reference. ERCOT is lossless, so basis &asymp; all congestion.</div>
+    <div class="note">Basis = node LMP &minus; hub LMP, decomposed into the binding constraints that drive it. Each
+      line's contribution = its effect on the node <i>minus</i> its effect on the hub. <b>Left = pushing basis down</b>
+      (toward a cheaper node), <b>right = pushing it up</b>. Down + Up = the congestion; the small <b>residual</b>
+      (5-min/hourly timing + reference) closes to the total basis in the box. ERCOT shift factors are
+      <b>authoritative</b> (actual 5-min RT), so the per-constraint split is exact &mdash; no model noise (unlike the
+      modeled PJM split). Click a row to locate it on the map.</div>
   </div>
 
   <!-- Map: conductors colored by basis contribution -->
@@ -356,27 +369,41 @@ function renderBasis(d){
     `<span class="sub">= congestion ${fmt(d.congestion_basis)} + residual ${fmt(d.residual)} (timing/ref)</span></div>`;
   const drv = (d.drivers||[]).filter(x => Math.abs(x.contrib) >= 0.01);
   const el = document.getElementById("basisDrivers");
-  if (!drv.length){ el.innerHTML = '<div class="empty">No constraints driving basis for this window.</div>'; return; }
-  const other = (Math.abs(d.other_contrib||0) >= 0.01 && d.other_count > 0) ? d.other_contrib : 0;
-  const max = Math.max(...drv.map(x => Math.abs(x.contrib)), Math.abs(other), 0.01);
-  let html = drv.map(x => {
+  const otherV = (Math.abs(d.other_contrib||0) >= 0.01 && d.other_count > 0) ? d.other_contrib : 0;
+  if (!drv.length && !otherV){ el.innerHTML = '<div class="empty">No constraints driving basis for this window.</div>'; return; }
+  const max = Math.max(...drv.map(x => Math.abs(x.contrib)), Math.abs(otherV), 0.01);
+  const row = x => {
     const g = x.geometry || {};
     const clk = !!(g.drawable || g.from || g.to);
     const p2p = g.drawable ? lineDesc(g) : null;        // point-to-point is the primary label
     const primary = p2p || x.name;
     const secondary = p2p ? x.name : lineDesc(g);        // facility/constraint name underneath
+    const neg = x.contrib < 0;
     return `<div class="drv${clk?' clk':''}"${clk?` onclick="focusDriver('${x._uid}')"`:''}>
-      <div class="drow"><span class="nm">${primary}</span><span class="v ${x.contrib<0?'neg':'pos'}">${fmt(x.contrib)} $/MWh</span></div>
-      <div class="bar" style="width:${Math.max(2, Math.abs(x.contrib)/max*100)}%;background:${x.contrib<0?'#dc2626':'#16a34a'};"></div>
+      <div class="drow"><span class="nm">${primary}</span><span class="v ${neg?'neg':'pos'}">${fmt(x.contrib)} $/MWh</span></div>
+      <div class="bar" style="width:${Math.max(2, Math.abs(x.contrib)/max*100)}%;background:${neg?'#dc2626':'#16a34a'};"></div>
       <div class="sub">${secondary}</div>
     </div>`;
-  }).join("");
-  if (other){
-    html += `<div class="drv" style="opacity:.7;">
-      <div class="drow"><span class="nm">Other (${d.other_count} constraint${d.other_count>1?'s':''})</span><span class="v ${other<0?'neg':'pos'}">${fmt(other)} $/MWh</span></div>
-      <div class="bar" style="width:${Math.max(2, Math.abs(other)/max*100)}%;background:${other<0?'#fca5a5':'#86efac'};"></div>
-    </div>`;
-  }
+  };
+  const otherRow = `<div class="drv" style="opacity:.7;">
+      <div class="drow"><span class="nm">Other (${d.other_count} constraint${d.other_count>1?'s':''})</span><span class="v ${otherV<0?'neg':'pos'}">${fmt(otherV)} $/MWh</span></div>
+      <div class="bar" style="width:${Math.max(2, Math.abs(otherV)/max*100)}%;background:${otherV<0?'#fca5a5':'#86efac'};"></div></div>`;
+  // Split by sign: down-drivers (negative) left, up-drivers (positive) right -- same as PJM.
+  const negs = drv.filter(x => x.contrib < 0).sort((a,b) => a.contrib - b.contrib);
+  const poss = drv.filter(x => x.contrib > 0).sort((a,b) => b.contrib - a.contrib);
+  const downTotal = negs.reduce((s,x)=>s+x.contrib,0) + (otherV<0?otherV:0);
+  const upTotal   = poss.reduce((s,x)=>s+x.contrib,0) + (otherV>0?otherV:0);
+  const left  = (negs.map(row).join("") + (otherV<0?otherRow:"")) || '<div class="empty">&mdash;</div>';
+  const right = (poss.map(row).join("") + (otherV>0?otherRow:"")) || '<div class="empty">&mdash;</div>';
+  let html = `<div class="twosided">` +
+    `<div class="side"><div class="side-h">Pushing basis down <span class="v neg">${fmt(downTotal)}</span></div>${left}</div>` +
+    `<div class="side"><div class="side-h">Pushing basis up <span class="v pos">${fmt(upTotal)}</span></div>${right}</div>` +
+    `</div>`;
+  html += `<div class="checkbox"><span class="ck-lab">Down</span> <span class="v neg">${fmt(downTotal)}</span>` +
+    `<span class="ck-op">+</span><span class="ck-lab">Up</span> <span class="v pos">${fmt(upTotal)}</span>` +
+    `<span class="ck-op">+</span><span class="ck-lab">Residual</span> <span class="v" style="color:#6b7280;">${fmt(d.residual)}</span>` +
+    `<span class="ck-op">=</span><span class="ck-lab">Basis</span> <span class="v ${d.basis<0?'neg':'pos'}">${fmt(d.basis)}</span> <span style="color:#6b7280;">$/MWh</span>` +
+    `<div class="ck-foot">Down + Up = congestion <b>${fmt(d.congestion_basis)}</b> &middot; residual = 5-min/hourly timing + reference (ERCOT is ~lossless) &middot; ties to node &minus; hub basis</div></div>`;
   el.innerHTML = html;
 }
 
