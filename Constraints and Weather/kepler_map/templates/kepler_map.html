@@ -253,14 +253,14 @@ function layers(){
   }
   if(state.fac && facilities){
     out.push(new deck.ScatterplotLayer({
-      id:"facilities", data: (searchQ && matches) ? matches : facilities, getPosition:d=>d.position,
+      id:"facilities", data: searchQ ? facilities.filter(searchHit) : facilities, getPosition:d=>d.position,
       getFillColor:facColor, getRadius:3.4, radiusUnits:"pixels", radiusMinPixels:2.2, radiusMaxPixels:5,
       opacity:1, pickable:true, stroked:false,
     }));
   }
   if(state.thermal && thermal){
     out.push(new deck.ScatterplotLayer({
-      id:"thermal", data:thermal, getPosition:d=>d.position,
+      id:"thermal", data: searchQ ? thermal.filter(searchHit) : thermal, getPosition:d=>d.position,
       getFillColor:d=>{ const c=THERMAL_COLOR[d.type]||[239,68,68];
         return [c[0],c[1],c[2], d.mw?Math.round(70+Math.min(185,Math.sqrt(d.mw)*12)):95]; },
       getRadius:3.4, radiusUnits:"pixels", radiusMinPixels:2.2, radiusMaxPixels:5, pickable:true, stroked:false,
@@ -268,13 +268,13 @@ function layers(){
   }
   if(state.pipe && pipelineGeo && pipelineGeo.features){
     out.push(new deck.GeoJsonLayer({
-      id:"pipelines", data:pipelineGeo, stroked:true, filled:false, pickable:true,
+      id:"pipelines", data: searchQ ? {type:"FeatureCollection", features:pipelineGeo.features.filter(f=>searchHit(f.properties||{}))} : pipelineGeo, stroked:true, filled:false, pickable:true,
       getLineColor:[234,88,12,175], getLineWidth:1.6, lineWidthUnits:"pixels", lineWidthMinPixels:1,
     }));
   }
   if(state.ai && aidc){
     out.push(new deck.ScatterplotLayer({
-      id:"ai", data:aidc, getPosition:d=>d.position,
+      id:"ai", data: searchQ ? aidc.filter(searchHit) : aidc, getPosition:d=>d.position,
       getFillColor:d=>{ const c=DC_STATUS[d.status]||[148,163,184]; return [c[0],c[1],c[2], d.status==="construction"?235:170]; },
       getRadius:d=>5+Math.sqrt(d.target_mw||50)/2.4, radiusUnits:"pixels", radiusMinPixels:4, radiusMaxPixels:16,
       stroked:true, lineWidthUnits:"pixels", getLineWidth:d=>d.status==="construction"?2:0,
@@ -345,33 +345,47 @@ function fitTo(pts){
     transitionDuration:850, transitionInterpolator:new deck.FlyToInterpolator()};
   deckgl.setProps({viewState}); onZoom(zoom);
 }
-function searchFieldKey(){ return $("searchField").value; }   // 'operator' | 'name'
-// rebuild the autocomplete suggestions for the current field + partial text (handles
-// slightly-off names: type a fragment, see the actual values, pick one)
+// search applies to EVERY active point/line layer (renewables/DC, thermal, AI,
+// pipelines), by Owner (operator/owner) or Facility (name). Field is cached so
+// searchHit doesn't read the DOM per feature.
+let searchFld = "operator";
+function searchVal(p){ return ((searchFld === "operator" ? (p.operator || p.owner) : p.name) || ""); }
+function searchHit(p){ return !searchQ || searchVal(p).toLowerCase().includes(searchQ); }
+// which loaded+active layers are searchable right now
+function searchSets(){
+  const sets = [];
+  if(state.fac && facilities) sets.push(facilities);
+  if(state.thermal && thermal) sets.push(thermal);
+  if(state.ai && aidc) sets.push(aidc);
+  if(state.pipe && pipelineGeo) sets.push(pipelineGeo.features.map(f => f.properties || {}));
+  return sets;
+}
+// rebuild autocomplete suggestions for the current field + partial text
 function updateOptions(){
-  if(!facilities){ return; }
-  const field = searchFieldKey(), q = $("search").value.trim().toLowerCase();
+  const q = $("search").value.trim().toLowerCase();
   const seen = new Set(), opts = [];
-  for(const d of facilities){ const v = d[field]; if(!v) continue;
-    if(q && !v.toLowerCase().includes(q)) continue;
-    if(seen.has(v)) continue; seen.add(v); opts.push(v);
-    if(opts.length >= 60) break; }
-  $("searchOptions").innerHTML = opts.map(v => `<option value="${v.replace(/"/g,"&quot;")}">`).join("");
+  outer: for(const arr of searchSets()){
+    for(const d of arr){ const v = searchFld === "operator" ? (d.operator || d.owner) : d.name;
+      if(!v || (q && !v.toLowerCase().includes(q)) || seen.has(v)) continue;
+      seen.add(v); opts.push(v); if(opts.length >= 60) break outer; }
+  }
+  $("searchOptions").innerHTML = opts.sort().map(v => `<option value="${v.replace(/"/g,"&quot;")}">`).join("");
 }
 function runSearch(){
   searchQ = $("search").value.trim().toLowerCase();
-  const field = searchFieldKey();
-  if(!searchQ){ matches=null; $("searchct").textContent=""; render(); return; }
-  if(!facilities){ loadFacilities().then(runSearch); return; }
-  matches = facilities.filter(d => (d[field]||"").toLowerCase().includes(searchQ));
-  const owners = new Set(matches.map(d=>d.operator).filter(Boolean));
-  $("searchct").textContent = matches.length
-    ? `showing ${matches.length.toLocaleString()} sites${field==="operator"?` · ${owners.size} owner${owners.size>1?"s":""}`:""}` : "no match";
-  if(matches.length) fitTo(matches);
+  if(!searchQ){ $("searchct").textContent=""; render(); return; }
+  if(state.fac && !facilities){ loadFacilities().then(runSearch); return; }
+  const pos = [];
+  for(const arr of searchSets()) for(const d of arr) if(searchHit(d) && d.position) pos.push(d.position);
+  if(state.pipe && pipelineGeo) for(const f of pipelineGeo.features)
+    if(searchHit(f.properties || {})){ const c = (f.geometry.coordinates || [])[0]; if(c) pos.push(c); }
+  $("searchct").textContent = pos.length ? `showing ${pos.length.toLocaleString()} matches` : "no match (is the layer toggled on?)";
+  if(pos.length) fitTo(pos.map(p => ({position:p})));
   render();
 }
 let st; $("search").oninput = ()=>{ updateOptions(); clearTimeout(st); st=setTimeout(runSearch, 280); };
-$("searchField").onchange = ()=>{ $("search").placeholder = searchFieldKey()==="operator" ? "search owner…" : "search facility…";
+$("searchField").onchange = ()=>{ searchFld = $("searchField").value;
+  $("search").placeholder = searchFld === "operator" ? "search owner…" : "search facility…";
   updateOptions(); if(searchQ) runSearch(); };
 
 // ---- node-impact box ----
