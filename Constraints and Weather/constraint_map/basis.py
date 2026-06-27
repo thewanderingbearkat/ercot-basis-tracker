@@ -36,7 +36,7 @@ E_ALL_NODES = ",".join(str(i) for i in sorted(
 
 def last_full_day() -> str:
     """Most recent complete operating day (the day before the latest RT data)."""
-    d = query(f"SELECT DATEADD('day', -1, MAX(DATETIME)::DATE) AS D FROM {MSF} WHERE MARKET='RT'")[0]["D"]
+    d = query(f"SELECT DATEADD('day', -1, CONVERT_TIMEZONE('America/Chicago','Etc/GMT+6', MAX(DATETIME))::DATE) AS D FROM {MSF} WHERE MARKET='RT'")[0]["D"]
     return d.date().isoformat() if hasattr(d, "date") else str(d)
 
 
@@ -76,6 +76,14 @@ def basis_decomposition(site_key: str, days: int = 1, top: int = 15,
     else:
         live_lo = None                                      # staged covers the window
 
+    # Live-tail window on the FIXED CST operating day (matches the re-staged daily
+    # buckets). Raw DATETIME guard keeps partition pruning; the converted date picks
+    # the exact operating-day intervals.
+    cst_live = (
+        f"DATETIME >= DATEADD('day',-1,'{live_lo}'::DATE) AND DATETIME < DATEADD('day',2,'{end}'::DATE) "
+        f"AND CONVERT_TIMEZONE('America/Chicago','Etc/GMT+6', DATETIME)::DATE BETWEEN '{live_lo}' AND '{end}'"
+    ) if live_lo else ""
+
     nodeS: dict[Any, float] = {}
     hubS: dict[Any, float] = {}
     names: dict[Any, Any] = {}
@@ -99,7 +107,7 @@ def basis_decomposition(site_key: str, days: int = 1, top: int = 15,
             SELECT PRICENODEID PN, CONSTRAINTID CID, ANY_VALUE(CONSTRAINTNAME) NM,
                    ANY_VALUE(FACILITYID) FID, SUM(-(SHADOWPRICE*SHIFTFACTOR)) S
             FROM {MSF} WHERE MARKET='RT' AND PRICENODEID IN ({node},{hub})
-              AND DATETIME >= '{live_lo}' AND DATETIME < DATEADD('day',1,'{end}'::DATE)
+              AND {cst_live}
             GROUP BY 1, 2"""))
 
     # Interval denominator (over the monitored-node grid), staged + live.
@@ -107,7 +115,7 @@ def basis_decomposition(site_key: str, days: int = 1, top: int = 15,
     if has_staged:
         iv += query(f"SELECT COALESCE(SUM(N_INTERVALS),0) N FROM {DBO}.CM_ERCOT_INTERVALS_DAILY WHERE DAY BETWEEN '{start}' AND '{staged_hi}'")[0]["N"]
     if live_lo:
-        iv += query(f"SELECT COUNT(DISTINCT DATETIME) N FROM {MSF} WHERE MARKET='RT' AND PRICENODEID IN ({E_ALL_NODES}) AND DATETIME >= '{live_lo}' AND DATETIME < DATEADD('day',1,'{end}'::DATE)")[0]["N"]
+        iv += query(f"SELECT COUNT(DISTINCT DATETIME) N FROM {MSF} WHERE MARKET='RT' AND PRICENODEID IN ({E_ALL_NODES}) AND {cst_live}")[0]["N"]
     iv = iv or 1
 
     # Basis from RT LMP sums (node - hub), staged + live.
@@ -125,7 +133,7 @@ def basis_decomposition(site_key: str, days: int = 1, top: int = 15,
     if has_staged:
         add_lmp(query(f"SELECT OBJECTID O, SUM(RTLMP_SUM) S, SUM(N) N FROM {DBO}.CM_ERCOT_LMP_DAILY WHERE OBJECTID IN ({node},{hub}) AND DAY BETWEEN '{start}' AND '{staged_hi}' GROUP BY 1"))
     if live_lo:
-        add_lmp(query(f"SELECT OBJECTID O, SUM(RTLMP) S, COUNT(*) N FROM {YES}.DART_PRICES WHERE OBJECTID IN ({node},{hub}) AND RTLMP IS NOT NULL AND DATETIME >= '{live_lo}' AND DATETIME < DATEADD('day',1,'{end}'::DATE) GROUP BY 1"))
+        add_lmp(query(f"SELECT OBJECTID O, SUM(RTLMP) S, COUNT(*) N FROM {YES}.DART_PRICES WHERE OBJECTID IN ({node},{hub}) AND RTLMP IS NOT NULL AND {cst_live} GROUP BY 1"))
     node_lmp = (nsum / nn) if nn else None
     hub_lmp = (hsum / hn) if hn else None
     basis = (node_lmp - hub_lmp) if (node_lmp is not None and hub_lmp is not None) else 0.0
