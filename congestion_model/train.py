@@ -1,69 +1,78 @@
-"""NBOHR basis: quantile model (the statistical backbone) + OOD detector + a scenario
-ladder. Trained out-of-time (train older, test recent) so the test number reflects real
-generalization, not memorization. Each scenario returns a basis DISTRIBUTION and an
-in-sample / out-of-sample label -- so the M&A deck shows the number AND how much to trust it."""
+"""NBOHR basis: quantile model (statistical backbone) + OOD detector + scenario ladder.
+Hourly resolution with wind generation + outages. Trained out-of-time (older->recent) so
+the test number reflects real generalization. Each scenario returns a basis DISTRIBUTION
+and an in-sample / out-of-sample label (-> hand to the structural shift-factor delta)."""
 import os
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import GradientBoostingRegressor, IsolationForest
-from sklearn.metrics import mean_absolute_error, r2_score
+from sklearn.ensemble import HistGradientBoostingRegressor, IsolationForest
+from sklearn.metrics import mean_absolute_error, r2_score, roc_auc_score
 
-d = pd.read_csv(os.path.join(os.path.dirname(__file__), "nbohr_daily.csv"), parse_dates=["DAY"])
-FEATURES = ["MID_TEMP", "MID_TEMP_MAX", "MID_WIND", "MID_WIND_MAX", "SA_WIND", "AB_WIND",
-            "ERCOT_LOAD", "ERCOT_PEAK", "WEST_LOAD", "MONTH", "DOW"]
+HOURLY = os.path.join(os.path.dirname(__file__), "nbohr_hourly.csv")
+d = pd.read_csv(HOURLY, parse_dates=["HOUR"])
+FEATURES = ["WN_WIND", "ERCOT_SOLAR", "MID_TEMP", "MID_WIND", "SA_WIND",
+            "ERCOT_LOAD", "WEST_LOAD", "N_OUTAGE", "HOD", "MONTH", "DOW"]
 d = d.dropna(subset=["BASIS"] + FEATURES).reset_index(drop=True)
 X, y = d[FEATURES], d["BASIS"]
 
 cut = int(len(d) * 0.8)                       # out-of-TIME split
 Xtr, Xte, ytr, yte = X.iloc[:cut], X.iloc[cut:], y.iloc[:cut], y.iloc[cut:]
-print(f"{len(d)} days | train -> {d['DAY'].iloc[cut-1].date()} | test {d['DAY'].iloc[cut].date()} -> {d['DAY'].iloc[-1].date()} ({len(Xte)} days)")
+print(f"{len(d)} hours | train -> {d['HOUR'].iloc[cut-1].date()} | test {d['HOUR'].iloc[cut].date()} -> {d['HOUR'].iloc[-1].date()} ({len(Xte)} hrs)")
 
 QS = [0.1, 0.5, 0.9]
-models = {}
-for q in QS:
-    m = GradientBoostingRegressor(loss="quantile", alpha=q, n_estimators=500,
-                                  max_depth=3, learning_rate=0.03, subsample=0.8, random_state=0)
-    models[q] = m.fit(Xtr, ytr)
+models = {q: HistGradientBoostingRegressor(loss="quantile", quantile=q, max_iter=600,
+          learning_rate=0.04, max_depth=6, l2_regularization=1.0, random_state=0).fit(Xtr, ytr) for q in QS}
 
 p10, p50, p90 = (models[q].predict(Xte) for q in QS)
 mae, r2 = mean_absolute_error(yte, p50), r2_score(yte, p50)
 cov = np.mean((yte >= p10) & (yte <= p90))
 naive = mean_absolute_error(yte, np.full(len(yte), ytr.mean()))
 print(f"\nout-of-time test:  MAE {mae:.2f}  R2 {r2:.2f}  | 80% interval coverage {cov:.0%} (target 80%)")
-print(f"   vs naive (predict train mean): MAE {naive:.2f}   -> {100*(1-mae/naive):.0f}% better")
+print(f"   vs naive (train mean) MAE {naive:.2f}  -> {100*(1-mae/naive):.0f}% better")
+# R2 is a poor yardstick for a spike-dominated target. What matters for M&A: does the
+# model's distribution flag blowout-RISK hours? Score the down-tail as a risk signal.
+def pinball(yt, pr, q): e = yt - pr; return np.mean(np.maximum(q * e, (q - 1) * e))
+pin = np.mean([pinball(yte, models[q].predict(Xte), q) for q in QS])
+for thr in (-20, -50):
+    yb = (yte < thr).astype(int)
+    if yb.sum() >= 10:
+        auc = roc_auc_score(yb, -p10)            # lower q10 => higher blowout risk
+        print(f"   blowout discrimination (basis < {thr}): AUC {auc:.2f}  (base rate {yb.mean():.1%})")
+print(f"   pinball loss (lower=better calibrated distribution): {pin:.2f}")
 
-imp = sorted(zip(FEATURES, models[0.5].feature_importances_), key=lambda t: -t[1])
-print("top drivers:", ", ".join(f"{f} {v:.0%}" for f, v in imp[:6]))
+# permutation-free importance: drop-one-feature degradation on the median model is slow;
+# use the model's native importance proxy via partial corr of feature with residual sign.
+perm = []
+base = mean_absolute_error(yte, p50)
+rng = np.random.default_rng(0)
+for f in FEATURES:
+    Xp = Xte.copy(); Xp[f] = rng.permutation(Xp[f].values)
+    perm.append((f, mean_absolute_error(yte, models[0.5].predict(Xp)) - base))
+print("top drivers (MAE rise when shuffled):", ", ".join(f"{f} +{v:.2f}" for f, v in sorted(perm, key=lambda t: -t[1])[:6]))
 
-# ---- OOD: per-feature support (catches load-over-max etc.) + multivariate novelty ----
 iso = IsolationForest(n_estimators=300, random_state=0).fit(Xtr)
-thresh = np.percentile(iso.score_samples(Xtr), 2)   # below 2nd pctile => novel combo
-lo, hi = Xtr.quantile(0.005), Xtr.quantile(0.995)   # historical support per feature
+thresh = np.percentile(iso.score_samples(Xtr), 2)
+lo, hi = X.quantile(0.005), X.quantile(0.995)   # support vs ALL history (not just train)
 
 
 def scenario(name, feat):
-    x = pd.DataFrame([{**feat}])[FEATURES]
+    x = pd.DataFrame([{**recent, **feat}])[FEATURES]
     q = {Q: models[Q].predict(x)[0] for Q in QS}
     oos = [c for c in FEATURES if x[c].iloc[0] < lo[c] or x[c].iloc[0] > hi[c]]
-    if oos:
-        flag = f"OUT-OF-SAMPLE [{', '.join(oos)}] -> structural"
-    elif iso.score_samples(x)[0] < thresh:
-        flag = "edge-of-sample (novel combo)"
-    else:
-        flag = "in-sample"
-    print(f"  {name:30} basis q50 {q[0.5]:+6.1f}   [{q[0.1]:+5.1f}, {q[0.9]:+5.1f}]   {flag}")
+    flag = (f"OUT-OF-SAMPLE [{', '.join(oos)}] -> structural" if oos
+            else "edge-of-sample" if iso.score_samples(x)[0] < thresh else "in-sample")
+    print(f"  {name:30} basis q50 {q[0.5]:+6.1f}  [{q[0.1]:+6.1f}, {q[0.9]:+6.1f}]   {flag}")
 
 
-recent = d.iloc[-90:][FEATURES].median().to_dict()
+recent = d.iloc[-720:][FEATURES].median().to_dict()
 qn = lambda c, p: d[c].quantile(p)
-print("\nscenario ladder (NBOHR daily basis $/MWh):")
-scenario("status quo (recent median)", recent)
-scenario("high West wind (p90)", {**recent, "MID_WIND": qn("MID_WIND", .9), "MID_WIND_MAX": qn("MID_WIND_MAX", .9),
-                                   "SA_WIND": qn("SA_WIND", .9), "AB_WIND": qn("AB_WIND", .9)})
-scenario("calm wind (p10)", {**recent, "MID_WIND": qn("MID_WIND", .1), "MID_WIND_MAX": qn("MID_WIND_MAX", .1),
-                             "SA_WIND": qn("SA_WIND", .1), "AB_WIND": qn("AB_WIND", .1)})
-scenario("summer peak (load+temp p95)", {**recent, "MID_TEMP": qn("MID_TEMP", .95), "MID_TEMP_MAX": qn("MID_TEMP_MAX", .95),
-                                         "ERCOT_LOAD": qn("ERCOT_LOAD", .95), "ERCOT_PEAK": qn("ERCOT_PEAK", .97), "MONTH": 8})
-scenario("load +15% over historic max", {**recent, "ERCOT_LOAD": d["ERCOT_LOAD"].max() * 1.15,
-                                          "ERCOT_PEAK": d["ERCOT_PEAK"].max() * 1.15})
-print("\n(the last rung trips OOD -> that's where you hand off to the structural shift-factor delta.)")
+print("\nscenario ladder (NBOHR hourly basis $/MWh):")
+scenario("status quo (recent median hr)", {})
+scenario("high West wind, 3am (blowout)", {"WN_WIND": qn("WN_WIND", .95), "MID_WIND": qn("MID_WIND", .9),
+          "SA_WIND": qn("SA_WIND", .9), "ERCOT_SOLAR": 0, "HOD": 3, "ERCOT_LOAD": qn("ERCOT_LOAD", .3)})
+scenario("calm wind, summer peak 5pm", {"WN_WIND": qn("WN_WIND", .1), "MID_WIND": qn("MID_WIND", .1),
+          "SA_WIND": qn("SA_WIND", .1), "MID_TEMP": qn("MID_TEMP", .98), "ERCOT_LOAD": qn("ERCOT_LOAD", .98),
+          "HOD": 17, "MONTH": 8})
+scenario("high wind + big outage", {"WN_WIND": qn("WN_WIND", .9), "N_OUTAGE": qn("N_OUTAGE", .98), "HOD": 3})
+scenario("load +15% over historic max", {"ERCOT_LOAD": d["ERCOT_LOAD"].max() * 1.15})
+print("\n(OOD rungs hand off to the structural shift-factor delta.)")
