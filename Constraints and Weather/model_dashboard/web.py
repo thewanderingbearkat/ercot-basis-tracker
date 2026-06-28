@@ -31,12 +31,15 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "congesti
 try:
     import structural as _structural
     _GTC = _structural.GTC
+    _SENS = _structural.SENSITIVITIES
+    _BASE = {"atc": _structural.BASE_ATC, "gwa": _structural.BASE_GWA}
 except Exception as _se:                       # fall back to a static copy so the tab still loads
-    logger.warning("structural.py import failed (%s); using static GTC copy", _se)
+    logger.warning("structural.py import failed (%s); using static copy", _se)
     _structural = None
     _GTC = {"6965__A": {"rel_sf": 0.267, "avg_shadow": 77.0, "p90_shadow": 155.0},
             "6056__A": {"rel_sf": 0.226, "avg_shadow": 84.0, "p90_shadow": 202.0},
             "16050__B": {"rel_sf": 0.206, "avg_shadow": 350.0, "p90_shadow": 669.0}}
+    _SENS, _BASE = {}, {"atc": 0.6, "gwa": -2.2}
 
 NODE = "NBOHR_RN"
 NBOHR, HB_WEST = 10004202409, 10000697080
@@ -147,6 +150,7 @@ def api_structural():
     """The GTC shift-factor sensitivities for the client-side scenario calculator.
     Delta_basis = -(shadow_price * rel_sf) per constraint; new load -> -(slope*MW*rel_sf)."""
     return jsonify({"node": NODE, "constraints": _GTC, "blowout": BLOWOUT,
+                    "sensitivities": _SENS, "baseline": _BASE,
                     "note": "NBOHR basis when the West-TX export constraints bind at a given "
                             "shadow price. rel_sf is the (near-constant) relative shift factor."})
 

@@ -166,14 +166,24 @@
   <!-- ============================ SCENARIO CALCULATOR ============================ -->
   <div id="scen" class="hide">
     <div class="panel">
-      <h2>Structural scenario calculator &mdash; the West-TX export GTC</h2>
-      <p class="note" style="margin:0 0 14px">This is the <b>physics</b> half of the tool. NBOHR basis when an export constraint binds is <code>&minus;(shadow price &times; shift factor)</code>, and the shift factor is a near-constant property of the grid's wiring. So you can price what-ifs the statistics can't see: a binding severity never observed, or a new load that pushes the constraint harder. Dial the levers &mdash; the basis updates live.</p>
-      <div id="calc"><div class="note">Loading sensitivities&hellip;</div></div>
+      <h2>Scenario builder &mdash; adjust the drivers</h2>
+      <p class="note" style="margin:0 0 12px">Move each driver relative to today's normal. The estimate is linearized from our findings &mdash; the headline is the <b>wind-revenue (generation-weighted) basis</b>, the number that actually hits the project; the all-hours (ATC) figure is shown alongside. Each lever's sensitivity and the reasoning are spelled out below it.</p>
+      <div style="display:flex;gap:24px;flex-wrap:wrap;align-items:baseline;margin-bottom:14px;">
+        <div><div style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:#6b7280;font-weight:700;">Wind-revenue basis (GWA)</div><div id="scOutGwa" style="font-size:32px;font-weight:800;">&mdash;</div></div>
+        <div><div style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:#6b7280;font-weight:700;">All-hours basis (ATC)</div><div id="scOutAtc" style="font-size:22px;font-weight:700;color:#6b7280;">&mdash;</div></div>
+        <div style="margin-left:auto;"><button class="btn sm" onclick="scReset()">Reset</button></div>
+      </div>
+      <div class="preset">
+        <button onclick="scPreset('nfront')">nFront load thesis (+5.5 GW)</button>
+        <button onclick="scPreset('nfront29')">nFront 2029 (+10.9 GW)</button>
+        <button onclick="scPreset('highwind')">High wind build-out (+4 GW)</button>
+      </div>
+      <div id="scDrivers"><div class="note">Loading drivers&hellip;</div></div>
     </div>
     <div class="panel">
-      <h2>New load behind the constraint</h2>
-      <p class="note" style="margin:0 0 12px">A new large load (e.g. a data center) sited behind the export path pushes the constraint deeper into bind. First-order: <code>&Delta;basis &asymp; &minus;(slope &times; MW &times; shift factor)</code>. The slope ($/MWh of shadow-price rise per extra MW of overload) is a rough calibration &mdash; the <b>sign and the shift-factor scaling are the structural part</b>; tighten the slope before leaning on the magnitude.</p>
-      <div id="loadcalc"></div>
+      <h2>Export GTC severity &mdash; the physics direct</h2>
+      <p class="note" style="margin:0 0 12px">The structural backstop: when an export constraint binds, NBOHR basis is exactly <code>&minus;(shadow price &times; shift factor)</code>, and the shift factor is a near-constant of the grid's wiring. Use this to price a binding severity never seen in the data.</p>
+      <div id="calc"><div class="note">Loading sensitivities&hellip;</div></div>
     </div>
   </div>
 
@@ -404,48 +414,59 @@ function drawBudget(M, sparse){
   $('budgetChart').innerHTML=s;
 }
 
-// ===== structural scenario calculator =====
-let CALC_BUILT=false, CONSTR=null;
+// ===== scenario builder + GTC physics =====
+let CALC_BUILT=false, CONSTR=null, SENS=null, BASE=null;
+const sgn=v=>(v>=0?'+':'')+v.toFixed(1);
 function initCalc(){
   if(CALC_BUILT) return;
   fetch('/api/model/structural').then(r=>r.json()).then(d=>{
-    CONSTR=d.constraints || {}; CALC_BUILT=true;
-    const keys=Object.keys(CONSTR);
-    if(!keys.length){ $('calc').innerHTML='<div class="note">Sensitivities unavailable.</div>'; return; }
+    CONSTR=d.constraints||{}; SENS=d.sensitivities||{}; BASE=d.baseline||{atc:0.6,gwa:-2.2}; CALC_BUILT=true;
+    // --- driver scenario sliders ---
+    const keys=Object.keys(SENS);
+    if(keys.length){
+      $('scDrivers').innerHTML = keys.map(k=>{ const s=SENS[k];
+        return `<div class="calc-row" style="grid-template-columns:170px 1fr 150px;">
+          <div class="cn">${s.label}<span class="cs">${s.kind} &middot; ${sgn(s.slope)}/${s.unit}</span></div>
+          <input type="range" id="d_${k}" min="${s.min}" max="${s.max}" step="0.5" value="${s.default}" oninput="scCompute()">
+          <div class="cv"><span class="sp" id="dv_${k}"></span> &middot; <span class="bz" id="dc_${k}"></span></div>
+          <div class="cs" style="grid-column:1/-1;color:#6b7280;margin-top:-4px;">${s.desc}</div>
+        </div>`; }).join('');
+    } else $('scDrivers').innerHTML='<div class="note">Sensitivities unavailable.</div>';
+    // --- GTC physics sliders ---
+    const ck=Object.keys(CONSTR);
     let html='<div class="preset">'
       +'<button onclick="setPreset(\'avg_shadow\')">Typical bind</button>'
       +'<button onclick="setPreset(\'p90_shadow\')">Heavy (p90)</button>'
-      +'<button onclick="setPreset(\'clear\')">Clear (none binding)</button></div>';
-    keys.forEach(k=>{ const c=CONSTR[k]; const mx=Math.round(c.p90_shadow*1.6/10)*10;
-      html+=`<div class="calc-row">
-        <div class="cn">Export GTC<span class="cs">${k} &middot; shift factor ${c.rel_sf}</span></div>
+      +'<button onclick="setPreset(\'clear\')">Clear</button></div>';
+    ck.forEach(k=>{ const c=CONSTR[k]; const mx=Math.round(c.p90_shadow*1.6/10)*10;
+      html+=`<div class="calc-row"><div class="cn">Export GTC<span class="cs">${k} &middot; shift factor ${c.rel_sf}</span></div>
         <input type="range" id="sl_${k}" min="0" max="${mx}" step="5" value="${Math.round(c.avg_shadow)}" oninput="recompute()">
-        <div class="cv"><span class="sp" id="sp_${k}"></span><br><span class="bz neg" id="bz_${k}"></span></div>
-      </div>`; });
-    html+='<div class="calc-total"><span class="tl">NBOHR basis under this scenario</span><span class="tv" id="calcTotal"></span></div>';
+        <div class="cv"><span class="sp" id="sp_${k}"></span><br><span class="bz neg" id="bz_${k}"></span></div></div>`; });
+    html+='<div class="calc-total"><span class="tl">NBOHR basis when these bind</span><span class="tv" id="calcTotal"></span></div>';
     $('calc').innerHTML=html;
-    const opt=keys.map(k=>`<option value="${k}">${k}</option>`).join('');
-    $('loadcalc').innerHTML=`<div class="ldrow">
-      <label>New load <input type="number" id="ldmw" value="200" step="50" min="0" oninput="recomputeLoad()"> MW</label>
-      <label>behind <select id="ldc" onchange="recomputeLoad()">${opt}</select></label>
-      <span>&rarr; &Delta;basis <span class="ldout neg" id="ldout"></span></span></div>`;
-    recompute(); recomputeLoad();
+    scCompute(); recompute();
   });
 }
-function setPreset(which){
-  Object.keys(CONSTR).forEach(k=>{ $('sl_'+k).value = which==='clear'?0:Math.round(CONSTR[k][which]); });
-  recompute();
+function scCompute(){
+  let gwa=BASE.gwa, atc=BASE.atc;
+  Object.keys(SENS).forEach(k=>{ const s=SENS[k], dv=+$('d_'+k).value, c=s.slope*dv;
+    gwa+=c; atc+=s.atc*dv;
+    $('dv_'+k).textContent=sgn(dv)+' '+s.unit; $('dc_'+k).textContent=sgn(c)+' $';
+    $('dc_'+k).className='bz '+(c<0?'neg':'pos'); });
+  $('scOutGwa').textContent=sgn(gwa)+' $/MWh'; $('scOutGwa').className=gwa<0?'neg':'pos';
+  $('scOutAtc').textContent=sgn(atc)+' $/MWh';
 }
-function recompute(){
-  let tot=0;
-  Object.keys(CONSTR).forEach(k=>{ const sh=+$('sl_'+k).value, contrib=-(sh*CONSTR[k].rel_sf);
-    $('sp_'+k).textContent='$'+sh+' shadow'; $('bz_'+k).textContent=contrib.toFixed(1); tot+=contrib; });
-  $('calcTotal').textContent=(tot>=0?'+':'')+tot.toFixed(1)+' $/MWh';
-}
-function recomputeLoad(){
-  const mw=+$('ldmw').value, k=$('ldc').value, slope=0.5;
-  $('ldout').textContent=(-(slope*mw*CONSTR[k].rel_sf)).toFixed(1)+' $/MWh';
-}
+function scReset(){ Object.keys(SENS).forEach(k=>$('d_'+k).value=SENS[k].default); scCompute(); }
+function scPreset(p){ scReset();
+  if(p==='nfront') $('d_WEST_LOAD').value=5.5;
+  if(p==='nfront29') $('d_WEST_LOAD').value=10.9;
+  if(p==='highwind'){ $('d_WN_WIND').value=4; }
+  scCompute(); }
+function setPreset(which){ Object.keys(CONSTR).forEach(k=>{ $('sl_'+k).value=which==='clear'?0:Math.round(CONSTR[k][which]); }); recompute(); }
+function recompute(){ let tot=0;
+  Object.keys(CONSTR).forEach(k=>{ const sh=+$('sl_'+k).value, c=-(sh*CONSTR[k].rel_sf);
+    $('sp_'+k).textContent='$'+sh+' shadow'; $('bz_'+k).textContent=c.toFixed(1); tot+=c; });
+  $('calcTotal').textContent=sgn(tot)+' $/MWh'; }
 </script>
 </body>
 </html>

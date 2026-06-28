@@ -36,6 +36,37 @@ GTC = {
 }
 NBOHR, HB_WEST = 10004202409, 10000697080
 
+# Realized baselines (2023-26) and per-driver basis sensitivities for the scenario calculator.
+# slope = $/MWh per GW (or per unit) on the wind-REVENUE (congested / generation-weighted)
+# basis; atc = the weaker all-hours effect. Derived in sensitivities.py.
+BASE_ATC, BASE_GWA = 0.6, -2.2
+SENSITIVITIES = {
+    "WN_WIND": {"slope": -2.5, "atc": -0.6, "unit": "GW", "default": 0, "min": -8, "max": 8,
+                "label": "West / North wind generation", "kind": "statistical",
+                "desc": "Dominant driver. More wind floods the West->North export path, the GTC binds, and basis falls. About -$2.5/MWh per GW in the windy hours where the plant actually earns."},
+    "WEST_LOAD": {"slope": 1.1, "atc": -0.5, "unit": "GW", "default": 0, "min": 0, "max": 12,
+                  "label": "West-zone load (incl. new data-center load)", "kind": "structural",
+                  "desc": "Local load absorbs West-TX generation and relieves the export constraint: +$1.1/MWh per GW in congested hours. ~6.8 GW lifts windy basis from -$7 to 0. nFront assumes +5.5->10.9 GW; realized growth is ~0.9 GW/yr."},
+    "ERCOT_SOLAR": {"slope": -0.1, "atc": -0.1, "unit": "GW", "default": 0, "min": -6, "max": 6,
+                    "label": "ERCOT solar generation", "kind": "statistical",
+                    "desc": "Midday over-supply pulls the all-hours basis down (~-$0.1/MWh per GW); in the windy hours this view models, it is roughly neutral (wind dominates)."},
+    "ERCOT_LOAD": {"slope": 0.1, "atc": 0.0, "unit": "GW", "default": 0, "min": -10, "max": 20,
+                   "label": "ERCOT system load", "kind": "statistical",
+                   "desc": "Higher system demand lifts prices broadly; only a small, indirect effect on node-vs-hub basis."},
+    "N_OUTAGE": {"slope": 0.0, "atc": 0.0, "unit": "outages", "default": 0, "min": 0, "max": 50,
+                 "label": "Transmission outages (>=138kV count)", "kind": "statistical",
+                 "desc": "The daily >=138kV outage COUNT is too coarse to register a marginal effect. Model a specific export-path outage with the GTC severity lever instead."},
+}
+
+
+def scenario_basis(deltas: dict) -> dict:
+    """Linearized wind-revenue (GWA) and all-hours (ATC) basis for a set of driver deltas
+    (keyed by SENSITIVITIES name, in the stated unit). Returns both + per-driver contributions."""
+    gwa = sum(SENSITIVITIES[k]["slope"] * v for k, v in deltas.items() if k in SENSITIVITIES)
+    atc = sum(SENSITIVITIES[k]["atc"] * v for k, v in deltas.items() if k in SENSITIVITIES)
+    return {"gwa": BASE_GWA + gwa, "atc": BASE_ATC + atc,
+            "contrib": {k: SENSITIVITIES[k]["slope"] * v for k, v in deltas.items() if k in SENSITIVITIES}}
+
 
 def basis_from_shadow(shadow_by_constraint: dict) -> float:
     """NBOHR basis ($/MWh) implied by a set of binding shadow prices: -(shadow * rel_SF)."""
@@ -50,14 +81,11 @@ def stress(level: str = "p90", constraints=None) -> float:
     return basis_from_shadow({c: GTC[c][key] for c in cons})
 
 
-def new_load_behind(delta_mw: float, constraint: str = "6965__A", shadow_per_mw: float = 0.5) -> float:
-    """First-order Delta-basis from a NEW load landing behind `constraint` that pushes it
-    deeper into bind. Delta_shadow ~= shadow_per_mw * delta_mw (a tunable congestion-cost
-    slope), then Delta_basis = -(Delta_shadow * rel_SF). shadow_per_mw is the rough $/MWh
-    of shadow-price rise per extra MW of overload -- calibrate per constraint before relying
-    on the magnitude; the SIGN and the rel_SF scaling are the structural part."""
-    d_shadow = shadow_per_mw * delta_mw
-    return -d_shadow * GTC[constraint]["rel_sf"]
+def new_load_behind(delta_mw: float) -> float:
+    """Windy-hour Delta-basis from new West load behind the export path. Calibrated to the
+    realized windy-hour regression: +$1.1/MWh per GW (so ~6.8 GW lifts windy basis -$7 -> 0).
+    This is the WEST_LOAD congested sensitivity -- new load is just an out-of-sample amount."""
+    return SENSITIVITIES["WEST_LOAD"]["slope"] * (delta_mw / 1000.0)
 
 
 def refresh():
