@@ -46,8 +46,10 @@ clf = HistGradientBoostingClassifier(**HBG).fit(X, (y < BLOWOUT).astype(int))
 print(f"trained forecast-mode model on {len(d)} hrs (base blowout rate {(y < BLOWOUT).mean():.1%})")
 
 # Largest drivers: how much blowout-prediction skill is lost when each input is shuffled.
+# n_jobs=1 deliberately: loky worker processes throw on shutdown under Windows Task
+# Scheduler (non-zero exit after the work completes); 9 features x 5 repeats is fast serial.
 imp = permutation_importance(clf, X, (y < BLOWOUT).astype(int), n_repeats=5, random_state=0,
-                             scoring="roc_auc", n_jobs=-1)
+                             scoring="roc_auc", n_jobs=1)
 drivers = sorted(({"feature": f, "label": LABEL[f], "importance": float(round(m, 4))}
                   for f, m in zip(FCAST, imp.importances_mean)), key=lambda r: -r["importance"])
 print("largest drivers (AUC drop when shuffled):",
