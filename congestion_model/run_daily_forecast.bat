@@ -7,4 +7,7 @@ cd /d "C:\Users\TylerMartin\ercot-basis-tracker\congestion_model"
 echo ============================================================ >> forecast_log.txt
 echo RUN %DATE% %TIME% >> forecast_log.txt
 "C:\Users\TylerMartin\AppData\Local\Programs\Python\Python312\python.exe" forecast_demo.py --log >> forecast_log.txt 2>&1
-echo EXIT %ERRORLEVEL% >> forecast_log.txt
+echo EXIT forecast %ERRORLEVEL% >> forecast_log.txt
+REM Multi-horizon budget (3mo/3y). Monthly-stable, but cheap to refresh; idempotent per month.
+"C:\Users\TylerMartin\AppData\Local\Programs\Python\Python312\python.exe" horizon_forecast.py --log >> forecast_log.txt 2>&1
+echo EXIT budget %ERRORLEVEL% >> forecast_log.txt

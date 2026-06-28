@@ -61,6 +61,31 @@
   table.lv td .pill { font-size:10.5px; font-weight:700; padding:2px 7px; border-radius:5px; }
   .pill.stat { background:#dbeafe; color:#1e40af; } .pill.struc { background:#dcfce7; color:#166534; }
   .hide { display:none; }
+
+  /* horizon switcher */
+  .hsel { display:flex; align-items:center; gap:6px; margin-bottom:14px; flex-wrap:wrap; }
+  .hsel-lab { font-size:11px; text-transform:uppercase; letter-spacing:.5px; color:#6b7280; font-weight:700; margin-right:4px; }
+  .hsel button { background:#fff; border:1px solid #e5e7eb; color:#374151; padding:7px 14px; font-size:13px; font-weight:600; border-radius:8px; cursor:pointer; }
+  .hsel button.active { background:#0E2C51; color:#fff; border-color:#0E2C51; }
+  .hsel .hsub { font-size:10px; font-weight:500; opacity:.7; margin-left:3px; }
+
+  /* scenario calculator */
+  .calc-row { display:grid; grid-template-columns:130px 1fr 92px; align-items:center; gap:12px; padding:11px 0; border-top:1px solid #eef1f4; }
+  .calc-row:first-child { border-top:none; }
+  .calc-row .cn { font-weight:700; font-size:13px; } .calc-row .cn .cs { display:block; font-size:10.5px; color:#6b7280; font-weight:500; }
+  .calc-row input[type=range] { width:100%; accent-color:#0E2C51; }
+  .calc-row .cv { text-align:right; font-size:13px; }
+  .calc-row .cv .sp { font-weight:600; } .calc-row .cv .bz { font-weight:800; font-size:15px; }
+  .calc-total { display:flex; align-items:baseline; justify-content:space-between; margin-top:14px; padding:13px 15px; background:#0E2C51; color:#fff; border-radius:8px; }
+  .calc-total .tl { font-size:12px; text-transform:uppercase; letter-spacing:.5px; opacity:.85; }
+  .calc-total .tv { font-size:30px; font-weight:800; }
+  .preset { display:inline-flex; gap:6px; margin:4px 0 14px; }
+  .preset button { background:#eef1f4; border:none; color:#0E2C51; padding:5px 12px; font-size:12px; font-weight:600; border-radius:6px; cursor:pointer; }
+  .preset button:hover { background:#dde3ea; }
+  .ldrow { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+  .ldrow input[type=number] { width:90px; padding:6px 8px; border:1px solid #d1d5db; border-radius:6px; font-size:14px; color:#0E2C51; }
+  .ldrow select { padding:6px 8px; border:1px solid #d1d5db; border-radius:6px; font-size:13px; color:#0E2C51; }
+  .ldout { font-size:15px; font-weight:800; }
 </style>
 </head>
 <body>
@@ -80,35 +105,74 @@
   <div class="subtitle">Forecasting basis-blowout risk &middot; statistical backbone + structural scenarios</div>
 
   <div class="seg">
-    <button id="tabLive" class="active" onclick="showTab('live')">Live tracker</button>
+    <button id="tabFc" class="active" onclick="showTab('fc')">Forecast</button>
+    <button id="tabScen" onclick="showTab('scen')">Scenario calculator</button>
     <button id="tabHow" onclick="showTab('how')">How the model works</button>
   </div>
 
-  <!-- ============================ LIVE TRACKER ============================ -->
-  <div id="live">
-    <div class="panel">
-      <h2>Track record &mdash; forecast vs. what actually happened</h2>
-      <div class="cards" id="scorecard"><div class="note">Loading&hellip;</div></div>
-      <div class="note" style="margin-top:10px">Every elapsed forecast hour is scored against realized basis (NBOHR &minus; HB_WEST, RT). These numbers grow as the model logs new daily forecasts and the grid catches up to them.</div>
+  <!-- ============================ FORECAST ============================ -->
+  <div id="fc">
+    <div class="hsel">
+      <span class="hsel-lab">Horizon</span>
+      <button id="h7"  class="active" onclick="showHorizon('7d')">7-day <span class="hsub">short / hourly</span></button>
+      <button id="h3m" onclick="showHorizon('3m')">3-month <span class="hsub">medium</span></button>
+      <button id="h3y" onclick="showHorizon('3y')">3-year <span class="hsub">long / budget</span></button>
     </div>
 
-    <div class="panel">
-      <h2>Latest 7-day forecast vs. realized basis <span id="runDate" class="muted" style="text-transform:none;letter-spacing:0;font-weight:400"></span></h2>
-      <div id="chart"><div class="note">Loading&hellip;</div></div>
-      <div id="strip"></div>
-      <div class="legend">
-        <span><span class="sw" style="background:rgba(34,145,235,.25)"></span>forecast range (q10&ndash;q90)</span>
-        <span><span class="sw" style="background:#2291EB"></span>forecast (typical, q50)</span>
-        <span><span class="dot" style="background:#0E2C51"></span>realized basis</span>
-        <span><span class="sw" style="background:#b91c1c"></span>now</span>
-        <span>strip = hourly blowout probability (green&rarr;red)</span>
+    <!-- 7-day (short term) -->
+    <div id="view7d">
+      <div class="panel">
+        <h2>Track record &mdash; forecast vs. what actually happened</h2>
+        <div class="cards" id="scorecard"><div class="note">Loading&hellip;</div></div>
+        <div class="note" style="margin-top:10px">Every elapsed forecast hour is scored against realized basis (NBOHR &minus; HB_WEST, RT). These numbers grow as the model logs new daily forecasts and the grid catches up to them.</div>
+      </div>
+      <div class="panel">
+        <h2>Latest 7-day forecast vs. realized basis <span id="runDate" class="muted" style="text-transform:none;letter-spacing:0;font-weight:400"></span></h2>
+        <div id="chart"><div class="note">Loading&hellip;</div></div>
+        <div id="strip"></div>
+        <div class="legend">
+          <span><span class="sw" style="background:rgba(34,145,235,.25)"></span>forecast range (q10&ndash;q90)</span>
+          <span><span class="sw" style="background:#2291EB"></span>forecast (typical, q50)</span>
+          <span><span class="dot" style="background:#0E2C51"></span>realized basis</span>
+          <span><span class="sw" style="background:#b91c1c"></span>now</span>
+          <span>strip = hourly blowout probability (green&rarr;red)</span>
+        </div>
+      </div>
+      <div class="panel">
+        <h2>What's driving the risk (latest run)</h2>
+        <div id="drivers"><div class="note">Loading&hellip;</div></div>
+        <div class="note" style="margin-top:8px">Importance = blowout-ranking skill (AUC) lost when that forecast input is scrambled. Read it as a regime, not one lever &mdash; see <a href="#" onclick="showTab('how');return false">How the model works &rarr;</a></div>
       </div>
     </div>
 
+    <!-- 3-month / 3-year (medium / long term budget) -->
+    <div id="viewBudget" class="hide">
+      <div class="panel">
+        <h2 id="budgetTitle">Monthly basis budget</h2>
+        <div class="cards" id="budgetCards"></div>
+        <div id="budgetChart" style="margin-top:14px"><div class="note">Loading&hellip;</div></div>
+        <div class="legend">
+          <span><span class="sw" style="background:rgba(34,145,235,.25)"></span>model range (q10&ndash;q90)</span>
+          <span><span class="sw" style="background:#2291EB"></span>model expected (q50)</span>
+          <span><span class="sw" style="background:#9ca3af"></span>realized history (calendar-month avg)</span>
+          <span>strip = expected blowout % of hours</span>
+        </div>
+        <div class="note" style="margin-top:10px"><b>Climatology baseline:</b> beyond a week there's no weather forecast, so medium/long term runs the model over a <i>normal weather year</i> at today's grid &mdash; expected monthly basis + range + blowout frequency. Year-specific changes (load growth, a new line, a new big load) are layered on top in the <a href="#" onclick="showTab('scen');return false">Scenario calculator &rarr;</a>, not baked in here. The grey line is the realized historical average for that calendar month &mdash; a model-free cross-check.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================ SCENARIO CALCULATOR ============================ -->
+  <div id="scen" class="hide">
     <div class="panel">
-      <h2>What's driving the risk (latest run)</h2>
-      <div id="drivers"><div class="note">Loading&hellip;</div></div>
-      <div class="note" style="margin-top:8px">Importance = blowout-ranking skill (AUC) lost when that forecast input is scrambled. Read it as a regime, not one lever &mdash; see <a href="#" onclick="showTab('how');return false">How the model works &rarr;</a></div>
+      <h2>Structural scenario calculator &mdash; the West-TX export GTC</h2>
+      <p class="note" style="margin:0 0 14px">This is the <b>physics</b> half of the tool. NBOHR basis when an export constraint binds is <code>&minus;(shadow price &times; shift factor)</code>, and the shift factor is a near-constant property of the grid's wiring. So you can price what-ifs the statistics can't see: a binding severity never observed, or a new load that pushes the constraint harder. Dial the levers &mdash; the basis updates live.</p>
+      <div id="calc"><div class="note">Loading sensitivities&hellip;</div></div>
+    </div>
+    <div class="panel">
+      <h2>New load behind the constraint</h2>
+      <p class="note" style="margin:0 0 12px">A new large load (e.g. a data center) sited behind the export path pushes the constraint deeper into bind. First-order: <code>&Delta;basis &asymp; &minus;(slope &times; MW &times; shift factor)</code>. The slope ($/MWh of shadow-price rise per extra MW of overload) is a rough calibration &mdash; the <b>sign and the shift-factor scaling are the structural part</b>; tighten the slope before leaning on the magnitude.</p>
+      <div id="loadcalc"></div>
     </div>
   </div>
 
@@ -187,10 +251,19 @@
 <script>
 const $ = id => document.getElementById(id);
 function showTab(t){
-  $('live').classList.toggle('hide', t!=='live');
-  $('how').classList.toggle('hide', t!=='how');
-  $('tabLive').classList.toggle('active', t==='live');
+  ['fc','scen','how'].forEach(x => $(x).classList.toggle('hide', x!==t));
+  $('tabFc').classList.toggle('active', t==='fc');
+  $('tabScen').classList.toggle('active', t==='scen');
   $('tabHow').classList.toggle('active', t==='how');
+  if(t==='scen') initCalc();
+}
+function showHorizon(h){
+  $('view7d').classList.toggle('hide', h==='3m'||h==='3y');
+  $('viewBudget').classList.toggle('hide', h==='7d');
+  $('h7').classList.toggle('active', h==='7d');
+  $('h3m').classList.toggle('active', h==='3m');
+  $('h3y').classList.toggle('active', h==='3y');
+  if(h!=='7d') renderBudget(h==='3m'?3:36, h==='3m'?'Next 3 months':'3-year monthly budget');
 }
 
 const fmt = (v,d=1)=> v==null ? '&mdash;' : (v>=0?'+':'')+v.toFixed(d);
@@ -272,6 +345,99 @@ function drawChart(H){
   s += `</svg>`;
   $('chart').innerHTML = s;
   $('strip').innerHTML = '';
+}
+
+// ===== multi-horizon budget (3-month / 3-year) =====
+let BUDGET = null;
+fetch('/api/model/budget').then(r=>r.json()).then(d=>{ BUDGET = d.months || []; });
+function renderBudget(n, title){
+  $('budgetTitle').textContent = title;
+  if(BUDGET===null){ setTimeout(()=>renderBudget(n,title), 300); return; }
+  if(!BUDGET.length){ $('budgetCards').innerHTML=''; $('budgetChart').innerHTML='<div class="note">No budget run logged yet. Run <code>horizon_forecast.py --log</code>.</div>'; return; }
+  const M = BUDGET.slice(0, n);
+  const exp = M.reduce((a,m)=>a+m.EXPECTED,0)/M.length;
+  const worst = M.reduce((a,m)=> m.EXPECTED<a.EXPECTED?m:a);
+  const blow = M.reduce((a,m)=>a+m.BLOWOUT_PCT,0)/M.length;
+  const sgn = v => (v>=0?'+':'')+v.toFixed(2);
+  $('budgetCards').innerHTML = `
+    <div class="scard"><div class="k">Expected basis</div><div class="v ${exp<0?'neg':'pos'}">${sgn(exp)}</div><div class="s">avg $/MWh over ${n} mo</div></div>
+    <div class="scard"><div class="k">Worst month</div><div class="v neg">${worst.EXPECTED.toFixed(1)}</div><div class="s">${worst.PERIOD.slice(0,7)}</div></div>
+    <div class="scard"><div class="k">Blowout hours</div><div class="v">${blow.toFixed(0)}%</div><div class="s">expected, of all hours</div></div>`;
+  drawBudget(M, n>12);
+}
+function drawBudget(M, sparse){
+  const W=1000, padL=46, padR=12, padT=14, plotB=240, stripT=252, stripB=276, xlabY=292, totH=300;
+  const x0=padL, x1=W-padR, n=M.length;
+  const xP = i => n===1 ? (x0+x1)/2 : x0 + i/(n-1)*(x1-x0);
+  let lo=0, hi=0;
+  M.forEach(m=>{ lo=Math.min(lo,m.P10, m.HIST_BASIS==null?0:m.HIST_BASIS); hi=Math.max(hi,m.P90, m.HIST_BASIS==null?0:m.HIST_BASIS); });
+  lo=Math.floor((lo-1)/2)*2; hi=Math.ceil((hi+1)/2)*2;
+  const yP=v=>padT+(hi-v)/(hi-lo)*(plotB-padT);
+  const step=(hi-lo)<=14?2:5;
+  let s=`<svg viewBox="0 0 ${W} ${totH}" xmlns="http://www.w3.org/2000/svg" font-family="inherit">`;
+  for(let v=Math.ceil(lo/step)*step; v<=hi; v+=step){ const y=yP(v);
+    s+=`<line x1="${x0}" y1="${y}" x2="${x1}" y2="${y}" stroke="${v===0?'#9ca3af':'#eef1f4'}" ${v===0?'stroke-dasharray="4 3"':''}/>`;
+    s+=`<text x="${x0-6}" y="${y+3}" text-anchor="end" font-size="10" fill="#6b7280">${v>0?'+':''}${v}</text>`; }
+  s+=`<text x="12" y="${(padT+plotB)/2}" font-size="10" fill="#6b7280" transform="rotate(-90 12 ${(padT+plotB)/2})" text-anchor="middle">basis $/MWh</text>`;
+  M.forEach((m,i)=>{ if(!sparse || i%6===0 || i===n-1){ const x=xP(i);
+    s+=`<line x1="${x}" y1="${padT}" x2="${x}" y2="${plotB}" stroke="#f8fafc" stroke-width="1"/>`;
+    s+=`<text x="${x}" y="${xlabY}" text-anchor="middle" font-size="9.5" fill="#6b7280">${m.PERIOD.slice(0,7)}</text>`; } });
+  const up=M.map((m,i)=>`${xP(i).toFixed(1)},${yP(m.P90).toFixed(1)}`).join(' ');
+  const dn=M.map((m,i)=>`${xP(i).toFixed(1)},${yP(m.P10).toFixed(1)}`).reverse().join(' ');
+  s+=`<polygon points="${up} ${dn}" fill="#2291EB" fill-opacity="0.15"/>`;
+  const hp=M.map((m,i)=>m.HIST_BASIS==null?null:`${xP(i).toFixed(1)},${yP(m.HIST_BASIS).toFixed(1)}`).filter(Boolean);
+  if(hp.length>1) s+=`<polyline points="${hp.join(' ')}" fill="none" stroke="#9ca3af" stroke-width="1.4" stroke-dasharray="4 3"/>`;
+  s+=`<polyline points="${M.map((m,i)=>`${xP(i).toFixed(1)},${yP(m.EXPECTED).toFixed(1)}`).join(' ')}" fill="none" stroke="#2291EB" stroke-width="2"/>`;
+  M.forEach((m,i)=>{ s+=`<circle cx="${xP(i).toFixed(1)}" cy="${yP(m.EXPECTED).toFixed(1)}" r="${n>12?1.6:2.6}" fill="#2291EB"/>`; });
+  const col=p=>p<2?'#16a34a':p<4?'#84cc16':p<6?'#f59e0b':p<9?'#fb923c':'#ef4444';
+  const cw=(x1-x0)/n;
+  s+=`<text x="${x0-6}" y="${(stripT+stripB)/2+3}" text-anchor="end" font-size="9" fill="#6b7280">risk</text>`;
+  M.forEach((m,i)=>{ s+=`<rect x="${xP(i).toFixed(1)}" y="${stripT}" width="${cw.toFixed(2)}" height="${stripB-stripT}" fill="${col(m.BLOWOUT_PCT)}"/>`; });
+  s+=`</svg>`;
+  $('budgetChart').innerHTML=s;
+}
+
+// ===== structural scenario calculator =====
+let CALC_BUILT=false, CONSTR=null;
+function initCalc(){
+  if(CALC_BUILT) return;
+  fetch('/api/model/structural').then(r=>r.json()).then(d=>{
+    CONSTR=d.constraints || {}; CALC_BUILT=true;
+    const keys=Object.keys(CONSTR);
+    if(!keys.length){ $('calc').innerHTML='<div class="note">Sensitivities unavailable.</div>'; return; }
+    let html='<div class="preset">'
+      +'<button onclick="setPreset(\'avg_shadow\')">Typical bind</button>'
+      +'<button onclick="setPreset(\'p90_shadow\')">Heavy (p90)</button>'
+      +'<button onclick="setPreset(\'clear\')">Clear (none binding)</button></div>';
+    keys.forEach(k=>{ const c=CONSTR[k]; const mx=Math.round(c.p90_shadow*1.6/10)*10;
+      html+=`<div class="calc-row">
+        <div class="cn">Export GTC<span class="cs">${k} &middot; shift factor ${c.rel_sf}</span></div>
+        <input type="range" id="sl_${k}" min="0" max="${mx}" step="5" value="${Math.round(c.avg_shadow)}" oninput="recompute()">
+        <div class="cv"><span class="sp" id="sp_${k}"></span><br><span class="bz neg" id="bz_${k}"></span></div>
+      </div>`; });
+    html+='<div class="calc-total"><span class="tl">NBOHR basis under this scenario</span><span class="tv" id="calcTotal"></span></div>';
+    $('calc').innerHTML=html;
+    const opt=keys.map(k=>`<option value="${k}">${k}</option>`).join('');
+    $('loadcalc').innerHTML=`<div class="ldrow">
+      <label>New load <input type="number" id="ldmw" value="200" step="50" min="0" oninput="recomputeLoad()"> MW</label>
+      <label>behind <select id="ldc" onchange="recomputeLoad()">${opt}</select></label>
+      <span>&rarr; &Delta;basis <span class="ldout neg" id="ldout"></span></span></div>`;
+    recompute(); recomputeLoad();
+  });
+}
+function setPreset(which){
+  Object.keys(CONSTR).forEach(k=>{ $('sl_'+k).value = which==='clear'?0:Math.round(CONSTR[k][which]); });
+  recompute();
+}
+function recompute(){
+  let tot=0;
+  Object.keys(CONSTR).forEach(k=>{ const sh=+$('sl_'+k).value, contrib=-(sh*CONSTR[k].rel_sf);
+    $('sp_'+k).textContent='$'+sh+' shadow'; $('bz_'+k).textContent=contrib.toFixed(1); tot+=contrib; });
+  $('calcTotal').textContent=(tot>=0?'+':'')+tot.toFixed(1)+' $/MWh';
+}
+function recomputeLoad(){
+  const mw=+$('ldmw').value, k=$('ldc').value, slope=0.5;
+  $('ldout').textContent=(-(slope*mw*CONSTR[k].rel_sf)).toFixed(1)+' $/MWh';
 }
 </script>
 </body>

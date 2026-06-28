@@ -4,6 +4,8 @@
     GET /api/model/tracking       -- latest stored forecast joined to realized basis
     GET /api/model/scorecard      -- accumulated accuracy across all elapsed forecast hours
     GET /api/model/drivers        -- latest run's largest drivers
+    GET /api/model/structural     -- GTC shift-factor sensitivities (scenario calculator)
+    GET /api/model/budget         -- multi-horizon monthly budget curve (3mo / 3y)
 
 READ-ONLY. Forecasts are written to SKYVEST.DBO.CM_CONGEST_FORECAST / _DRIVERS by
 congestion_model/forecast_demo.py --log (run locally or on a schedule); this app only reads
@@ -13,6 +15,8 @@ shows how the live grid is tracking against what the model projected, and a grow
 import datetime as dt
 import decimal
 import logging
+import os
+import sys
 
 from flask import Blueprint, jsonify, render_template
 
@@ -21,6 +25,18 @@ from constraint_map.db import YES, query
 logger = logging.getLogger(__name__)
 
 model_bp = Blueprint("model_dashboard", __name__, template_folder="templates")
+
+# structural.py lives in congestion_model/ at the repo root (pure arithmetic, no sklearn).
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "congestion_model"))
+try:
+    import structural as _structural
+    _GTC = _structural.GTC
+except Exception as _se:                       # fall back to a static copy so the tab still loads
+    logger.warning("structural.py import failed (%s); using static GTC copy", _se)
+    _structural = None
+    _GTC = {"6965__A": {"rel_sf": 0.267, "avg_shadow": 77.0, "p90_shadow": 155.0},
+            "6056__A": {"rel_sf": 0.226, "avg_shadow": 84.0, "p90_shadow": 202.0},
+            "16050__B": {"rel_sf": 0.206, "avg_shadow": 350.0, "p90_shadow": 669.0}}
 
 NODE = "NBOHR_RN"
 NBOHR, HB_WEST = 10004202409, 10000697080
@@ -124,3 +140,28 @@ def api_drivers():
     except Exception as e:
         logger.exception("model drivers failed: %s", e)
         return jsonify({"drivers": [], "error": str(e)})
+
+
+@model_bp.route("/api/model/structural")
+def api_structural():
+    """The GTC shift-factor sensitivities for the client-side scenario calculator.
+    Delta_basis = -(shadow_price * rel_sf) per constraint; new load -> -(slope*MW*rel_sf)."""
+    return jsonify({"node": NODE, "constraints": _GTC, "blowout": BLOWOUT,
+                    "note": "NBOHR basis when the West-TX export constraints bind at a given "
+                            "shadow price. rel_sf is the (near-constant) relative shift factor."})
+
+
+@model_bp.route("/api/model/budget")
+def api_budget():
+    """Multi-horizon monthly budget curve (latest run) -- climatology basis out to 3 years.
+    One 36-month curve; the UI slices the first 3 (medium) vs all (long)."""
+    try:
+        rows = _clean(query(f"""
+            SELECT PERIOD, MONTHS_AHEAD, P10, P50, P90, EXPECTED, BLOWOUT_PCT, HIST_BASIS
+            FROM SKYVEST.DBO.CM_CONGEST_BUDGET
+            WHERE NODE='{NODE}' AND RUN_DATE=(SELECT MAX(RUN_DATE) FROM SKYVEST.DBO.CM_CONGEST_BUDGET WHERE NODE='{NODE}')
+            ORDER BY MONTHS_AHEAD"""))
+        return jsonify({"node": NODE, "run_date": (rows[0].get("PERIOD") if rows else None), "months": rows})
+    except Exception as e:
+        logger.exception("model budget failed: %s", e)
+        return jsonify({"months": [], "error": str(e)})
