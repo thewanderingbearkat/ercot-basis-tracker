@@ -41,9 +41,10 @@ d = pd.read_csv(HOURLY, parse_dates=["HOUR"]).dropna(subset=["BASIS"] + FCAST).r
 X, y = d[FCAST], d["BASIS"]
 qm = {q: HistGradientBoostingRegressor(loss="quantile", quantile=q, **HBG).fit(X, y) for q in (0.1, 0.5, 0.9)}
 clf = HistGradientBoostingClassifier(**HBG).fit(X, (y < BLOWOUT).astype(int))
-# Empirical realized basis by calendar month (a model-free cross-check for budgeting).
+# Empirical realized ATC basis by calendar month (model-free cross-check). ATC = around-the-
+# clock (flat hourly average). GWA (generation-weighted) is site-specific -- a later layer.
 hist_by_month = d.groupby("MONTH")["BASIS"].mean().to_dict()
-print(f"trained on {len(d)} hrs | load growth assumption: {growth:.1%}/yr (0 = pure climatology)")
+print(f"trained on {len(d)} hrs | ATC basis | load growth assumption: {growth:.1%}/yr (0 = climatology)")
 
 start = pd.Timestamp.now().normalize().replace(day=1)
 rows = []

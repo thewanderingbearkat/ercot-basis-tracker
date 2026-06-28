@@ -155,10 +155,11 @@
           <span><span class="sw" style="background:rgba(34,145,235,.25)"></span>model range (q10&ndash;q90)</span>
           <span><span class="sw" style="background:#2291EB"></span>model expected (q50)</span>
           <span><span class="sw" style="background:#9ca3af"></span>realized history (calendar-month avg)</span>
+          <span><span class="sw" style="background:#f59e0b"></span>nFront (ATC, 3rd-party)</span>
           <span>strip = expected blowout % of hours</span>
         </div>
         <div class="note" style="margin-top:10px"><b>Climatology baseline:</b> beyond a week there's no weather forecast, so medium/long term runs the model over a <i>normal weather year</i> at today's grid &mdash; expected monthly basis + range + blowout frequency. Year-specific changes (load growth, a new line, a new big load) are layered on top in the <a href="#" onclick="showTab('scen');return false">Scenario calculator &rarr;</a>, not baked in here. The grey line is the realized historical average for that calendar month &mdash; a model-free cross-check.</div>
-      </div>
+        <div class="note" style="margin-top:6px"><b>nFront (orange)</b> is a third-party SCED study shown as another data point &mdash; <b>ATC</b> (around-the-clock, all hours equal). Its near-term ATC basis is strongly <i>positive</i>: McCrae prices above the West hub in scarcity hours, which an all-hours average rewards. That is <b>not</b> the wind-revenue number &mdash; a wind plant earns the <i>generation-weighted</i> (GWA) basis, which is far lower because the plant runs in the congested, low-price hours (nFront's own GWA is roughly &minus;$1 to &minus;$5/MWh). GWA is the next layer; this view keeps everyone on ATC for an apples-to-apples comparison.</div>
     </div>
   </div>
 
@@ -358,10 +359,13 @@ function renderBudget(n, title){
   const exp = M.reduce((a,m)=>a+m.EXPECTED,0)/M.length;
   const worst = M.reduce((a,m)=> m.EXPECTED<a.EXPECTED?m:a);
   const blow = M.reduce((a,m)=>a+m.BLOWOUT_PCT,0)/M.length;
+  const nfm = M.filter(m=>m.NFRONT!=null);
+  const nfavg = nfm.length ? nfm.reduce((a,m)=>a+m.NFRONT,0)/nfm.length : null;
   const sgn = v => (v>=0?'+':'')+v.toFixed(2);
   $('budgetCards').innerHTML = `
-    <div class="scard"><div class="k">Expected basis</div><div class="v ${exp<0?'neg':'pos'}">${sgn(exp)}</div><div class="s">avg $/MWh over ${n} mo</div></div>
-    <div class="scard"><div class="k">Worst month</div><div class="v neg">${worst.EXPECTED.toFixed(1)}</div><div class="s">${worst.PERIOD.slice(0,7)}</div></div>
+    <div class="scard"><div class="k">Our expected (ATC)</div><div class="v ${exp<0?'neg':'pos'}">${sgn(exp)}</div><div class="s">avg $/MWh over ${n} mo</div></div>
+    <div class="scard"><div class="k">nFront (ATC)</div><div class="v ${nfavg==null?'':(nfavg<0?'neg':'pos')}">${nfavg==null?'&mdash;':sgn(nfavg)}</div><div class="s">3rd-party, same window</div></div>
+    <div class="scard"><div class="k">Worst month (ours)</div><div class="v neg">${worst.EXPECTED.toFixed(1)}</div><div class="s">${worst.PERIOD.slice(0,7)}</div></div>
     <div class="scard"><div class="k">Blowout hours</div><div class="v">${blow.toFixed(0)}%</div><div class="s">expected, of all hours</div></div>`;
   drawBudget(M, n>12);
 }
@@ -370,7 +374,8 @@ function drawBudget(M, sparse){
   const x0=padL, x1=W-padR, n=M.length;
   const xP = i => n===1 ? (x0+x1)/2 : x0 + i/(n-1)*(x1-x0);
   let lo=0, hi=0;
-  M.forEach(m=>{ lo=Math.min(lo,m.P10, m.HIST_BASIS==null?0:m.HIST_BASIS); hi=Math.max(hi,m.P90, m.HIST_BASIS==null?0:m.HIST_BASIS); });
+  M.forEach(m=>{ const nf=m.NFRONT==null?0:m.NFRONT, h=m.HIST_BASIS==null?0:m.HIST_BASIS;
+    lo=Math.min(lo,m.P10,h,nf); hi=Math.max(hi,m.P90,h,nf); });
   lo=Math.floor((lo-1)/2)*2; hi=Math.ceil((hi+1)/2)*2;
   const yP=v=>padT+(hi-v)/(hi-lo)*(plotB-padT);
   const step=(hi-lo)<=14?2:5;
@@ -389,6 +394,8 @@ function drawBudget(M, sparse){
   if(hp.length>1) s+=`<polyline points="${hp.join(' ')}" fill="none" stroke="#9ca3af" stroke-width="1.4" stroke-dasharray="4 3"/>`;
   s+=`<polyline points="${M.map((m,i)=>`${xP(i).toFixed(1)},${yP(m.EXPECTED).toFixed(1)}`).join(' ')}" fill="none" stroke="#2291EB" stroke-width="2"/>`;
   M.forEach((m,i)=>{ s+=`<circle cx="${xP(i).toFixed(1)}" cy="${yP(m.EXPECTED).toFixed(1)}" r="${n>12?1.6:2.6}" fill="#2291EB"/>`; });
+  const np=M.map((m,i)=>m.NFRONT==null?null:`${xP(i).toFixed(1)},${yP(m.NFRONT).toFixed(1)}`).filter(Boolean);
+  if(np.length>1) s+=`<polyline points="${np.join(' ')}" fill="none" stroke="#f59e0b" stroke-width="2"/>`;
   const col=p=>p<2?'#16a34a':p<4?'#84cc16':p<6?'#f59e0b':p<9?'#fb923c':'#ef4444';
   const cw=(x1-x0)/n;
   s+=`<text x="${x0-6}" y="${(stripT+stripB)/2+3}" text-anchor="end" font-size="9" fill="#6b7280">risk</text>`;

@@ -161,7 +161,18 @@ def api_budget():
             FROM SKYVEST.DBO.CM_CONGEST_BUDGET
             WHERE NODE='{NODE}' AND RUN_DATE=(SELECT MAX(RUN_DATE) FROM SKYVEST.DBO.CM_CONGEST_BUDGET WHERE NODE='{NODE}')
             ORDER BY MONTHS_AHEAD"""))
-        return jsonify({"node": NODE, "run_date": (rows[0].get("PERIOD") if rows else None), "months": rows})
+        # Overlay nFront's ATC basis: for each budget month use the scenario whose year is the
+        # latest at/before that month (2026 Base covers 2026-28, 2029 Base covers 2029, ...).
+        tp = _clean(query(f"SELECT SCEN_YEAR, MONTH, BASIS_ATC FROM SKYVEST.DBO.CM_BASIS_THIRDPARTY "
+                          f"WHERE NODE='{NODE}' AND SOURCE='nFront'"))
+        tp_map = {(int(r["SCEN_YEAR"]), int(r["MONTH"])): r["BASIS_ATC"] for r in tp}
+        scen_years = sorted({int(r["SCEN_YEAR"]) for r in tp})
+        for m in rows:
+            yr, mo = int(m["PERIOD"][:4]), int(m["PERIOD"][5:7])
+            elig = [y for y in scen_years if y <= yr]
+            m["NFRONT"] = tp_map.get((max(elig), mo)) if elig else None
+        return jsonify({"node": NODE, "run_date": (rows[0].get("PERIOD") if rows else None),
+                        "months": rows, "thirdparty": "nFront (ATC)" if tp else None})
     except Exception as e:
         logger.exception("model budget failed: %s", e)
         return jsonify({"months": [], "error": str(e)})
