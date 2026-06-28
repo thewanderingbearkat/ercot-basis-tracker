@@ -126,6 +126,31 @@ def fetch(start_date: str, end_date: str) -> pd.DataFrame:
     return df
 
 
+def fetch_forecast(hours: int = 168) -> pd.DataFrame:
+    """Forward hourly Xweather wind+GHI for the next `hours` (default 7d) at the NBOHR point.
+    ONE API call. Returns HOUR (naive Central) + XW_WIND/XW_GUST/XW_GHI, same schema as fetch()."""
+    params = {
+        "filter": "1hr", "limit": hours, "fields": FIELDS,
+        "client_id": os.getenv("XWEATHER_CLIENT_ID"),
+        "client_secret": os.getenv("XWEATHER_CLIENT_SECRET"),
+    }
+    resp = requests.get(f"{BASE_URL}/forecasts/{LAT},{LON}", params=params, timeout=40)
+    body = resp.json()
+    if not body.get("success"):
+        raise RuntimeError(f"forecast fetch failed: {(body.get('error') or {})}")
+    raw = body["response"][0].get("periods", [])
+    rows = [{
+        "ts": p.get("dateTimeISO"),
+        "XW_WIND": p.get("windSpeedMPH"),
+        "XW_GUST": p.get("windGustMPH"),
+        "XW_GHI": (p.get("solrad") or {}).get("ghiWM2"),
+    } for p in raw]
+    df = pd.DataFrame(rows)
+    ts = pd.to_datetime(df["ts"], utc=True).dt.tz_convert("America/Chicago").dt.tz_localize(None)
+    df["HOUR"] = ts.dt.floor("h")
+    return df.drop(columns="ts").groupby("HOUR", as_index=False).mean().sort_values("HOUR")
+
+
 def main():
     ap = argparse.ArgumentParser(description="Backfill co-located Xweather wind+solar for NBOHR")
     ap.add_argument("--start", help="YYYY-MM-DD (default: 3 years ago)")

@@ -151,3 +151,4 @@ pnl_raw_cache.json.gz
 
 # Xweather API response cache (regenerable, keep out of git)
 congestion_model/xw_cache/
+congestion_model/forecast_demo.json
