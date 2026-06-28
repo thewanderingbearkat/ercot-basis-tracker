@@ -76,6 +76,17 @@ out = pull("outages (active >=138kV transmission, daily)", f"""
 print("merging ...")
 d = tgt.merge(gen, on="HOUR", how="left").merge(wx, on="HOUR", how="left").merge(ld, on="HOUR", how="left")
 d["HOUR"] = pd.to_datetime(d["HOUR"])
+
+# Co-located Xweather wind + solar at the Bearkat/NBOHR point (forecastable, so the model
+# can run forward). Backfilled once by xweather_features.py -> nbohr_xweather.csv.
+xw_path = os.path.join(os.path.dirname(__file__), "nbohr_xweather.csv")
+if os.path.exists(xw_path):
+    xw = pd.read_csv(xw_path, parse_dates=["HOUR"])
+    d = d.merge(xw, on="HOUR", how="left")
+    print(f"  merged Xweather features ({xw['HOUR'].min()} .. {xw['HOUR'].max()}, {len(xw)} hrs)")
+else:
+    print("  NOTE: nbohr_xweather.csv missing -- run xweather_features.py first")
+
 d["DAY"] = d["HOUR"].dt.normalize()
 out["DAY"] = pd.to_datetime(out["DAY"])
 d = d.merge(out, on="DAY", how="left")

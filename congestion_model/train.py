@@ -11,7 +11,8 @@ from sklearn.metrics import mean_absolute_error, r2_score, roc_auc_score
 HOURLY = os.path.join(os.path.dirname(__file__), "nbohr_hourly.csv")
 d = pd.read_csv(HOURLY, parse_dates=["HOUR"])
 FEATURES = ["WN_WIND", "ERCOT_SOLAR", "MID_TEMP", "MID_WIND", "SA_WIND",
-            "ERCOT_LOAD", "WEST_LOAD", "N_OUTAGE", "HOD", "MONTH", "DOW"]
+            "ERCOT_LOAD", "WEST_LOAD", "N_OUTAGE", "HOD", "MONTH", "DOW",
+            "XW_WIND", "XW_GUST", "XW_GHI"]   # co-located, forecastable -> forward-runnable
 d = d.dropna(subset=["BASIS"] + FEATURES).reset_index(drop=True)
 X, y = d[FEATURES], d["BASIS"]
 
@@ -50,6 +51,20 @@ for f in FEATURES:
     perm.append((f, mean_absolute_error(yte, models[0.5].predict(Xp)) - base))
 print("top drivers (MAE rise when shuffled):", ", ".join(f"{f} +{v:.2f}" for f, v in sorted(perm, key=lambda t: -t[1])[:6]))
 
+# FORECAST MODE: actual generation (WN_WIND/ERCOT_SOLAR) and Yes-Energy actual weather are
+# NOT known forward. Re-score blowout skill using only forecastable inputs -- the Xweather
+# wind/GHI forecast + load forecast + planned outages + calendar. This is the real
+# forward-run capability (the whole reason we pulled co-located Xweather).
+FCAST = ["XW_WIND", "XW_GUST", "XW_GHI", "ERCOT_LOAD", "WEST_LOAD", "N_OUTAGE", "HOD", "MONTH", "DOW"]
+fm = HistGradientBoostingRegressor(loss="quantile", quantile=0.1, max_iter=600,
+     learning_rate=0.04, max_depth=6, l2_regularization=1.0, random_state=0).fit(Xtr[FCAST], ytr)
+fp10 = fm.predict(Xte[FCAST])
+print("forecast-mode (forecastable inputs only -- no actual generation):")
+for thr in (-20, -50):
+    yb = (yte < thr).astype(int)
+    if yb.sum() >= 10:
+        print(f"   blowout discrimination (basis < {thr}): AUC {roc_auc_score(yb, -fp10):.2f}")
+
 iso = IsolationForest(n_estimators=300, random_state=0).fit(Xtr)
 thresh = np.percentile(iso.score_samples(Xtr), 2)
 lo, hi = X.quantile(0.005), X.quantile(0.995)   # support vs ALL history (not just train)
@@ -69,10 +84,13 @@ qn = lambda c, p: d[c].quantile(p)
 print("\nscenario ladder (NBOHR hourly basis $/MWh):")
 scenario("status quo (recent median hr)", {})
 scenario("high West wind, 3am (blowout)", {"WN_WIND": qn("WN_WIND", .95), "MID_WIND": qn("MID_WIND", .9),
-          "SA_WIND": qn("SA_WIND", .9), "ERCOT_SOLAR": 0, "HOD": 3, "ERCOT_LOAD": qn("ERCOT_LOAD", .3)})
+          "SA_WIND": qn("SA_WIND", .9), "XW_WIND": qn("XW_WIND", .95), "XW_GUST": qn("XW_GUST", .95),
+          "ERCOT_SOLAR": 0, "XW_GHI": 0, "HOD": 3, "ERCOT_LOAD": qn("ERCOT_LOAD", .3)})
 scenario("calm wind, summer peak 5pm", {"WN_WIND": qn("WN_WIND", .1), "MID_WIND": qn("MID_WIND", .1),
-          "SA_WIND": qn("SA_WIND", .1), "MID_TEMP": qn("MID_TEMP", .98), "ERCOT_LOAD": qn("ERCOT_LOAD", .98),
+          "SA_WIND": qn("SA_WIND", .1), "XW_WIND": qn("XW_WIND", .1), "XW_GUST": qn("XW_GUST", .1),
+          "MID_TEMP": qn("MID_TEMP", .98), "XW_GHI": qn("XW_GHI", .9), "ERCOT_LOAD": qn("ERCOT_LOAD", .98),
           "HOD": 17, "MONTH": 8})
-scenario("high wind + big outage", {"WN_WIND": qn("WN_WIND", .9), "N_OUTAGE": qn("N_OUTAGE", .98), "HOD": 3})
+scenario("high wind + big outage", {"WN_WIND": qn("WN_WIND", .9), "XW_WIND": qn("XW_WIND", .9),
+          "XW_GUST": qn("XW_GUST", .9), "N_OUTAGE": qn("N_OUTAGE", .98), "HOD": 3})
 scenario("load +15% over historic max", {"ERCOT_LOAD": d["ERCOT_LOAD"].max() * 1.15})
 print("\n(OOD rungs hand off to the structural shift-factor delta.)")

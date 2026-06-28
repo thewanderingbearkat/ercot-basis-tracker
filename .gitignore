@@ -148,3 +148,6 @@ Constraints and Weather/data/*
 
 # Local raw-input cache for incremental PnL refresh (not deployed; pnl_history.json is the committed artifact)
 pnl_raw_cache.json.gz
+
+# Xweather API response cache (regenerable, keep out of git)
+congestion_model/xw_cache/
