@@ -1,0 +1,126 @@
+"""Congestion-model dashboard blueprint.
+
+    GET /model                    -- the page (live-vs-forecast tracker + walkthrough)
+    GET /api/model/tracking       -- latest stored forecast joined to realized basis
+    GET /api/model/scorecard      -- accumulated accuracy across all elapsed forecast hours
+    GET /api/model/drivers        -- latest run's largest drivers
+
+READ-ONLY. Forecasts are written to SKYVEST.DBO.CM_CONGEST_FORECAST / _DRIVERS by
+congestion_model/forecast_demo.py --log (run locally or on a schedule); this app only reads
+them and joins realized basis from DART_PRICES. So the Render app needs no sklearn -- it just
+shows how the live grid is tracking against what the model projected, and a growing track record.
+"""
+import datetime as dt
+import decimal
+import logging
+
+from flask import Blueprint, jsonify, render_template
+
+from constraint_map.db import YES, query
+
+logger = logging.getLogger(__name__)
+
+model_bp = Blueprint("model_dashboard", __name__, template_folder="templates")
+
+NODE = "NBOHR_RN"
+NBOHR, HB_WEST = 10004202409, 10000697080
+BLOWOUT = -20          # $/MWh basis threshold the model flags
+FLAG = 0.20            # P_blowout at/above which we count the model as "flagging" the hour
+
+# Realized hourly basis (NBOHR - HB_WEST) from DART_PRICES, from `since` onward.
+_REALIZED = f"""
+  SELECT DATE_TRUNC('hour', DATETIME) AS HR,
+         AVG(IFF(OBJECTID={NBOHR}, RTLMP, NULL)) - AVG(IFF(OBJECTID={HB_WEST}, RTLMP, NULL)) AS BASIS
+  FROM {YES}.DART_PRICES
+  WHERE OBJECTID IN ({NBOHR},{HB_WEST}) AND RTLMP IS NOT NULL AND DATETIME >= {{since}}
+  GROUP BY 1"""
+
+
+def _clean(rows):
+    """Coerce Snowflake Decimal -> float and datetime -> ISO string for jsonify."""
+    out = []
+    for r in rows:
+        d = {}
+        for k, v in r.items():
+            if isinstance(v, decimal.Decimal):
+                d[k] = float(v)
+            elif isinstance(v, (dt.datetime, dt.date)):
+                d[k] = v.isoformat()
+            else:
+                d[k] = v
+        out.append(d)
+    return out
+
+
+@model_bp.route("/model")
+def model_page():
+    return render_template("model_dashboard.html")
+
+
+@model_bp.route("/api/model/tracking")
+def api_tracking():
+    """Latest run's hourly forecast band + per-hour blowout prob, with realized basis joined
+    in for the hours that have already elapsed (NULL ahead of now)."""
+    try:
+        sql = f"""
+        WITH latest AS (SELECT MAX(RUN_DATE) rd FROM SKYVEST.DBO.CM_CONGEST_FORECAST WHERE NODE='{NODE}'),
+        realized AS ({_REALIZED.format(since="(SELECT rd FROM latest)")})
+        SELECT f.TARGET_HOUR, f.LEAD_H, f.Q10, f.Q50, f.Q90, f.P_BLOWOUT,
+               f.XW_WIND, f.XW_GHI, r.BASIS AS REALIZED
+        FROM SKYVEST.DBO.CM_CONGEST_FORECAST f
+        LEFT JOIN realized r ON r.HR = f.TARGET_HOUR
+        WHERE f.NODE='{NODE}' AND f.RUN_DATE=(SELECT rd FROM latest)
+        ORDER BY f.TARGET_HOUR"""
+        rows = _clean(query(sql))
+        run_date = rows[0]["TARGET_HOUR"][:10] if rows else None
+        return jsonify({"node": NODE, "run_date": run_date, "blowout": BLOWOUT, "hours": rows})
+    except Exception as e:
+        logger.exception("model tracking failed: %s", e)
+        return jsonify({"node": NODE, "run_date": None, "hours": [], "error": str(e)})
+
+
+@model_bp.route("/api/model/scorecard")
+def api_scorecard():
+    """Accumulated track record across EVERY elapsed forecast hour (all runs): how often
+    realized landed in the band, median-forecast error, and the blowout flag's hit-rate."""
+    try:
+        sql = f"""
+        WITH realized AS ({_REALIZED.format(since="(SELECT MIN(TARGET_HOUR) FROM SKYVEST.DBO.CM_CONGEST_FORECAST)")}),
+        scored AS (
+          SELECT f.Q10, f.Q50, f.Q90, f.P_BLOWOUT, r.BASIS,
+                 IFF(r.BASIS BETWEEN f.Q10 AND f.Q90, 1, 0) AS in_band,
+                 ABS(f.Q50 - r.BASIS) AS ae,
+                 IFF(r.BASIS < {BLOWOUT}, 1, 0) AS actual_blowout,
+                 IFF(f.P_BLOWOUT >= {FLAG}, 1, 0) AS flagged
+          FROM SKYVEST.DBO.CM_CONGEST_FORECAST f
+          JOIN realized r ON r.HR = f.TARGET_HOUR
+          WHERE f.NODE='{NODE}')
+        SELECT COUNT(*) AS n, AVG(in_band) AS coverage, AVG(ae) AS mae,
+               SUM(actual_blowout) AS n_blowout, SUM(flagged) AS n_flagged,
+               SUM(actual_blowout*flagged) AS hits, AVG(BASIS) AS avg_basis
+        FROM scored"""
+        r = _clean(query(sql))[0]
+        n = r.get("N") or 0
+        prec = (r["HITS"] / r["N_FLAGGED"]) if r.get("N_FLAGGED") else None
+        rec = (r["HITS"] / r["N_BLOWOUT"]) if r.get("N_BLOWOUT") else None
+        return jsonify({"n": n, "coverage": r.get("COVERAGE"), "mae": r.get("MAE"),
+                        "n_blowout": r.get("N_BLOWOUT"), "n_flagged": r.get("N_FLAGGED"),
+                        "precision": prec, "recall": rec, "avg_basis": r.get("AVG_BASIS"),
+                        "flag_threshold": FLAG, "blowout": BLOWOUT})
+    except Exception as e:
+        logger.exception("model scorecard failed: %s", e)
+        return jsonify({"n": 0, "error": str(e)})
+
+
+@model_bp.route("/api/model/drivers")
+def api_drivers():
+    """Latest run's largest drivers (permutation AUC importance)."""
+    try:
+        rows = _clean(query(f"""
+            SELECT FEATURE, LABEL, IMPORTANCE FROM SKYVEST.DBO.CM_CONGEST_DRIVERS
+            WHERE NODE='{NODE}' AND RUN_DATE=(SELECT MAX(RUN_DATE) FROM SKYVEST.DBO.CM_CONGEST_DRIVERS WHERE NODE='{NODE}')
+            ORDER BY IMPORTANCE DESC"""))
+        return jsonify({"drivers": rows})
+    except Exception as e:
+        logger.exception("model drivers failed: %s", e)
+        return jsonify({"drivers": [], "error": str(e)})

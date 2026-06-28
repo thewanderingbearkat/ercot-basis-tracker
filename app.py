@@ -215,6 +215,15 @@ try:
 except Exception as _kep_err:
     logger.exception("Kepler blueprint failed to load; other tabs unaffected: %s", _kep_err)
 
+# Congestion Model tab (NBOHR basis forecast vs realized + walkthrough). Read-only:
+# forecasts are logged to SKYVEST.DBO.CM_CONGEST_FORECAST by congestion_model/forecast_demo.py
+# --log; this just reads them and joins realized basis. Same isolation as the others.
+try:
+    from model_dashboard.web import model_bp
+    app.register_blueprint(model_bp)
+except Exception as _mdl_err:
+    logger.exception("Congestion Model blueprint failed to load; other tabs unaffected: %s", _mdl_err)
+
 # Configuration - ERCOT
 NODE_1 = "NBOHR_RN"
 NODE_2 = "HOLSTEIN_ALL"
@@ -4694,6 +4703,7 @@ def dashboard():
         <a href="/constraints" style="display: inline-block; padding: 8px 16px; font-size: 13px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.25; color: #6b7280; text-decoration: none; border-bottom: 2px solid transparent; margin-bottom: -2px; font-weight: 500;">ERCOT Constraint Map</a>
         <a href="/pjm-constraints" style="display: inline-block; padding: 8px 16px; font-size: 13px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.25; color: #6b7280; text-decoration: none; border-bottom: 2px solid transparent; margin-bottom: -2px; font-weight: 500;">PJM Constraint Map</a>
         <a href="/kepler" style="display: inline-block; padding: 8px 16px; font-size: 13px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.25; color: #6b7280; text-decoration: none; border-bottom: 2px solid transparent; margin-bottom: -2px; font-weight: 500;">Kepler <span style="font-size:9px; color:#a855f7; font-weight:700; vertical-align:super;">BETA</span></a>
+        <a href="/model" style="display: inline-block; padding: 8px 16px; font-size: 13px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.25; color: #6b7280; text-decoration: none; border-bottom: 2px solid transparent; margin-bottom: -2px; font-weight: 500;">Congestion Model <span style="font-size:9px; color:#a855f7; font-weight:700; vertical-align:super;">BETA</span></a>
     </div>
     <div class="p-3 md:p-4" style="background: linear-gradient(135deg, #f8f9fa 0%, #ffffff 100%);">
         <div class="max-w-7xl mx-auto">

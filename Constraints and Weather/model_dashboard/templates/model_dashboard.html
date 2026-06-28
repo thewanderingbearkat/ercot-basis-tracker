@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Congestion Model &mdash; NBOHR Basis</title>
+<style>
+  html, body { margin:0; padding:0; background:#f8f9fa; }
+  body { font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color:#0E2C51; }
+  .tab-nav { display:flex; gap:4px; padding:20px 20px 0 20px; border-bottom:2px solid #e5e7eb; background:#f8f9fa; line-height:1.25; flex-wrap:wrap; }
+  .tab-nav a { display:inline-block; padding:8px 16px; font-size:13px; color:#6b7280; text-decoration:none; border-bottom:2px solid transparent; margin-bottom:-2px; font-weight:500; }
+  .tab-nav a:hover { color:#0E2C51; }
+  .tab-nav a.active { color:#0E2C51; border-bottom-color:#0E2C51; font-weight:600; }
+  .page-wrap { padding:16px; } .page-inner { max-width:72rem; margin:0 auto; }
+  h1 { font-size:24px; line-height:32px; margin:0 0 4px; font-weight:700; }
+  .subtitle { color:#2291EB; font-size:12px; font-weight:600; margin-bottom:16px; text-transform:uppercase; letter-spacing:.5px; }
+  .seg { display:inline-flex; gap:2px; background:#eef1f4; border-radius:8px; padding:3px; margin-bottom:16px; }
+  .seg button { background:transparent; color:#6b7280; padding:7px 16px; font-size:13px; font-weight:600; border:none; border-radius:6px; cursor:pointer; }
+  .seg button.active { background:#0E2C51; color:#fff; }
+  .panel { background:#fff; border:1px solid #e5e7eb; border-radius:8px; padding:16px 18px; margin-bottom:16px; }
+  .panel h2 { font-size:13px; text-transform:uppercase; letter-spacing:.5px; color:#6b7280; margin:0 0 12px; }
+  .muted { color:#6b7280; } .note { font-size:12px; color:#6b7280; line-height:1.6; }
+  .neg { color:#b91c1c; } .pos { color:#15803d; } b.neg,b.pos{font-weight:800;}
+
+  /* scorecard */
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:10px; }
+  .scard { border:1px solid #e5e7eb; border-radius:8px; padding:11px 13px; background:#fcfcfd; }
+  .scard .k { font-size:10.5px; text-transform:uppercase; letter-spacing:.4px; color:#6b7280; font-weight:600; }
+  .scard .v { font-size:22px; font-weight:800; margin-top:3px; line-height:1.1; }
+  .scard .s { font-size:11px; color:#9ca3af; margin-top:2px; }
+
+  /* chart */
+  #chart svg, #strip svg { width:100%; height:auto; display:block; }
+  .clab { font-size:11px; color:#6b7280; }
+  .legend { font-size:11.5px; color:#6b7280; margin-top:6px; line-height:1.9; }
+  .legend .sw { display:inline-block; width:13px; height:5px; vertical-align:middle; margin-right:4px; border-radius:2px; }
+  .legend .dot { display:inline-block; width:9px; height:9px; border-radius:50%; vertical-align:middle; margin-right:4px; }
+  .legend span { margin-right:14px; white-space:nowrap; }
+
+  /* drivers */
+  .drv { margin-bottom:9px; }
+  .drv .drow { display:flex; justify-content:space-between; font-size:12.5px; gap:8px; }
+  .drv .nm { font-weight:600; } .drv .v { font-weight:700; color:#6b7280; }
+  .drv .bar { height:8px; border-radius:3px; margin-top:3px; min-width:2px; }
+
+  /* walkthrough */
+  .step { display:flex; gap:16px; margin-bottom:14px; }
+  .step .num { flex:0 0 auto; width:30px; height:30px; border-radius:50%; background:#0E2C51; color:#fff; font-weight:800; font-size:14px; display:flex; align-items:center; justify-content:center; }
+  .step .body { flex:1; }
+  .step .body h3 { margin:3px 0 6px; font-size:16px; }
+  .step .body p { margin:0 0 8px; font-size:13.5px; line-height:1.62; color:#374151; }
+  .step .body .aside { background:#f1f5f9; border-left:3px solid #2291EB; border-radius:0 6px 6px 0; padding:9px 13px; font-size:12.5px; color:#374151; line-height:1.6; margin:8px 0; }
+  .step .body .aside b { color:#0E2C51; }
+  .tags { display:flex; flex-wrap:wrap; gap:6px; margin:8px 0; }
+  .tag { font-size:11.5px; padding:3px 9px; border-radius:20px; font-weight:600; }
+  .tag.nat { background:#dbeafe; color:#1e40af; } .tag.lev { background:#fef3c7; color:#92400e; } .tag.cal { background:#e5e7eb; color:#374151; }
+  .tline { border-left:2px dashed #d1d5db; margin-left:15px; height:10px; }
+  table.lv { width:100%; border-collapse:collapse; font-size:12.5px; margin-top:6px; }
+  table.lv th, table.lv td { text-align:left; padding:7px 9px; border-bottom:1px solid #eef1f4; vertical-align:top; }
+  table.lv th { color:#6b7280; font-size:10.5px; text-transform:uppercase; letter-spacing:.4px; }
+  table.lv td .pill { font-size:10.5px; font-weight:700; padding:2px 7px; border-radius:5px; }
+  .pill.stat { background:#dbeafe; color:#1e40af; } .pill.struc { background:#dcfce7; color:#166534; }
+  .hide { display:none; }
+</style>
+</head>
+<body>
+
+<div class="tab-nav">
+  <a href="/">Basis Tracker / PnL</a>
+  <a href="/shadow">Shadow Trading</a>
+  <a href="/hail">Hail Monitor</a>
+  <a href="/constraints">ERCOT Constraint Map</a>
+  <a href="/pjm-constraints">PJM Constraint Map</a>
+  <a href="/kepler">Kepler</a>
+  <a href="/model" class="active">Congestion Model</a>
+</div>
+
+<div class="page-wrap"><div class="page-inner">
+  <h1>Congestion Model &mdash; NBOHR (Bearkat)</h1>
+  <div class="subtitle">Forecasting basis-blowout risk &middot; statistical backbone + structural scenarios</div>
+
+  <div class="seg">
+    <button id="tabLive" class="active" onclick="showTab('live')">Live tracker</button>
+    <button id="tabHow" onclick="showTab('how')">How the model works</button>
+  </div>
+
+  <!-- ============================ LIVE TRACKER ============================ -->
+  <div id="live">
+    <div class="panel">
+      <h2>Track record &mdash; forecast vs. what actually happened</h2>
+      <div class="cards" id="scorecard"><div class="note">Loading&hellip;</div></div>
+      <div class="note" style="margin-top:10px">Every elapsed forecast hour is scored against realized basis (NBOHR &minus; HB_WEST, RT). These numbers grow as the model logs new daily forecasts and the grid catches up to them.</div>
+    </div>
+
+    <div class="panel">
+      <h2>Latest 7-day forecast vs. realized basis <span id="runDate" class="muted" style="text-transform:none;letter-spacing:0;font-weight:400"></span></h2>
+      <div id="chart"><div class="note">Loading&hellip;</div></div>
+      <div id="strip"></div>
+      <div class="legend">
+        <span><span class="sw" style="background:rgba(34,145,235,.25)"></span>forecast range (q10&ndash;q90)</span>
+        <span><span class="sw" style="background:#2291EB"></span>forecast (typical, q50)</span>
+        <span><span class="dot" style="background:#0E2C51"></span>realized basis</span>
+        <span><span class="sw" style="background:#b91c1c"></span>now</span>
+        <span>strip = hourly blowout probability (green&rarr;red)</span>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>What's driving the risk (latest run)</h2>
+      <div id="drivers"><div class="note">Loading&hellip;</div></div>
+      <div class="note" style="margin-top:8px">Importance = blowout-ranking skill (AUC) lost when that forecast input is scrambled. Read it as a regime, not one lever &mdash; see <a href="#" onclick="showTab('how');return false">How the model works &rarr;</a></div>
+    </div>
+  </div>
+
+  <!-- ============================ WALKTHROUGH ============================ -->
+  <div id="how" class="hide">
+    <div class="panel">
+      <h2>From "what is basis" to scenario analysis &mdash; the whole picture</h2>
+
+      <div class="step"><div class="num">1</div><div class="body">
+        <h3>What is "basis," and why do we care?</h3>
+        <p>Electricity doesn't have one price &mdash; it costs different amounts at different spots on the grid. <b>Basis</b> is the price right at our wind farm's connection point minus the regional <b>hub</b> price. When basis is <b class="neg">negative</b>, our power is worth less than the hub &mdash; we're getting paid below the "headline" market price.</p>
+        <div class="aside">For a wind project, basis is real money. If the hub is $30 and our node settles at $5, that <b>&minus;$25 basis</b> comes straight off every MWh we generate. Predicting when basis collapses is predicting a chunk of project revenue.</div>
+      </div></div>
+      <div class="tline"></div>
+
+      <div class="step"><div class="num">2</div><div class="body">
+        <h3>The one mechanism behind it here: the West Texas export constraint</h3>
+        <p>West Texas builds far more wind and solar than the transmission lines heading east can carry. When the region generates more than the wires can export, the grid operator has to "back down" local prices to relieve the overloaded path &mdash; the <b>West&rarr;North export GTC</b> (a transmission limit) <b>binds</b>. Local prices crash; basis blows out. This happens most on <b>high-wind nights</b> (lots of wind, little local demand) and <b>high-sun afternoons</b> (solar flood) &mdash; a renewable <b>over-supply</b> regime.</p>
+      </div></div>
+      <div class="tline"></div>
+
+      <div class="step"><div class="num">3</div><div class="body">
+        <h3>How the model is built</h3>
+        <p>We took <b>3 years of history at hourly resolution</b>: for every hour, what the grid conditions were (wind, solar, load, outages, time of year) and what basis actually turned out to be &mdash; about 21,000 examples. A machine-learning model (gradient-boosted trees) reads all of that and learns the pattern: <i>which combinations of conditions tend to crush basis.</i> Nobody hand-sets the weights &mdash; the model derives them, and it independently landed on the export-constraint story above.</p>
+      </div></div>
+      <div class="tline"></div>
+
+      <div class="step"><div class="num">4</div><div class="body">
+        <h3>What feeds into it</h3>
+        <p>The inputs split into three kinds &mdash; this distinction is what makes it a forecasting tool, not just a backward-looking fit:</p>
+        <div class="tags">
+          <span class="tag nat">Nature: West wind (Xweather)</span>
+          <span class="tag nat">Nature: solar GHI (Xweather)</span>
+          <span class="tag lev">Lever: ERCOT &amp; West load</span>
+          <span class="tag lev">Lever: transmission outages</span>
+          <span class="tag cal">Calendar: hour / season / weekday</span>
+        </div>
+        <p><span class="tag nat" style="padding:1px 7px">Nature</span> inputs come from a real <b>Xweather forecast at the Bearkat node</b> &mdash; that's what lets us run forward. <span class="tag lev" style="padding:1px 7px">Levers</span> are things we can dial in a what-if. <span class="tag cal" style="padding:1px 7px">Calendar</span> sets the context.</p>
+      </div></div>
+      <div class="tline"></div>
+
+      <div class="step"><div class="num">5</div><div class="body">
+        <h3>The statistical engine &mdash; a range, not a single guess</h3>
+        <p>Hourly basis is spiky and partly random, so a single predicted number would be false precision. Instead the model outputs a <b>distribution</b> for each hour:</p>
+        <div class="aside"><b>q10 / q50 / q90</b> &mdash; the low, typical, and high cases. 8 times out of 10, basis lands between q10 and q90. Plus a <b>blowout probability</b>: the model's odds that basis drops below &minus;$20 that hour. It's a <b>risk gauge</b>, not a crystal ball &mdash; tested forward, it ranks blowout-prone hours correctly about <b>82%</b> of the time (50% would be a coin flip).</p>
+        <p>That's the honest framing for an M&amp;A case: we can't promise the exact basis on a Tuesday, but we can say how <i>likely</i> and how <i>severe</i> a blowout is under given conditions.</p>
+      </div></div>
+      <div class="tline"></div>
+
+      <div class="step"><div class="num">6</div><div class="body">
+        <h3>The live demo &mdash; how that becomes the tracker</h3>
+        <p>Each day we feed the next 7 days of Xweather forecast into the trained model and log the resulting band + blowout odds. As the hours arrive, we compare them to <b>realized</b> basis. That comparison is the <b>Live tracker</b> tab &mdash; and every scored hour accumulates into the track record, so over time we learn exactly which grid conditions the model reads well and where it's fooled.</p>
+        <p><a href="#" onclick="showTab('live');return false">&larr; See the live tracker</a></p>
+      </div></div>
+      <div class="tline"></div>
+
+      <div class="step"><div class="num">7</div><div class="body">
+        <h3>Scenario analysis &mdash; the structural levers (the future)</h3>
+        <p>History tells us how the grid behaved <i>as it was</i>. But an M&amp;A case asks about things that <b>haven't happened yet</b>: a new data center lands behind the constraint, a new line gets built, load grows past any historical peak. The statistics can't see those &mdash; so the tool switches to <b>physics</b> (transmission shift factors: <i>&Delta;flow = sensitivity &times; &Delta;MW</i>). Here's how each scenario variable routes:</p>
+        <table class="lv">
+          <tr><th>Variable you change</th><th>Handled by</th><th>Why</th></tr>
+          <tr><td>Load scaled up/down (within history)</td><td><span class="pill stat">statistical</span></td><td>The model has seen these levels &mdash; just sample them.</td></tr>
+          <tr><td>Weather / wind / solar conditions</td><td><span class="pill stat">statistical</span></td><td>Sampled from the historical envelope via the Xweather forecast.</td></tr>
+          <tr><td>A NEW large load behind the node</td><td><span class="pill struc">structural</span></td><td>Never happened &mdash; compute the added flow on the constraint directly.</td></tr>
+          <tr><td>New generation added at the node</td><td><span class="pill struc">structural</span></td><td>Changes export volume; physics, not history.</td></tr>
+          <tr><td>New transmission / line upgrade</td><td><span class="pill struc">structural</span></td><td>Changes the grid's wiring &mdash; needs recomputed shift factors.</td></tr>
+        </table>
+        <div class="aside" style="margin-top:10px"><b>The hand-off is the whole design.</b> The statistical backbone gives a calibrated baseline inside known conditions; when a scenario steps outside that envelope, an out-of-sample detector flags it and the structural model takes over. Two tools, one number &mdash; <i>"physics is stationary even when statistics aren't."</i></div>
+      </div></div>
+
+    </div>
+  </div>
+
+</div></div>
+
+<script>
+const $ = id => document.getElementById(id);
+function showTab(t){
+  $('live').classList.toggle('hide', t!=='live');
+  $('how').classList.toggle('hide', t!=='how');
+  $('tabLive').classList.toggle('active', t==='live');
+  $('tabHow').classList.toggle('active', t==='how');
+}
+
+const fmt = (v,d=1)=> v==null ? '&mdash;' : (v>=0?'+':'')+v.toFixed(d);
+const pct = v => v==null ? '&mdash;' : Math.round(v*100)+'%';
+
+// ----- scorecard -----
+fetch('/api/model/scorecard').then(r=>r.json()).then(s=>{
+  if(!s.n){ $('scorecard').innerHTML = '<div class="note">No scored hours yet &mdash; the first forecast is logged and waiting on realized prices. Check back after a few hours.</div>'; return; }
+  const cls = v => v<0 ? 'neg':'pos';
+  $('scorecard').innerHTML = `
+    <div class="scard"><div class="k">Hours scored</div><div class="v">${s.n.toLocaleString()}</div><div class="s">forecast hrs with realized basis</div></div>
+    <div class="scard"><div class="k">In-band coverage</div><div class="v">${pct(s.coverage)}</div><div class="s">realized inside q10&ndash;q90 (target 80%)</div></div>
+    <div class="scard"><div class="k">Typical miss</div><div class="v">$${(s.mae||0).toFixed(1)}</div><div class="s">avg |q50 &minus; realized|</div></div>
+    <div class="scard"><div class="k">Blowouts caught</div><div class="v">${s.recall==null?'&mdash;':pct(s.recall)}</div><div class="s">of ${s.n_blowout||0} real blowouts the model flagged</div></div>
+    <div class="scard"><div class="k">Flag precision</div><div class="v">${s.precision==null?'&mdash;':pct(s.precision)}</div><div class="s">of ${s.n_flagged||0} flags that were real</div></div>`;
+});
+
+// ----- drivers -----
+const DCOL = {XW_GHI:'#f59e0b', N_OUTAGE:'#8b5cf6', WEST_LOAD:'#0ea5e9', XW_WIND:'#14b8a6', ERCOT_LOAD:'#64748b', MONTH:'#94a3b8', DOW:'#cbd5e1', HOD:'#cbd5e1'};
+fetch('/api/model/drivers').then(r=>r.json()).then(d=>{
+  if(!d.drivers || !d.drivers.length){ $('drivers').innerHTML='<div class="note">No drivers logged yet.</div>'; return; }
+  const mx = Math.max(...d.drivers.map(x=>x.IMPORTANCE));
+  $('drivers').innerHTML = d.drivers.filter(x=>x.IMPORTANCE>0).map(x=>`
+    <div class="drv"><div class="drow"><span class="nm">${x.LABEL}</span><span class="v">${x.IMPORTANCE.toFixed(3)}</span></div>
+    <div class="bar" style="width:${Math.max(2,Math.round(x.IMPORTANCE/mx*100))}%;background:${DCOL[x.FEATURE]||'#94a3b8'}"></div></div>`).join('');
+});
+
+// ----- forecast vs realized chart -----
+fetch('/api/model/tracking').then(r=>r.json()).then(d=>{
+  if(!d.hours || !d.hours.length){ $('chart').innerHTML='<div class="note">No forecast logged yet. Run <code>forecast_demo.py --log</code> to seed one.</div>'; return; }
+  $('runDate').textContent = '&mdash; generated '+(d.run_date||'');
+  $('runDate').innerHTML = '&mdash; generated '+(d.run_date||'');
+  drawChart(d.hours);
+});
+
+function drawChart(H){
+  const W=1000, padL=46, padR=12, padT=14, plotB=250, stripT=262, stripB=288, xlabY=304, totH=320;
+  const x0=padL, x1=W-padR, n=H.length;
+  const xP = i => x0 + i/(n-1)*(x1-x0);
+  // y domain from band + realized
+  let lo=0, hi=0;
+  H.forEach(h=>{ lo=Math.min(lo, h.Q10, h.REALIZED==null?0:h.REALIZED); hi=Math.max(hi, h.Q90, h.REALIZED==null?0:h.REALIZED); });
+  lo = Math.floor((lo-2)/5)*5; hi = Math.ceil((hi+2)/5)*5;
+  const yP = v => padT + (hi-v)/(hi-lo)*(plotB-padT);
+
+  let s = `<svg viewBox="0 0 ${W} ${totH}" xmlns="http://www.w3.org/2000/svg" font-family="inherit">`;
+  // y gridlines
+  for(let v=lo; v<=hi; v+=5){ const y=yP(v);
+    s += `<line x1="${x0}" y1="${y}" x2="${x1}" y2="${y}" stroke="${v===0?'#9ca3af':'#eef1f4'}" stroke-width="${v===0?1:1}" ${v===0?'stroke-dasharray="4 3"':''}/>`;
+    s += `<text x="${x0-6}" y="${y+3}" text-anchor="end" font-size="10" fill="#6b7280">${v>0?'+':''}${v}</text>`; }
+  s += `<text x="12" y="${(padT+plotB)/2}" font-size="10" fill="#6b7280" transform="rotate(-90 12 ${(padT+plotB)/2})" text-anchor="middle">basis $/MWh</text>`;
+  // day gridlines + labels + "now"
+  const DOW=['Sun','Mon','Tue','Wed','Thu','Fri','Sat']; let prevDay=null, nowIdx=-1;
+  H.forEach((h,i)=>{ const dt=new Date(h.TARGET_HOUR); const day=dt.toLocaleDateString();
+    if(day!==prevDay){ const x=xP(i);
+      s+=`<line x1="${x}" y1="${padT}" x2="${x}" y2="${plotB}" stroke="#f1f5f9" stroke-width="1"/>`;
+      s+=`<text x="${x+3}" y="${xlabY}" font-size="10" fill="#6b7280">${DOW[dt.getDay()]} ${dt.getMonth()+1}/${dt.getDate()}</text>`;
+      prevDay=day; }
+    if(h.REALIZED!=null) nowIdx=i; });
+  // band q10..q90
+  const up = H.map((h,i)=>`${xP(i).toFixed(1)},${yP(h.Q90).toFixed(1)}`).join(' ');
+  const dn = H.map((h,i)=>`${xP(i).toFixed(1)},${yP(h.Q10).toFixed(1)}`).reverse().join(' ');
+  s += `<polygon points="${up} ${dn}" fill="#2291EB" fill-opacity="0.16"/>`;
+  // q50
+  s += `<polyline points="${H.map((h,i)=>`${xP(i).toFixed(1)},${yP(h.Q50).toFixed(1)}`).join(' ')}" fill="none" stroke="#2291EB" stroke-width="2"/>`;
+  // realized line + dots
+  const realPts = H.map((h,i)=>h.REALIZED==null?null:`${xP(i).toFixed(1)},${yP(h.REALIZED).toFixed(1)}`).filter(Boolean);
+  if(realPts.length>1) s += `<polyline points="${realPts.join(' ')}" fill="none" stroke="#0E2C51" stroke-width="1.4"/>`;
+  H.forEach((h,i)=>{ if(h.REALIZED!=null) s+=`<circle cx="${xP(i).toFixed(1)}" cy="${yP(h.REALIZED).toFixed(1)}" r="2.4" fill="#0E2C51"/>`; });
+  // now marker
+  if(nowIdx>=0){ const x=xP(nowIdx);
+    s+=`<line x1="${x}" y1="${padT}" x2="${x}" y2="${stripB}" stroke="#b91c1c" stroke-width="1.2" stroke-dasharray="3 3"/>`;
+    s+=`<text x="${x-3}" y="${padT+9}" text-anchor="end" font-size="10" fill="#b91c1c" font-weight="700">now</text>`; }
+  // blowout strip
+  const col = p => p<0.03?'#16a34a':p<0.06?'#84cc16':p<0.10?'#f59e0b':p<0.20?'#fb923c':'#ef4444';
+  const cw = (x1-x0)/n;
+  s += `<text x="${x0-6}" y="${(stripT+stripB)/2+3}" text-anchor="end" font-size="9" fill="#6b7280">risk</text>`;
+  H.forEach((h,i)=>{ s+=`<rect x="${xP(i).toFixed(1)}" y="${stripT}" width="${cw.toFixed(2)}" height="${stripB-stripT}" fill="${col(h.P_BLOWOUT)}"/>`; });
+  s += `</svg>`;
+  $('chart').innerHTML = s;
+  $('strip').innerHTML = '';
+}
+</script>
+</body>
+</html>

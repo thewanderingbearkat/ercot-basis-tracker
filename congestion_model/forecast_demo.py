@@ -9,9 +9,14 @@ you actually have ahead of time. Forecast-mode features only (no actual generati
 
 Outputs a daily basis band + per-hour blowout probability + the largest drivers, and writes
 forecast_demo.json for the visual. Prints a readable summary.
+
+With --log, also writes the run to Snowflake (SKYVEST.DBO.CM_CONGEST_FORECAST + _DRIVERS) so
+the dashboard can track forecast-vs-realized over time and accumulate a track record. This
+is the ONLY place the model touches Snowflake-write; the Flask app stays read-only.
 """
 import json
 import os
+import sys
 
 import numpy as np
 import pandas as pd
@@ -19,6 +24,8 @@ from sklearn.ensemble import HistGradientBoostingRegressor, HistGradientBoosting
 from sklearn.inspection import permutation_importance
 
 import xweather_features as xw   # same dir; run from congestion_model/
+
+NODE = "NBOHR_RN"
 
 HOURLY = os.path.join(os.path.dirname(__file__), "nbohr_hourly.csv")
 OUT_JSON = os.path.join(os.path.dirname(__file__), "forecast_demo.json")
@@ -89,3 +96,49 @@ payload = {
 with open(OUT_JSON, "w") as f:
     json.dump(payload, f, indent=2)
 print(f"\nwrote {OUT_JSON}")
+
+
+def _num(x, fmt):
+    return "NULL" if pd.isna(x) else format(x, fmt)
+
+
+def log_to_snowflake(fc, drivers):
+    """Persist this run's hourly forecast + drivers to Snowflake (idempotent per RUN_DATE).
+    Re-running the same day replaces that day's rows."""
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "Constraints and Weather"))
+    from constraint_map.db import query   # SKYVEST_READ can write SKYVEST.DBO.* (see staging/stage.py)
+
+    query("""CREATE TABLE IF NOT EXISTS SKYVEST.DBO.CM_CONGEST_FORECAST (
+        NODE STRING, RUN_DATE DATE, TARGET_HOUR TIMESTAMP_NTZ, LEAD_H INT,
+        Q10 FLOAT, Q50 FLOAT, Q90 FLOAT, P_BLOWOUT FLOAT,
+        XW_WIND FLOAT, XW_GHI FLOAT, ERCOT_LOAD FLOAT, WEST_LOAD FLOAT, N_OUTAGE FLOAT,
+        LOADED_AT TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP())""")
+    query("""CREATE TABLE IF NOT EXISTS SKYVEST.DBO.CM_CONGEST_DRIVERS (
+        NODE STRING, RUN_DATE DATE, FEATURE STRING, LABEL STRING, IMPORTANCE FLOAT,
+        LOADED_AT TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP())""")
+
+    origin = fc["HOUR"].min()
+    run_date = origin.date()
+    query(f"DELETE FROM SKYVEST.DBO.CM_CONGEST_FORECAST WHERE NODE='{NODE}' AND RUN_DATE='{run_date}'")
+    query(f"DELETE FROM SKYVEST.DBO.CM_CONGEST_DRIVERS  WHERE NODE='{NODE}' AND RUN_DATE='{run_date}'")
+
+    rows = []
+    for _, r in fc.iterrows():
+        lead = int((r["HOUR"] - origin).total_seconds() // 3600)
+        rows.append(
+            f"('{NODE}','{run_date}','{r['HOUR']:%Y-%m-%d %H:%M:%S}',{lead},"
+            f"{_num(r['q10'], '.2f')},{_num(r['q50'], '.2f')},{_num(r['q90'], '.2f')},{_num(r['p_blowout'], '.4f')},"
+            f"{_num(r['XW_WIND'], '.1f')},{_num(r['XW_GHI'], '.0f')},{_num(r['ERCOT_LOAD'], '.0f')},"
+            f"{_num(r['WEST_LOAD'], '.0f')},{_num(r['N_OUTAGE'], '.1f')})")
+    query("INSERT INTO SKYVEST.DBO.CM_CONGEST_FORECAST "
+          "(NODE,RUN_DATE,TARGET_HOUR,LEAD_H,Q10,Q50,Q90,P_BLOWOUT,XW_WIND,XW_GHI,ERCOT_LOAD,WEST_LOAD,N_OUTAGE) "
+          "VALUES " + ",".join(rows))
+
+    drows = [f"('{NODE}','{run_date}','{d['feature']}','{d['label']}',{d['importance']:.4f})" for d in drivers]
+    query("INSERT INTO SKYVEST.DBO.CM_CONGEST_DRIVERS (NODE,RUN_DATE,FEATURE,LABEL,IMPORTANCE) "
+          "VALUES " + ",".join(drows))
+    print(f"logged {len(rows)} forecast hrs + {len(drows)} drivers to Snowflake (RUN_DATE {run_date})")
+
+
+if __name__ == "__main__" and "--log" in sys.argv:
+    log_to_snowflake(fc, drivers)
