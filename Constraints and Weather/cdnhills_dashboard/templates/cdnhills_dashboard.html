@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Canadian Hills &mdash; SPP curtailment &amp; basis</title>
+<style>
+  html, body { margin:0; padding:0; background:#f8f9fa; }
+  body { font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color:#0E2C51; }
+  .tab-nav { display:flex; gap:4px; padding:20px 20px 0 20px; border-bottom:2px solid #e5e7eb; background:#f8f9fa; line-height:1.25; flex-wrap:wrap; }
+  .tab-nav a { display:inline-block; padding:8px 16px; font-size:13px; color:#6b7280; text-decoration:none; border-bottom:2px solid transparent; margin-bottom:-2px; font-weight:500; }
+  .tab-nav a:hover { color:#0E2C51; } .tab-nav a.active { color:#0E2C51; border-bottom-color:#0E2C51; font-weight:600; }
+  .page-wrap { padding:16px; } .page-inner { max-width:72rem; margin:0 auto; }
+  h1 { font-size:24px; line-height:32px; margin:0 0 4px; font-weight:700; }
+  .subtitle { color:#2291EB; font-size:12px; font-weight:600; margin-bottom:16px; text-transform:uppercase; letter-spacing:.5px; }
+  .panel { background:#fff; border:1px solid #e5e7eb; border-radius:8px; padding:16px 18px; margin-bottom:16px; }
+  .panel h2 { font-size:13px; text-transform:uppercase; letter-spacing:.5px; color:#6b7280; margin:0 0 12px; }
+  .note { font-size:12px; color:#6b7280; line-height:1.6; } .neg{color:#b91c1c;} .pos{color:#15803d;}
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:10px; }
+  .scard { border:1px solid #e5e7eb; border-radius:8px; padding:11px 13px; background:#fcfcfd; }
+  .scard .k { font-size:10.5px; text-transform:uppercase; letter-spacing:.4px; color:#6b7280; font-weight:600; }
+  .scard .v { font-size:23px; font-weight:800; margin-top:3px; line-height:1.1; } .scard .s { font-size:11px; color:#9ca3af; margin-top:2px; }
+  #curtChart svg, #basisChart svg { width:100%; height:auto; display:block; }
+  .legend { font-size:11.5px; color:#6b7280; margin-top:8px; line-height:1.9; }
+  .legend .sw { display:inline-block; width:13px; height:11px; vertical-align:middle; margin-right:4px; border-radius:2px; } .legend span{margin-right:14px;}
+  .story p { font-size:13.5px; line-height:1.62; color:#374151; margin:0 0 9px; }
+  .story b { color:#0E2C51; } .story .big{font-size:15px;}
+</style>
+</head>
+<body>
+<div class="tab-nav">
+  <a href="/">Basis Tracker / PnL</a>
+  <a href="/shadow">Shadow Trading</a>
+  <a href="/hail">Hail Monitor</a>
+  <a href="/constraints">ERCOT Constraint Map</a>
+  <a href="/pjm-constraints">PJM Constraint Map</a>
+  <a href="/kepler">Kepler</a>
+  <a href="/model">Congestion Model</a>
+  <a href="/canadian-hills" class="active">Canadian Hills</a>
+</div>
+
+<div class="page-wrap"><div class="page-inner">
+  <h1>Canadian Hills &mdash; SPP (Oklahoma)</h1>
+  <div class="subtitle">A curtailment story, not a basis story</div>
+
+  <div class="panel">
+    <h2>Latest full year (2025)</h2>
+    <div class="cards" id="cards"><div class="note">Loading&hellip;</div></div>
+  </div>
+
+  <div class="panel">
+    <h2>Generation: delivered vs. curtailed &mdash; the headline</h2>
+    <div id="curtChart"><div class="note">Loading&hellip;</div></div>
+    <div class="legend">
+      <span><span class="sw" style="background:#0E2C51"></span>delivered (sold)</span>
+      <span><span class="sw" style="background:#ef4444"></span>curtailed (cut before it could sell)</span>
+      <span><span class="sw" style="background:#f59e0b;height:3px"></span>curtailment %</span>
+    </div>
+    <div class="note" style="margin-top:8px">Economic curtailment from the Anemoi project record; delivered = sum of the 5 PPA meters. Canadian Hills went from ~2% curtailed (2020&ndash;21) to <b>~60% (2024&ndash;25)</b> &mdash; same wind, adjacent Kingfisher held ~30% CF, so this is grid congestion cutting the plant, not a wind drop.</div>
+  </div>
+
+  <div class="panel">
+    <h2>Basis: node vs. SPP South hub ($/MWh)</h2>
+    <div id="basisChart"><div class="note">Loading&hellip;</div></div>
+    <div class="legend">
+      <span><span class="sw" style="background:#2291EB"></span>ATC (all hours)</span>
+      <span><span class="sw" style="background:#9ca3af"></span>GWA (on delivered energy)</span>
+    </div>
+    <div class="note" style="margin-top:8px">The node prices far below the hub (ATC <b>&minus;$22</b> in 2024), but GWA-on-delivered is much milder (<b>&minus;$4.6</b>) <i>because the plant is curtailed off in the worst-priced hours.</i> The delivered-basis number flatters the asset &mdash; the loss is the volume that never reached the meter.</div>
+  </div>
+
+  <div class="panel story">
+    <h2>What this means &mdash; and how it differs from McCrae</h2>
+    <p class="big">Canadian Hills' economics are dominated by <b>lost volume</b>, not the price on what it sells. In 2024&ndash;25 roughly <b>60% of generation was curtailed</b> before it could reach the market &mdash; on the order of <b id="lostBig">&mdash;</b> of energy at hub value, every year.</p>
+    <p><b>Contrast with McCrae (ERCOT)</b> &rarr; McCrae is barely curtailed (~3%); its damage is <i>price suppression</i> &mdash; it sells the volume but earns a poor generation-weighted basis (~&minus;$3 to &minus;$5). Canadian Hills earns a <i>similar</i> delivered basis only because it's switched off in the bad hours; its real hit is the 60% it never gets to sell. <a href="/model">See the McCrae congestion model &rarr;</a></p>
+    <p><b>Same underlying mechanism:</b> SPP wind over-supply binds the export path, so windy hours crater the price (calm-hour basis &minus;$6 vs windy-hour &minus;$22) &mdash; and SPP responds by curtailing. For an M&amp;A case the key sensitivities are <b>curtailment trajectory</b> (does transmission relief arrive?) and the basis on delivered energy.</p>
+  </div>
+</div></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const sgn = (v,d=1)=> (v>=0?'+':'')+v.toFixed(d);
+fetch('/api/cdnhills/summary').then(r=>r.json()).then(D=>{
+  const Y = (D.yearly||[]).filter(y=>y.YR>=2020 && y.CURT_MWH!=null);
+  if(!Y.length){ $('cards').innerHTML='<div class="note">No data logged yet. Run cdnhills_log.py --log.</div>'; return; }
+  const last = Y.filter(y=>y.CURT_PCT>0).slice(-1)[0] || Y[Y.length-1];
+  const cf = 100*last.DELIV_MWH/(298*8760);
+  $('cards').innerHTML = `
+    <div class="scard"><div class="k">Curtailment</div><div class="v neg">${Math.round(last.CURT_PCT*100)}%</div><div class="s">of generation, ${last.YR}</div></div>
+    <div class="scard"><div class="k">Delivered CF</div><div class="v">${cf.toFixed(0)}%</div><div class="s">net of curtailment</div></div>
+    <div class="scard"><div class="k">Node basis (ATC)</div><div class="v neg">${sgn(last.ATC)}</div><div class="s">$/MWh vs SPP South</div></div>
+    <div class="scard"><div class="k">Captured basis (GWA)</div><div class="v neg">${sgn(last.GWA)}</div><div class="s">on delivered MWh</div></div>
+    <div class="scard"><div class="k">Curtailed energy value</div><div class="v neg">$${(last.LOST_VALUE/1e6).toFixed(0)}M</div><div class="s">@ hub price, ${last.YR}</div></div>`;
+  $('lostBig').textContent = '$'+(last.LOST_VALUE/1e6).toFixed(0)+'M';
+  drawCurt(Y); drawBasis(Y);
+});
+
+function axes(W,H,padL,padT,plotB,x1,n,lo,hi){
+  const x0=padL; const xP=i=> n===1?(x0+x1)/2 : x0 + (i+0.5)/n*(x1-x0);
+  const yP=v=> padT + (hi-v)/(hi-lo)*(plotB-padT);
+  return {x0,xP,yP};
+}
+function drawCurt(Y){
+  const W=960,padL=44,padR=14,padT=14,plotB=250,xlabY=270,totH=282,x1=W-padR,n=Y.length;
+  const tot=Y.map(y=>(y.DELIV_MWH+y.CURT_MWH)/1e3); const hi=Math.ceil(Math.max(...tot)/100)*100, lo=0;
+  const {xP,yP}=axes(W,H=totH,padL,padT,plotB,x1,n,lo,hi); const bw=(x1-padL)/n*0.6;
+  let s=`<svg viewBox="0 0 ${W} ${totH}" xmlns="http://www.w3.org/2000/svg" font-family="inherit">`;
+  for(let v=0;v<=hi;v+=200){const y=yP(v); s+=`<line x1="${padL}" y1="${y}" x2="${x1}" y2="${y}" stroke="#eef1f4"/><text x="${padL-6}" y="${y+3}" text-anchor="end" font-size="10" fill="#6b7280">${v}</text>;`}
+  s+=`<text x="12" y="${(padT+plotB)/2}" font-size="10" fill="#6b7280" transform="rotate(-90 12 ${(padT+plotB)/2})" text-anchor="middle">GWh / yr</text>`;
+  Y.forEach((y,i)=>{ const cx=xP(i), d=y.DELIV_MWH/1e3, c=y.CURT_MWH/1e3;
+    s+=`<rect x="${cx-bw/2}" y="${yP(d)}" width="${bw}" height="${plotB-yP(d)}" fill="#0E2C51"/>`;
+    s+=`<rect x="${cx-bw/2}" y="${yP(d+c)}" width="${bw}" height="${yP(d)-yP(d+c)}" fill="#ef4444"/>`;
+    s+=`<text x="${cx}" y="${yP(d+c)-4}" text-anchor="middle" font-size="10" font-weight="700" fill="#b91c1c">${Math.round(y.CURT_PCT*100)}%</text>`;
+    s+=`<text x="${cx}" y="${xlabY}" text-anchor="middle" font-size="11" fill="#0E2C51">${y.YR}</text>`; });
+  // curtailment % line (secondary, scaled to plot)
+  s+=`<polyline points="${Y.map((y,i)=>`${xP(i)},${padT+(1-y.CURT_PCT)*(plotB-padT)}`).join(' ')}" fill="none" stroke="#f59e0b" stroke-width="2" stroke-dasharray="4 3"/>`;
+  s+=`</svg>`; $('curtChart').innerHTML=s;
+}
+function drawBasis(Y){
+  const W=960,padL=44,padR=14,padT=14,plotB=210,xlabY=230,totH=242,x1=W-padR,n=Y.length;
+  const vals=Y.flatMap(y=>[y.ATC,y.GWA]); let lo=Math.floor(Math.min(...vals,0)/5)*5, hi=Math.ceil(Math.max(...vals,0)/5)*5;
+  const {xP,yP}=axes(W,totH,padL,padT,plotB,x1,n,lo,hi); const bw=(x1-padL)/n*0.28;
+  let s=`<svg viewBox="0 0 ${W} ${totH}" xmlns="http://www.w3.org/2000/svg" font-family="inherit">`;
+  for(let v=lo;v<=hi;v+=5){const y=yP(v); s+=`<line x1="${padL}" y1="${y}" x2="${x1}" y2="${y}" stroke="${v===0?'#9ca3af':'#eef1f4'}"/><text x="${padL-6}" y="${y+3}" text-anchor="end" font-size="10" fill="#6b7280">${v}</text>`;}
+  Y.forEach((y,i)=>{ const cx=xP(i);
+    s+=`<rect x="${cx-bw-1}" y="${Math.min(yP(y.ATC),yP(0))}" width="${bw}" height="${Math.abs(yP(y.ATC)-yP(0))}" fill="#2291EB"/>`;
+    s+=`<rect x="${cx+1}" y="${Math.min(yP(y.GWA),yP(0))}" width="${bw}" height="${Math.abs(yP(y.GWA)-yP(0))}" fill="#9ca3af"/>`;
+    s+=`<text x="${cx}" y="${xlabY}" text-anchor="middle" font-size="11" fill="#0E2C51">${y.YR}</text>`; });
+  s+=`</svg>`; $('basisChart').innerHTML=s;
+}
+</script>
+</body>
+</html>

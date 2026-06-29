@@ -224,6 +224,14 @@ try:
 except Exception as _mdl_err:
     logger.exception("Congestion Model blueprint failed to load; other tabs unaffected: %s", _mdl_err)
 
+# Canadian Hills (SPP) tab -- curtailment + basis. Read-only; summary logged to
+# SKYVEST.DBO.CM_CDNHILLS_* by congestion_model/cdnhills_log.py --log.
+try:
+    from cdnhills_dashboard.web import cdnhills_bp
+    app.register_blueprint(cdnhills_bp)
+except Exception as _chw_err:
+    logger.exception("Canadian Hills blueprint failed to load; other tabs unaffected: %s", _chw_err)
+
 # Configuration - ERCOT
 NODE_1 = "NBOHR_RN"
 NODE_2 = "HOLSTEIN_ALL"
@@ -4704,6 +4712,7 @@ def dashboard():
         <a href="/pjm-constraints" style="display: inline-block; padding: 8px 16px; font-size: 13px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.25; color: #6b7280; text-decoration: none; border-bottom: 2px solid transparent; margin-bottom: -2px; font-weight: 500;">PJM Constraint Map</a>
         <a href="/kepler" style="display: inline-block; padding: 8px 16px; font-size: 13px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.25; color: #6b7280; text-decoration: none; border-bottom: 2px solid transparent; margin-bottom: -2px; font-weight: 500;">Kepler <span style="font-size:9px; color:#a855f7; font-weight:700; vertical-align:super;">BETA</span></a>
         <a href="/model" style="display: inline-block; padding: 8px 16px; font-size: 13px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.25; color: #6b7280; text-decoration: none; border-bottom: 2px solid transparent; margin-bottom: -2px; font-weight: 500;">Congestion Model <span style="font-size:9px; color:#a855f7; font-weight:700; vertical-align:super;">BETA</span></a>
+        <a href="/canadian-hills" style="display: inline-block; padding: 8px 16px; font-size: 13px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.25; color: #6b7280; text-decoration: none; border-bottom: 2px solid transparent; margin-bottom: -2px; font-weight: 500;">Canadian Hills <span style="font-size:9px; color:#a855f7; font-weight:700; vertical-align:super;">BETA</span></a>
     </div>
     <div class="p-3 md:p-4" style="background: linear-gradient(135deg, #f8f9fa 0%, #ffffff 100%);">
         <div class="max-w-7xl mx-auto">
