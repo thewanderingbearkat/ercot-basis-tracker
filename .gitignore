@@ -153,3 +153,7 @@ pnl_raw_cache.json.gz
 congestion_model/xw_cache/
 congestion_model/forecast_demo.json
 congestion_model/forecast_log.txt
+congestion_model/cdnhills_gen.csv
+congestion_model/cdnhills_hourly.csv
+congestion_model/cdnhills_xweather.csv
+congestion_model/cdnhills_eqr.csv

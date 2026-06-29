@@ -152,11 +152,21 @@ def fetch_forecast(hours: int = 168) -> pd.DataFrame:
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Backfill co-located Xweather wind+solar for NBOHR")
+    ap = argparse.ArgumentParser(description="Backfill co-located Xweather wind+solar for a site")
     ap.add_argument("--start", help="YYYY-MM-DD (default: 3 years ago)")
     ap.add_argument("--end", help="YYYY-MM-DD (default: today)")
+    ap.add_argument("--lat", type=float, help="override site latitude (default Bearkat/NBOHR)")
+    ap.add_argument("--lon", type=float, help="override site longitude")
+    ap.add_argument("--out", help="output csv (default nbohr_xweather.csv)")
     ap.add_argument("--smoke", action="store_true", help="fetch one recent day and exit")
     args = ap.parse_args()
+    # Point override for other sites (e.g. Canadian Hills); cache filenames include lat/lon
+    # so they never collide with Bearkat's. Defaults keep the McCrae import unchanged.
+    global LAT, LON, OUT
+    if args.lat is not None and args.lon is not None:
+        LAT, LON = args.lat, args.lon
+    if args.out:
+        OUT = os.path.join(os.path.dirname(__file__), args.out)
 
     if args.smoke:
         yday = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
