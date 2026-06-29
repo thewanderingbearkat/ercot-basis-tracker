@@ -3669,6 +3669,24 @@ def start_background_thread_if_needed():
         _background_thread.start()
         logger.info(f"Background data fetch thread started in process {os.getpid()}")
 
+# Global auth gate -- EVERY route requires a valid session except the login page, static
+# assets, and the Render health check. Auth previously relied on a per-route @login_required
+# decorator, but the blueprints (/model, /canadian-hills, /constraints, /pjm-constraints,
+# /kepler, /shadow, /hail and their /api/* routes) did NOT use it, leaving them reachable
+# without the password. This before_request closes that gap for all current and future routes.
+_PUBLIC_PATHS = {'/login', '/api/health', '/favicon.ico'}
+
+
+@app.before_request
+def require_authentication():
+    p = request.path
+    if p in _PUBLIC_PATHS or p.startswith('/static') or request.endpoint == 'static':
+        return None
+    if not session.get('authenticated'):
+        # XHR/data calls get a clean 401; page navigations get redirected to the login form.
+        return ('Unauthorized', 401) if p.startswith('/api/') else redirect('/login')
+
+
 @app.before_request
 def ensure_data_loaded():
     """Ensure caches are loaded and background thread is running for every worker."""
