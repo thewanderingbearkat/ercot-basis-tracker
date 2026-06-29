@@ -41,7 +41,7 @@
 
 <div class="page-wrap"><div class="page-inner">
   <h1>Canadian Hills &mdash; SPP (Oklahoma)</h1>
-  <div class="subtitle">A curtailment story, not a basis story</div>
+  <div class="subtitle">Basis congestion &mdash; drivers, trend &amp; forward outlook</div>
 
   <div class="panel">
     <h2>Latest full year (2025)</h2>
@@ -69,8 +69,33 @@
     <div class="note" style="margin-top:8px">The node prices far below the hub (ATC <b>&minus;$22</b> in 2024), but GWA-on-delivered is much milder (<b>&minus;$4.6</b>) <i>because the plant is curtailed off in the worst-priced hours.</i> The delivered-basis number flatters the asset &mdash; the loss is the volume that never reached the meter.</div>
   </div>
 
+  <div class="panel">
+    <h2>Congestion drivers &mdash; past year (nFront SCED, Jun&rsquo;25&ndash;May&rsquo;26)</h2>
+    <div id="drivers"></div>
+    <div class="legend"><span><span class="sw" style="background:#b91c1c"></span>MCC impact ($/MWh)</span></div>
+    <div class="note" style="margin-top:8px">Top monitored facilities binding on the node (Kingfisher proxy vs SPP South hub, per nFront 4E), by congestion (MCC) impact. Unlike McCrae &mdash; where one West-TX export GTC dominated &mdash; Canadian Hills congestion is <b>diffuse</b>: ~10 SPP 138&ndash;345 kV elements each contribute &minus;$0.2 to &minus;$1.2, summing to roughly the realized basis. There&rsquo;s no single fix.</div>
+  </div>
+
+  <div class="panel">
+    <h2>What moves congestion from here</h2>
+    <div id="forward"></div>
+    <div class="note" style="margin-top:8px">Direction &amp; rough magnitude of the forward drivers in nFront&rsquo;s assumptions. The renewable build-out dwarfs the load growth, and the transmission relief is back-loaded to the 2030s &mdash; so the near-term push on Canadian Hills basis is <b>negative</b>.</div>
+  </div>
+
   <div class="panel story">
-    <h2>What this means &mdash; and how it differs from McCrae</h2>
+    <h2>nFront&rsquo;s forecast &mdash; and the risks vs. our data</h2>
+    <p><b>What nFront is saying:</b> this deliverable is an <i>assumptions / transmission-assessment</i> study &mdash; it does <b>not</b> state an explicit forward basis number for Canadian Hills (that would be a separate results/budget file, as with McCrae). Its forecast logic: run SPP SCED dispatch under <b>+~12 GW new wind / +20 GW solar</b>, <b>~2&ndash;3%/yr</b> load growth, and transmission upgrades phasing in <b>2032&ndash;2037</b>. Implied path: congestion stays heavy near-term, relieved only as those upgrades land. They proxy with <b>Kingfisher</b> and use the <b>SPP South</b> hub (both confirmed against our data).</p>
+    <p style="margin-bottom:4px"><b>Risks against the data we have:</b></p>
+    <ul style="font-size:13px;color:#374151;line-height:1.6;margin-top:0">
+      <li><b>Timing slip (high):</b> SPP ITP (2032&ndash;37), Grain Belt HVDC (PJM Phase 2 withdrew Nov&rsquo;25), MISO Tranche 1 are chronically delayed &mdash; if they slip, the bad-basis window extends.</li>
+      <li><b>Build-out outpaces relief:</b> the new VER hits the same constrained paths <i>before</i> the upgrades; our realized basis is already &minus;$7 to &minus;$27, and more supply pushes it the wrong way.</li>
+      <li><b>Proxy &amp; curtailment:</b> Kingfisher is adjacent, not identical; and nFront&rsquo;s curtailment context is SPP-wide (~few %) while Canadian Hills&rsquo; own is <b>~60%</b> &mdash; a basis-only read understates the hit.</li>
+      <li><b>Recent calm looks fragile:</b> realized basis eased to &minus;$4 to &minus;$7 in 2025&ndash;26 (from &minus;$22 in 2024), but that&rsquo;s <i>before</i> the build-out wave, so it likely doesn&rsquo;t hold.</li>
+    </ul>
+  </div>
+
+  <div class="panel story">
+    <h2>How it differs from McCrae</h2>
     <p class="big">Canadian Hills' economics are dominated by <b>lost volume</b>, not the price on what it sells. In 2024&ndash;25 roughly <b>60% of generation was curtailed</b> before it could reach the market &mdash; on the order of <b id="lostBig">&mdash;</b> of energy at hub value, every year.</p>
     <p><b>Contrast with McCrae (ERCOT)</b> &rarr; McCrae is barely curtailed (~3%); its damage is <i>price suppression</i> &mdash; it sells the volume but earns a poor generation-weighted basis (~&minus;$3 to &minus;$5). Canadian Hills earns a <i>similar</i> delivered basis only because it's switched off in the bad hours; its real hit is the 60% it never gets to sell. <a href="/model">See the McCrae congestion model &rarr;</a></p>
     <p><b>Same underlying mechanism:</b> SPP wind over-supply binds the export path, so windy hours crater the price (calm-hour basis &minus;$6 vs windy-hour &minus;$22) &mdash; and SPP responds by curtailing. For an M&amp;A case the key sensitivities are <b>curtailment trajectory</b> (does transmission relief arrive?) and the basis on delivered energy.</p>
@@ -128,6 +153,37 @@ function drawBasis(Y){
     s+=`<text x="${cx}" y="${xlabY}" text-anchor="middle" font-size="11" fill="#0E2C51">${y.YR}</text>`; });
   s+=`</svg>`; $('basisChart').innerHTML=s;
 }
+
+// nFront 4E binding constraints (past year) -- static study data
+function drawDrivers(){
+  const D=[
+    {f:'Fort Smith 500 kV transformer', mcc:1.24, hrs:288},
+    {f:'Cleveland &ndash; AECI 138 kV', mcc:0.68, hrs:836},
+    {f:'Osage &ndash; Webb Tap 138 kV', mcc:0.64, hrs:781},
+    {f:'Overland 345/161 kV transformer', mcc:0.56, hrs:252},
+    {f:'Nebraska City 345 kV', mcc:0.46, hrs:413},
+    {f:'Russett &ndash; S.Brown 138 kV', mcc:0.42, hrs:774},
+    {f:'LaCygne &ndash; Stilwell 345 kV', mcc:0.33, hrs:126},
+    {f:'Brookline 345/161 kV transformer', mcc:0.30, hrs:206}];
+  const mx=Math.max(...D.map(d=>d.mcc));
+  $('drivers').innerHTML=D.map(d=>`<div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
+    <span style="flex:0 0 210px;font-size:12.5px;font-weight:500">${d.f}</span>
+    <div style="flex:1;height:14px;background:#f1f5f9;border-radius:3px;overflow:hidden"><div style="height:100%;width:${Math.round(d.mcc/mx*100)}%;background:#b91c1c"></div></div>
+    <span style="flex:0 0 120px;font-size:11.5px;color:#6b7280;text-align:right">&minus;$${d.mcc.toFixed(2)} &middot; ${d.hrs} hr</span></div>`).join('');
+}
+function drawForward(){
+  const F=[
+    {n:'New wind &amp; solar', d:'+~12 GW wind / +20 GW solar in the SPP queue, onto the same export paths', dir:'worse', when:'near-term'},
+    {n:'Load growth', d:'~+2&ndash;3%/yr (OKGE +14% by 2032; no ERCOT-style data-center surge)', dir:'better', when:'gradual, small'},
+    {n:'Transmission upgrades', d:'SPP ITP, Grain Belt HVDC, MISO Tranche 1', dir:'better', when:'2032&ndash;2037, uncertain'}];
+  $('forward').innerHTML=F.map(f=>{const red=f.dir==='worse';
+    return `<div style="display:flex;align-items:center;gap:12px;padding:9px 0;border-top:1px solid #eef1f4">
+      <span style="flex:0 0 140px;font-weight:600;font-size:13px">${f.n}</span>
+      <span style="flex:0 0 72px;font-size:11px;font-weight:700;padding:3px 0;border-radius:5px;text-align:center;background:${red?'#fef2f2':'#f0fdf4'};color:${red?'#b91c1c':'#15803d'}">${red?'↓ worse':'↑ better'}</span>
+      <span style="flex:1;font-size:12.5px;color:#374151">${f.d}</span>
+      <span style="flex:0 0 135px;font-size:11.5px;color:#6b7280;text-align:right">${f.when}</span></div>`;}).join('');
+}
+drawDrivers(); drawForward();
 </script>
 </body>
 </html>
