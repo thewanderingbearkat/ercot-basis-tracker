@@ -161,22 +161,26 @@ def api_budget():
     One 36-month curve; the UI slices the first 3 (medium) vs all (long)."""
     try:
         rows = _clean(query(f"""
-            SELECT PERIOD, MONTHS_AHEAD, P10, P50, P90, EXPECTED, BLOWOUT_PCT, HIST_BASIS
+            SELECT PERIOD, MONTHS_AHEAD, P10, P50, P90, EXPECTED, BLOWOUT_PCT, HIST_BASIS,
+                   GWA_P10, GWA_P90, EXPECTED_GWA, HIST_GWA
             FROM SKYVEST.DBO.CM_CONGEST_BUDGET
             WHERE NODE='{NODE}' AND RUN_DATE=(SELECT MAX(RUN_DATE) FROM SKYVEST.DBO.CM_CONGEST_BUDGET WHERE NODE='{NODE}')
             ORDER BY MONTHS_AHEAD"""))
-        # Overlay nFront's ATC basis: for each budget month use the scenario whose year is the
+        # Overlay nFront (ATC + GWA): for each budget month use the scenario whose year is the
         # latest at/before that month (2026 Base covers 2026-28, 2029 Base covers 2029, ...).
-        tp = _clean(query(f"SELECT SCEN_YEAR, MONTH, BASIS_ATC FROM SKYVEST.DBO.CM_BASIS_THIRDPARTY "
+        tp = _clean(query(f"SELECT SCEN_YEAR, MONTH, BASIS_ATC, BASIS_GWA FROM SKYVEST.DBO.CM_BASIS_THIRDPARTY "
                           f"WHERE NODE='{NODE}' AND SOURCE='nFront'"))
-        tp_map = {(int(r["SCEN_YEAR"]), int(r["MONTH"])): r["BASIS_ATC"] for r in tp}
+        atc_map = {(int(r["SCEN_YEAR"]), int(r["MONTH"])): r["BASIS_ATC"] for r in tp}
+        gwa_map = {(int(r["SCEN_YEAR"]), int(r["MONTH"])): r.get("BASIS_GWA") for r in tp}
         scen_years = sorted({int(r["SCEN_YEAR"]) for r in tp})
         for m in rows:
             yr, mo = int(m["PERIOD"][:4]), int(m["PERIOD"][5:7])
             elig = [y for y in scen_years if y <= yr]
-            m["NFRONT"] = tp_map.get((max(elig), mo)) if elig else None
+            sy = max(elig) if elig else None
+            m["NFRONT"] = atc_map.get((sy, mo)) if sy else None
+            m["NFRONT_GWA"] = gwa_map.get((sy, mo)) if sy else None
         return jsonify({"node": NODE, "run_date": (rows[0].get("PERIOD") if rows else None),
-                        "months": rows, "thirdparty": "nFront (ATC)" if tp else None})
+                        "months": rows, "thirdparty": "nFront" if tp else None})
     except Exception as e:
         logger.exception("model budget failed: %s", e)
         return jsonify({"months": [], "error": str(e)})

@@ -29,34 +29,35 @@ SCEN_YEAR = {"2026 Base": 2026, "2029 Base": 2029, "2030 Upgrade": 2030,
              "2032 Upgrade": 2032, "Out Year": 2035}
 
 
-def read_5A():
-    """Copy past any OneDrive lock, read sheet 5A, return rows of (scenario, year, month, atc_basis)."""
-    tmp = os.path.join(tempfile.gettempdir(), "nfront_5A.xlsb")
-    # OneDrive keeps the file open with a share mode Python's open() can't satisfy, but
-    # PowerShell's Copy-Item can read it -- shell out for the copy, then read the copy.
-    subprocess.run(["powershell", "-NoProfile", "-Command",
-                    f"Copy-Item -LiteralPath '{SRC}' -Destination '{tmp}' -Force"], check=True)
-    df = pd.read_excel(tmp, sheet_name="5A SCED Simple Avg LMP", header=None, engine="pyxlsb")
-
-    # Scenario labels sit on the row above the "Month | McCrae II | ... | ERCOT West" header.
+def _read_sheet(tmp, sheet):
+    """Read one LMP sheet (5A simple/ATC or 5B weighted/GWA); return {(scenario,month): basis}."""
+    df = pd.read_excel(tmp, sheet_name=sheet, header=None, engine="pyxlsb")
     hdr = next(i for i in range(df.shape[0]) if str(df.iloc[i, 0]).strip() == "Month")
     scen_row = df.iloc[hdr - 1]
     scenarios = {int(c): str(scen_row[c]).strip() for c in range(df.shape[1])
                  if pd.notna(scen_row[c]) and str(scen_row[c]).strip()}
-    # Within each scenario block the columns are McCrae II, Houston, North, South, ERCOT West.
-    out = []
+    out = {}
     for c, name in scenarios.items():
-        mc_col, west_col = c, c + 4                      # McCrae at the label col, West +4
         if name not in SCEN_YEAR:
             continue
-        for r in range(hdr + 1, df.shape[0]):
+        for r in range(hdr + 1, df.shape[0]):                # cols: McCrae, Houston, North, South, West
             mlabel = str(df.iloc[r, 0]).strip()[:3]
             if mlabel in MONTHS:
-                mc, west = df.iloc[r, mc_col], df.iloc[r, west_col]
+                mc, west = df.iloc[r, c], df.iloc[r, c + 4]
                 if pd.notna(mc) and pd.notna(west):
-                    out.append({"scenario": name, "year": SCEN_YEAR[name],
-                                "month": MONTHS[mlabel], "atc_basis": round(float(mc) - float(west), 3)})
+                    out[(name, MONTHS[mlabel])] = round(float(mc) - float(west), 3)
     return out
+
+
+def read_basis():
+    """Copy past the OneDrive lock; return rows with both ATC (5A) and GWA (5B) basis."""
+    tmp = os.path.join(tempfile.gettempdir(), "nfront_5A.xlsb")
+    subprocess.run(["powershell", "-NoProfile", "-Command",
+                    f"Copy-Item -LiteralPath '{SRC}' -Destination '{tmp}' -Force"], check=True)
+    atc = _read_sheet(tmp, "5A SCED Simple Avg LMP")
+    gwa = _read_sheet(tmp, "5B SCED Weighted Avg LMP")
+    return [{"scenario": s, "year": SCEN_YEAR[s], "month": m,
+             "atc_basis": atc[(s, m)], "gwa_basis": gwa.get((s, m))} for (s, m) in atc]
 
 
 def log_to_snowflake(rows):
@@ -67,21 +68,20 @@ def log_to_snowflake(rows):
     query("""CREATE TABLE IF NOT EXISTS SKYVEST.DBO.CM_BASIS_THIRDPARTY (
         NODE STRING, SOURCE STRING, SCENARIO STRING, SCEN_YEAR INT, MONTH INT,
         BASIS_ATC FLOAT, LOADED_AT TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP())""")
+    query("ALTER TABLE SKYVEST.DBO.CM_BASIS_THIRDPARTY ADD COLUMN IF NOT EXISTS BASIS_GWA FLOAT")
     query(f"DELETE FROM SKYVEST.DBO.CM_BASIS_THIRDPARTY WHERE NODE='{NODE}' AND SOURCE='{SOURCE}'")
-    vals = ",".join(f"('{NODE}','{SOURCE}','{r['scenario']}',{r['year']},{r['month']},{r['atc_basis']})"
+    nz = lambda v: "NULL" if v is None else v
+    vals = ",".join(f"('{NODE}','{SOURCE}','{r['scenario']}',{r['year']},{r['month']},{r['atc_basis']},{nz(r['gwa_basis'])})"
                     for r in rows)
-    query("INSERT INTO SKYVEST.DBO.CM_BASIS_THIRDPARTY (NODE,SOURCE,SCENARIO,SCEN_YEAR,MONTH,BASIS_ATC) "
+    query("INSERT INTO SKYVEST.DBO.CM_BASIS_THIRDPARTY (NODE,SOURCE,SCENARIO,SCEN_YEAR,MONTH,BASIS_ATC,BASIS_GWA) "
           "VALUES " + vals)
-    print(f"logged {len(rows)} nFront ATC basis rows to Snowflake")
+    print(f"logged {len(rows)} nFront ATC+GWA basis rows to Snowflake")
 
 
 if __name__ == "__main__":
-    rows = read_5A()
+    rows = read_basis()
     df = pd.DataFrame(rows)
-    print("nFront ATC basis (McCrae - West, $/MWh) by scenario:")
-    piv = df.pivot_table(index="month", columns="scenario", values="atc_basis")
-    print(piv.round(1).to_string())
-    print("\nscenario annual mean ATC basis:")
-    print(df.groupby(["scenario", "year"])["atc_basis"].mean().round(2).to_string())
+    print("nFront basis (McCrae - West, $/MWh) -- ATC vs GWA, annual mean by scenario:")
+    print(df.groupby(["scenario", "year"])[["atc_basis", "gwa_basis"]].mean().round(2).to_string())
     if "--log" in sys.argv:
         log_to_snowflake(rows)

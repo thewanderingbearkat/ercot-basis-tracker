@@ -8,6 +8,9 @@ echo ============================================================ >> forecast_lo
 echo RUN %DATE% %TIME% >> forecast_log.txt
 "C:\Users\TylerMartin\AppData\Local\Programs\Python\Python312\python.exe" forecast_demo.py --log >> forecast_log.txt 2>&1
 echo EXIT forecast %ERRORLEVEL% >> forecast_log.txt
-REM Multi-horizon budget (3mo/3y). Monthly-stable, but cheap to refresh; idempotent per month.
+REM Refresh McCrae actual generation (HARALD_UNIT1, ~60-day SCED lag) for the GWA weighting.
+"C:\Users\TylerMartin\AppData\Local\Programs\Python\Python312\python.exe" build_gen.py >> forecast_log.txt 2>&1
+echo EXIT gen %ERRORLEVEL% >> forecast_log.txt
+REM Multi-horizon budget (3mo/3y), ATC + GWA. Monthly-stable; idempotent per month.
 "C:\Users\TylerMartin\AppData\Local\Programs\Python\Python312\python.exe" horizon_forecast.py --log >> forecast_log.txt 2>&1
 echo EXIT budget %ERRORLEVEL% >> forecast_log.txt

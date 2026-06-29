@@ -148,17 +148,23 @@
     <!-- 3-month / 3-year (medium / long term budget) -->
     <div id="viewBudget" class="hide">
       <div class="panel">
-        <h2 id="budgetTitle">Monthly basis budget</h2>
+        <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:10px;">
+          <h2 id="budgetTitle" style="margin:0;">Monthly basis budget</h2>
+          <div class="seg" style="margin:0;">
+            <button id="mAtc" class="active" onclick="setMetric('atc')">ATC <span class="hsub">all hours</span></button>
+            <button id="mGwa" onclick="setMetric('gwa')">GWA <span class="hsub">wind revenue</span></button>
+          </div>
+        </div>
         <div class="cards" id="budgetCards"></div>
         <div id="budgetChart" style="margin-top:14px"><div class="note">Loading&hellip;</div></div>
         <div class="legend">
           <span><span class="sw" style="background:rgba(34,145,235,.25)"></span>model range (q10&ndash;q90)</span>
-          <span><span class="sw" style="background:#2291EB"></span>model expected (q50)</span>
+          <span><span class="sw" style="background:#2291EB"></span>model expected</span>
           <span><span class="sw" style="background:#9ca3af"></span>realized history (calendar-month avg)</span>
-          <span><span class="sw" style="background:#f59e0b"></span>nFront (ATC, 3rd-party)</span>
+          <span><span class="sw" style="background:#f59e0b"></span>nFront (3rd-party)</span>
           <span>strip = expected blowout % of hours</span>
         </div>
-        <div class="note" style="margin-top:10px"><b>Climatology baseline:</b> beyond a week there's no weather forecast, so medium/long term runs the model over a <i>normal weather year</i> at today's grid &mdash; expected monthly basis + range + blowout frequency. Year-specific changes (load growth, a new line, a new big load) are layered on top in the <a href="#" onclick="showTab('scen');return false">Scenario calculator &rarr;</a>, not baked in here. The grey line is the realized historical average for that calendar month &mdash; a model-free cross-check.</div>
+        <div class="note" style="margin-top:10px"><b>ATC vs GWA:</b> <b>ATC</b> averages every hour equally; <b>GWA</b> weights by McCrae's actual generation (HARALD_UNIT1) &mdash; the wind-revenue number, and what the project actually earns. GWA is materially more negative because the plant generates in the congested, low-price hours. <b>The deterioration and the divergence from nFront live in GWA</b> (ours ~&minus;$3 and worsening; nFront turns positive on its load thesis). Climatology baseline; year-specific load/line changes layer on in the <a href="#" onclick="showTab('scen');return false">Scenario calculator &rarr;</a>. Grey line = realized history (model-free check).</div>
         <div class="note" style="margin-top:6px"><b>nFront (orange)</b> is a third-party SCED study shown as another data point &mdash; <b>ATC</b> (around-the-clock, all hours equal). Its near-term ATC basis is strongly <i>positive</i>: McCrae prices above the West hub in scarcity hours, which an all-hours average rewards. That is <b>not</b> the wind-revenue number &mdash; a wind plant earns the <i>generation-weighted</i> (GWA) basis, which is far lower because the plant runs in the congested, low-price hours (nFront's own GWA is roughly &minus;$1 to &minus;$5/MWh). GWA is the next layer; this view keeps everyone on ATC for an apples-to-apples comparison.</div>
     </div>
   </div>
@@ -358,14 +364,19 @@ function drawChart(H){
   $('strip').innerHTML = '';
 }
 
-// ===== multi-horizon budget (3-month / 3-year) =====
-let BUDGET = null;
+// ===== multi-horizon budget (3-month / 3-year), ATC vs GWA =====
+let BUDGET = null, METRIC = 'atc', CUR_N = 3, CUR_TITLE = 'Next 3 months';
 fetch('/api/model/budget').then(r=>r.json()).then(d=>{ BUDGET = d.months || []; });
+function setMetric(m){ METRIC=m; $('mAtc').classList.toggle('active',m==='atc'); $('mGwa').classList.toggle('active',m==='gwa'); renderBudget(CUR_N, CUR_TITLE); }
 function renderBudget(n, title){
-  $('budgetTitle').textContent = title;
+  CUR_N=n; CUR_TITLE=title; $('budgetTitle').textContent = title;
   if(BUDGET===null){ setTimeout(()=>renderBudget(n,title), 300); return; }
   if(!BUDGET.length){ $('budgetCards').innerHTML=''; $('budgetChart').innerHTML='<div class="note">No budget run logged yet. Run <code>horizon_forecast.py --log</code>.</div>'; return; }
-  const M = BUDGET.slice(0, n);
+  const g = METRIC==='gwa';
+  const M = BUDGET.slice(0, n).map(m=>({ PERIOD:m.PERIOD, BLOWOUT_PCT:m.BLOWOUT_PCT,
+    P10: g?m.GWA_P10:m.P10, P90: g?m.GWA_P90:m.P90,
+    EXPECTED: g?m.EXPECTED_GWA:m.EXPECTED, HIST_BASIS: g?m.HIST_GWA:m.HIST_BASIS, NFRONT: g?m.NFRONT_GWA:m.NFRONT }));
+  const lab = g?'GWA':'ATC';
   const exp = M.reduce((a,m)=>a+m.EXPECTED,0)/M.length;
   const worst = M.reduce((a,m)=> m.EXPECTED<a.EXPECTED?m:a);
   const blow = M.reduce((a,m)=>a+m.BLOWOUT_PCT,0)/M.length;
@@ -373,8 +384,8 @@ function renderBudget(n, title){
   const nfavg = nfm.length ? nfm.reduce((a,m)=>a+m.NFRONT,0)/nfm.length : null;
   const sgn = v => (v>=0?'+':'')+v.toFixed(2);
   $('budgetCards').innerHTML = `
-    <div class="scard"><div class="k">Our expected (ATC)</div><div class="v ${exp<0?'neg':'pos'}">${sgn(exp)}</div><div class="s">avg $/MWh over ${n} mo</div></div>
-    <div class="scard"><div class="k">nFront (ATC)</div><div class="v ${nfavg==null?'':(nfavg<0?'neg':'pos')}">${nfavg==null?'&mdash;':sgn(nfavg)}</div><div class="s">3rd-party, same window</div></div>
+    <div class="scard"><div class="k">Our expected (${lab})</div><div class="v ${exp<0?'neg':'pos'}">${sgn(exp)}</div><div class="s">avg $/MWh over ${n} mo</div></div>
+    <div class="scard"><div class="k">nFront (${lab})</div><div class="v ${nfavg==null?'':(nfavg<0?'neg':'pos')}">${nfavg==null?'&mdash;':sgn(nfavg)}</div><div class="s">3rd-party, same window</div></div>
     <div class="scard"><div class="k">Worst month (ours)</div><div class="v neg">${worst.EXPECTED.toFixed(1)}</div><div class="s">${worst.PERIOD.slice(0,7)}</div></div>
     <div class="scard"><div class="k">Blowout hours</div><div class="v">${blow.toFixed(0)}%</div><div class="s">expected, of all hours</div></div>`;
   drawBudget(M, n>12);
