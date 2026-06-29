@@ -39,7 +39,9 @@ NBOHR, HB_WEST = 10004202409, 10000697080
 # Realized baselines (2023-26) and per-driver basis sensitivities for the scenario calculator.
 # slope = $/MWh per GW (or per unit) on the wind-REVENUE (congested / generation-weighted)
 # basis; atc = the weaker all-hours effect. Derived in sensitivities.py.
-BASE_ATC, BASE_GWA = 0.6, -2.2
+# Baselines = LAST 12 MONTHS (not the 3-yr pooled avg), because West-TX basis is deteriorating
+# as renewables build out -- the recent regime is the right "today" anchor (pooled was ~$1.8 high).
+BASE_ATC, BASE_GWA = -1.1, -4.0
 SENSITIVITIES = {
     "WN_WIND": {"slope": -2.5, "atc": -0.6, "unit": "GW", "default": 0, "min": -8, "max": 8,
                 "label": "West / North wind generation", "kind": "statistical",

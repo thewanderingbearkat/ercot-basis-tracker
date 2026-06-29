@@ -41,9 +41,12 @@ LABEL = {"XW_WIND": "West wind (fcst)", "XW_GUST": "Wind gust (fcst)", "XW_GHI":
 # -------------------------------------------------------------- train (forecast mode)
 d = pd.read_csv(HOURLY, parse_dates=["HOUR"]).dropna(subset=["BASIS"] + FCAST).reset_index(drop=True)
 X, y = d[FCAST], d["BASIS"]
-qmodels = {q: HistGradientBoostingRegressor(loss="quantile", quantile=q, **HBG).fit(X, y) for q in (0.1, 0.5, 0.9)}
-clf = HistGradientBoostingClassifier(**HBG).fit(X, (y < BLOWOUT).astype(int))
-print(f"trained forecast-mode model on {len(d)} hrs (base blowout rate {(y < BLOWOUT).mean():.1%})")
+# Recency weighting (12-mo half-life): West-TX basis is deteriorating with renewable build-out,
+# so weight recent hours and let the forecast reflect the current regime, not the 3-yr average.
+w = 0.5 ** ((d["HOUR"].max() - d["HOUR"]).dt.days / 365.0)
+qmodels = {q: HistGradientBoostingRegressor(loss="quantile", quantile=q, **HBG).fit(X, y, sample_weight=w) for q in (0.1, 0.5, 0.9)}
+clf = HistGradientBoostingClassifier(**HBG).fit(X, (y < BLOWOUT).astype(int), sample_weight=w)
+print(f"trained forecast-mode model on {len(d)} hrs (recency-weighted; base blowout rate {(y < BLOWOUT).mean():.1%})")
 
 # Largest drivers: how much blowout-prediction skill is lost when each input is shuffled.
 # n_jobs=1 deliberately: loky worker processes throw on shutdown under Windows Task

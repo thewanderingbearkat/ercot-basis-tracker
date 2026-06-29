@@ -39,8 +39,13 @@ if "--growth" in sys.argv:
 
 d = pd.read_csv(HOURLY, parse_dates=["HOUR"]).dropna(subset=["BASIS"] + FCAST).reset_index(drop=True)
 X, y = d[FCAST], d["BASIS"]
-qm = {q: HistGradientBoostingRegressor(loss="quantile", quantile=q, **HBG).fit(X, y) for q in (0.1, 0.5, 0.9)}
-clf = HistGradientBoostingClassifier(**HBG).fit(X, (y < BLOWOUT).astype(int))
+# Recency weighting (12-month half-life): West-TX basis is deteriorating as renewables build
+# out -- pooled climatology runs ~$1.8/MWh too optimistic on GWA vs the last 12 months. Weight
+# recent hours so the budget reflects the CURRENT regime, not the 3-year average.
+age_days = (d["HOUR"].max() - d["HOUR"]).dt.days
+w = 0.5 ** (age_days / 365.0)
+qm = {q: HistGradientBoostingRegressor(loss="quantile", quantile=q, **HBG).fit(X, y, sample_weight=w) for q in (0.1, 0.5, 0.9)}
+clf = HistGradientBoostingClassifier(**HBG).fit(X, (y < BLOWOUT).astype(int), sample_weight=w)
 # Empirical realized ATC basis by calendar month (model-free cross-check). ATC = around-the-
 # clock (flat hourly average). GWA (generation-weighted) is site-specific -- a later layer.
 hist_by_month = d.groupby("MONTH")["BASIS"].mean().to_dict()
