@@ -207,11 +207,6 @@
       </div>
       <div id="scDrivers"><div class="note">Loading drivers&hellip;</div></div>
     </div>
-    <div class="panel">
-      <h2>Export GTC severity &mdash; the physics direct</h2>
-      <p class="note" style="margin:0 0 12px">The structural backstop: when an export constraint binds, NBOHR basis is exactly <code>&minus;(shadow price &times; shift factor)</code>, and the shift factor is a near-constant of the grid's wiring. Use this to price a binding severity never seen in the data.</p>
-      <div id="calc"><div class="note">Loading sensitivities&hellip;</div></div>
-    </div>
   </div>
 
   <!-- ============================ WALKTHROUGH ============================ -->
@@ -526,19 +521,7 @@ function initCalc(){
           <div class="cs" style="grid-column:1/-1;color:#6b7280;margin-top:-4px;">${s.desc}</div>
         </div>`; }).join('');
     } else $('scDrivers').innerHTML='<div class="note">Sensitivities unavailable.</div>';
-    // --- GTC physics sliders ---
-    const ck=Object.keys(CONSTR);
-    let html='<div class="preset">'
-      +'<button onclick="setPreset(\'avg_shadow\')">Typical bind</button>'
-      +'<button onclick="setPreset(\'p90_shadow\')">Heavy (p90)</button>'
-      +'<button onclick="setPreset(\'clear\')">Clear</button></div>';
-    ck.forEach(k=>{ const c=CONSTR[k]; const mx=Math.round(c.p90_shadow*1.6/10)*10;
-      html+=`<div class="calc-row"><div class="cn">Export GTC<span class="cs">${k} &middot; shift factor ${c.rel_sf}</span></div>
-        <input type="range" id="sl_${k}" min="0" max="${mx}" step="5" value="${Math.round(c.avg_shadow)}" oninput="recompute()">
-        <div class="cv"><span class="sp" id="sp_${k}"></span><br><span class="bz neg" id="bz_${k}"></span></div></div>`; });
-    html+='<div class="calc-total"><span class="tl">NBOHR basis when these bind</span><span class="tv" id="calcTotal"></span></div>';
-    $('calc').innerHTML=html;
-    scCompute(); recompute();
+    scCompute();
   });
 }
 function scCompute(){
@@ -556,11 +539,6 @@ function scPreset(p){ scReset();
   if(p==='nfront29') $('d_WEST_LOAD').value=10.9;
   if(p==='highwind'){ $('d_WN_WIND').value=4; }
   scCompute(); }
-function setPreset(which){ Object.keys(CONSTR).forEach(k=>{ $('sl_'+k).value=which==='clear'?0:Math.round(CONSTR[k][which]); }); recompute(); }
-function recompute(){ let tot=0;
-  Object.keys(CONSTR).forEach(k=>{ const sh=+$('sl_'+k).value, c=-(sh*CONSTR[k].rel_sf);
-    $('sp_'+k).textContent='$'+sh+' shadow'; $('bz_'+k).textContent=c.toFixed(1); tot+=c; });
-  $('calcTotal').textContent=sgn(tot)+' $/MWh'; }
 
 // ===== data-flow chart (infographic-style gradient ribbons) =====
 function drawFlow(){
