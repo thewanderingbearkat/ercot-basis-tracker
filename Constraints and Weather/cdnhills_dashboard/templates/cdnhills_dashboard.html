@@ -71,10 +71,10 @@
   </div>
 
   <div class="panel">
-    <h2>Congestion drivers &mdash; past year (nFront SCED, Jun&rsquo;25&ndash;May&rsquo;26)</h2>
+    <h2>Congestion drivers &mdash; past year (Yes Energy BETA shift factors, Jun&rsquo;25&ndash;May&rsquo;26)</h2>
     <div id="drivers"></div>
-    <div class="legend"><span><span class="sw" style="background:#b91c1c"></span>MCC impact ($/MWh)</span></div>
-    <div class="note" style="margin-top:8px">Top monitored facilities binding on the node (Kingfisher proxy vs SPP South hub, per nFront 4E), by congestion (MCC) impact. Unlike McCrae &mdash; where one West-TX export GTC dominated &mdash; Canadian Hills congestion is <b>diffuse</b>: ~10 SPP 138&ndash;345 kV elements each contribute &minus;$0.2 to &minus;$1.2, summing to roughly the realized basis. There&rsquo;s no single fix.</div>
+    <div class="legend"><span><span class="sw" style="background:#b91c1c"></span>Basis impact ($/MWh, modeled)</span></div>
+    <div class="note" style="margin-top:8px">Computed from <b>our own Yes Energy BETA shift factors</b> (not nFront): top SPP facilities binding between Canadian Hills (CANADIAN_HILLS_1) and SPP South hub, ranked by basis impact = shadow&nbsp;&times;&nbsp;(node&nbsp;&minus;&nbsp;hub shift factor), averaged over the year, with binding days at right. Unlike McCrae &mdash; where one West-TX export GTC dominated &mdash; Canadian Hills congestion is <b>diffuse</b>: ~10 SPP 138&ndash;345 kV elements each contribute, no single fix. The ranking lines up with nFront&rsquo;s 4E-2 basis-to-hub table (Duncan, Davis&ndash;Mustang, Gracmont, Cleveland&ndash;AECI&hellip;); magnitudes run higher because BETA is modeled <i>daily</i> off binding-interval shadow prices rather than nFront&rsquo;s hourly SCED average.</div>
   </div>
 
   <div class="panel">
@@ -164,19 +164,22 @@ function drawBasis(Y){
 // nFront 4E binding constraints (past year) -- static study data
 function drawDrivers(){
   const D=[
-    {f:'Fort Smith 500 kV transformer', mcc:1.24, hrs:288},
-    {f:'Cleveland &ndash; AECI 138 kV', mcc:0.68, hrs:836},
-    {f:'Osage &ndash; Webb Tap 138 kV', mcc:0.64, hrs:781},
-    {f:'Overland 345/161 kV transformer', mcc:0.56, hrs:252},
-    {f:'Nebraska City 345 kV', mcc:0.46, hrs:413},
-    {f:'Russett &ndash; S.Brown 138 kV', mcc:0.42, hrs:774},
-    {f:'LaCygne &ndash; Stilwell 345 kV', mcc:0.33, hrs:126},
-    {f:'Brookline 345/161 kV transformer', mcc:0.30, hrs:206}];
+    {f:'SW_134TP &ndash; WESTMOR4', mcc:4.52, days:40},
+    {f:'DVISN &ndash; MSTNG1', mcc:3.87, days:17},
+    {f:'XFMR CIMARRON &ndash; CIMARRON', mcc:3.45, days:14},
+    {f:'XFMR DUNCAN &ndash; DUNCAN', mcc:3.17, days:93},
+    {f:'XFMR SEMINOLE &ndash; SEMINOLE', mcc:2.56, days:30},
+    {f:'GRACMONT &ndash; ANADARKO', mcc:2.34, days:104},
+    {f:'BOYD &ndash; CDRLN', mcc:1.87, days:26},
+    {f:'XFMR LAW_ES &ndash; LAW_ES', mcc:1.65, days:22},
+    {f:'MDWST &ndash; FRNKLN1', mcc:1.61, days:32},
+    {f:'XFMR NOWST1 &ndash; NOWST1', mcc:1.48, days:5},
+    {f:'QUAIL &ndash; SKYLN', mcc:1.16, days:12}];
   const mx=Math.max(...D.map(d=>d.mcc));
   $('drivers').innerHTML=D.map(d=>`<div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
     <span style="flex:0 0 210px;font-size:12.5px;font-weight:500">${d.f}</span>
     <div style="flex:1;height:14px;background:#f1f5f9;border-radius:3px;overflow:hidden"><div style="height:100%;width:${Math.round(d.mcc/mx*100)}%;background:#b91c1c"></div></div>
-    <span style="flex:0 0 120px;font-size:11.5px;color:#6b7280;text-align:right">&minus;$${d.mcc.toFixed(2)} &middot; ${d.hrs} hr</span></div>`).join('');
+    <span style="flex:0 0 120px;font-size:11.5px;color:#6b7280;text-align:right">&minus;$${d.mcc.toFixed(2)} &middot; ${d.days} d</span></div>`).join('');
 }
 function drawForward(){
   const F=[
