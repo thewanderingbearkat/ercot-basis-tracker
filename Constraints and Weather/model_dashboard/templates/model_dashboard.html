@@ -86,6 +86,22 @@
   .ldrow input[type=number] { width:90px; padding:6px 8px; border:1px solid #d1d5db; border-radius:6px; font-size:14px; color:#0E2C51; }
   .ldrow select { padding:6px 8px; border:1px solid #d1d5db; border-radius:6px; font-size:13px; color:#0E2C51; }
   .ldout { font-size:15px; font-weight:800; }
+
+  /* data flow */
+  .flow-lab { font-size:11px; text-transform:uppercase; letter-spacing:.5px; color:#6b7280; font-weight:700; margin:0 0 8px; }
+  .flow-arrow { text-align:center; color:#cbd5e1; font-size:22px; line-height:1; margin:3px 0; }
+  .src-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(225px,1fr)); gap:8px; margin-bottom:4px; }
+  .src { border:1px solid #e5e7eb; border-left-width:3px; border-radius:6px; padding:9px 11px; background:#fcfcfd; }
+  .src .sn { font-size:12.5px; font-weight:700; }
+  .src .sn .tag { font-size:9.5px; font-weight:600; color:#9ca3af; text-transform:uppercase; letter-spacing:.3px; margin-left:5px; }
+  .src .sd { font-size:11.5px; color:#6b7280; margin:2px 0 3px; line-height:1.4; }
+  .src .sf { font-size:11px; color:#0E2C51; font-weight:600; }
+  .fbox { border:1px solid #e5e7eb; border-radius:8px; padding:11px 14px; background:#fff; }
+  .fbox.model { border-color:#bfdbfe; background:#f5f9ff; } .fbox.struc { border-color:#ddd6fe; background:#faf8ff; }
+  .fbox h4 { margin:0 0 5px; font-size:13.5px; font-weight:600; }
+  .fbox h4 code, .fbox li code { font-size:11px; background:#eef1f4; padding:1px 5px; border-radius:3px; font-weight:500; }
+  .fbox ul { margin:4px 0 0; padding-left:18px; } .fbox li { font-size:12.5px; color:#374151; line-height:1.6; margin-bottom:2px; }
+  .fbox li b { color:#0E2C51; }
 </style>
 </head>
 <body>
@@ -109,6 +125,7 @@
     <button id="tabFc" class="active" onclick="showTab('fc')">Forecast</button>
     <button id="tabScen" onclick="showTab('scen')">Scenario calculator</button>
     <button id="tabHow" onclick="showTab('how')">How the model works</button>
+    <button id="tabFlow" onclick="showTab('flow')">Data flow</button>
   </div>
 
   <!-- ============================ FORECAST ============================ -->
@@ -265,15 +282,76 @@
     </div>
   </div>
 
+  <!-- ============================ DATA FLOW ============================ -->
+  <div id="flow" class="hide">
+    <div class="panel">
+      <h2>Data flow &mdash; sources &rarr; model &rarr; structure &rarr; output</h2>
+
+      <div class="flow-lab">1 &middot; Input data sources</div>
+      <div class="src-grid">
+        <div class="src" style="border-left-color:#0E2C51"><div class="sn">DART_PRICES <span class="tag">Yes Energy</span></div><div class="sd">NBOHR node &amp; HB_WEST hub real-time LMP.</div><div class="sf">&rarr; the TARGET: basis = node &minus; hub</div></div>
+        <div class="src" style="border-left-color:#14b8a6"><div class="sn">Xweather <span class="tag">vendor API</span></div><div class="sd">Wind speed + solar GHI forecast at the Bearkat node &mdash; the forecastable drivers.</div><div class="sf">&rarr; XW_WIND, XW_GHI</div></div>
+        <div class="src" style="border-left-color:#0E2C51"><div class="sn">TS_GEN <span class="tag">Yes Energy</span></div><div class="sd">West/North wind &amp; ERCOT solar generation.</div><div class="sf">&rarr; WN_WIND, ERCOT_SOLAR</div></div>
+        <div class="src" style="border-left-color:#0E2C51"><div class="sn">TS_LOAD <span class="tag">Yes Energy</span></div><div class="sd">ERCOT system &amp; West-zone demand.</div><div class="sf">&rarr; ERCOT_LOAD, WEST_LOAD</div></div>
+        <div class="src" style="border-left-color:#0E2C51"><div class="sn">ERCOT_OUTAGES <span class="tag">Yes Energy</span></div><div class="sd">Active &ge;138 kV transmission outages.</div><div class="sf">&rarr; N_OUTAGE</div></div>
+        <div class="src" style="border-left-color:#f59e0b"><div class="sn">HARALD_UNIT1 SCED <span class="tag">Yes Energy</span></div><div class="sd">McCrae's actual hourly output (60-day SCED).</div><div class="sf">&rarr; GWA weighting (what the plant earns)</div></div>
+        <div class="src" style="border-left-color:#8b5cf6"><div class="sn">MARKET_SHIFT_FACTORS <span class="tag">Yes Energy</span></div><div class="sd">GTC shift factors + shadow prices (authoritative, ERCOT).</div><div class="sf">&rarr; the structural / physics side</div></div>
+        <div class="src" style="border-left-color:#94a3b8"><div class="sn">Calendar</div><div class="sd">Hour of day, month, weekday.</div><div class="sf">&rarr; HOD, MONTH, DOW</div></div>
+        <div class="src" style="border-left-color:#f59e0b"><div class="sn">nFront SCED study <span class="tag">3rd party</span></div><div class="sd">Independent ATC/GWA basis forecast.</div><div class="sf">&rarr; comparison overlay (not a model input)</div></div>
+      </div>
+
+      <div class="flow-arrow">&darr;</div>
+
+      <div class="flow-lab">2 &middot; Feature assembly</div>
+      <div class="fbox"><h4><code>build_hourly.py</code> + <code>build_gen.py</code> + <code>xweather_features.py</code> &rarr; <code>nbohr_hourly.csv</code></h4>
+        <ul><li>Joins every source on the native Central hour &mdash; <b>~21,000 hourly rows over 3 years</b>; one row = the target basis + all features + McCrae's actual generation.</li></ul></div>
+
+      <div class="flow-arrow">&darr;</div>
+
+      <div class="flow-lab">3 &middot; Statistical engine &mdash; scikit-learn</div>
+      <div class="fbox model"><h4>gradient-boosted trees on the forecastable features</h4>
+        <ul>
+          <li><b>HistGradientBoostingRegressor</b> (quantile q10 / q50 / q90) &rarr; the forecast <b>band</b></li>
+          <li><b>HistGradientBoostingRegressor</b> (mean) &rarr; the <b>expected</b> value used for budgeting</li>
+          <li><b>HistGradientBoostingClassifier</b> &rarr; <b>blowout probability</b> (basis &lt; &minus;$20/MWh)</li>
+          <li><b>12-month recency weighting</b> so the fit tracks the current (worsening) regime, not the flat 3-year average</li>
+          <li><b>IsolationForest</b> + per-feature support &rarr; the out-of-sample detector</li>
+        </ul></div>
+
+      <div class="flow-arrow">&darr;</div>
+
+      <div class="flow-lab">4 &middot; Structural decisions (the assumptions)</div>
+      <div class="fbox struc">
+        <ul>
+          <li><b>Statistical &harr; structural hand-off:</b> conditions <i>inside</i> history &rarr; trust the statistics; <i>outside</i> it (a brand-new load, demand past any historic peak) &rarr; hand off to physics.</li>
+          <li><b>GTC physics</b> (<code>structural.py</code>): NBOHR basis = <code>&minus;(shadow price &times; shift factor)</code>, where the shift factor is a near-constant of the grid's wiring. New-load lever &asymp; <b>+$1.1/GW</b>.</li>
+          <li><b>ATC vs GWA:</b> weight basis by McCrae's actual generation &rarr; the wind-revenue number (what the project earns), not the all-hours average.</li>
+          <li><b>Per-driver sensitivities</b> (<code>sensitivities.py</code>) feed the scenario calculator.</li>
+        </ul></div>
+
+      <div class="flow-arrow">&darr;</div>
+
+      <div class="flow-lab">5 &middot; Outputs &rarr; Snowflake &rarr; this dashboard</div>
+      <div class="src-grid">
+        <div class="src" style="border-left-color:#15803d"><div class="sn">7-day forecast</div><div class="sd">Band + blowout prob &rarr; <code>CM_CONGEST_FORECAST</code>.</div><div class="sf">&rarr; Forecast tab (tracked vs realized)</div></div>
+        <div class="src" style="border-left-color:#15803d"><div class="sn">3-mo / 3-yr budget</div><div class="sd">Monthly ATC + GWA basis &rarr; <code>CM_CONGEST_BUDGET</code>.</div><div class="sf">&rarr; Forecast budget view</div></div>
+        <div class="src" style="border-left-color:#15803d"><div class="sn">Driver importances</div><div class="sd">What's moving risk &rarr; <code>CM_CONGEST_DRIVERS</code>.</div><div class="sf">&rarr; Forecast drivers panel</div></div>
+        <div class="src" style="border-left-color:#15803d"><div class="sn">Sensitivities + GTC</div><div class="sd">Served by <code>/api/model/structural</code>.</div><div class="sf">&rarr; Scenario calculator</div></div>
+      </div>
+      <div class="note" style="margin-top:10px">The model runs <b>locally on a 6:00 AM scheduled job</b> (it needs scikit-learn + the data feeds) and writes its results to Snowflake. This dashboard is <b>read-only</b> &mdash; it just serves what the job logged, so it stays fast and needs no model libraries on the server.</div>
+    </div>
+  </div>
+
 </div></div>
 
 <script>
 const $ = id => document.getElementById(id);
 function showTab(t){
-  ['fc','scen','how'].forEach(x => $(x).classList.toggle('hide', x!==t));
+  ['fc','scen','how','flow'].forEach(x => $(x).classList.toggle('hide', x!==t));
   $('tabFc').classList.toggle('active', t==='fc');
   $('tabScen').classList.toggle('active', t==='scen');
   $('tabHow').classList.toggle('active', t==='how');
+  $('tabFlow').classList.toggle('active', t==='flow');
   if(t==='scen') initCalc();
 }
 function showHorizon(h){
