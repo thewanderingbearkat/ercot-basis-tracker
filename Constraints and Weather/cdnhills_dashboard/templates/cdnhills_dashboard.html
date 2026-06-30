@@ -57,7 +57,7 @@
       <span><span class="sw" style="background:#ef4444"></span>curtailed (cut before it could sell)</span>
       <span><span class="sw" style="background:#f59e0b;height:3px"></span>curtailment %</span>
     </div>
-    <div class="note" style="margin-top:8px">Economic curtailment from the Anemoi project record; delivered = sum of the 5 PPA meters. Canadian Hills went from ~2% curtailed (2020&ndash;21) to <b>~60% (2024&ndash;25)</b> &mdash; same wind, adjacent Kingfisher held ~30% CF, so this is grid congestion cutting the plant, not a wind drop.</div>
+    <div class="note" style="margin-top:8px">Economic curtailment from the Anemoi project record; delivered = sum of the 5 PPA meters. Canadian Hills went from ~2% curtailed (2020&ndash;21) to <b>~60% in 2024, ~46% in 2025</b> &mdash; same wind, adjacent Kingfisher held ~30% CF, so this is grid congestion cutting the plant, not a wind drop. The latest year shown is year-to-date.</div>
   </div>
 
   <div class="panel">
@@ -97,7 +97,7 @@
 
   <div class="panel story">
     <h2>How it differs from McCrae</h2>
-    <p class="big">Canadian Hills' economics are dominated by <b>lost volume</b>, not the price on what it sells. In 2024&ndash;25 roughly <b>60% of generation was curtailed</b> before it could reach the market &mdash; on the order of <b id="lostBig">&mdash;</b> of energy at hub value, every year.</p>
+    <p class="big">Canadian Hills' economics are dominated by <b>lost volume</b>, not the price on what it sells. In 2024&ndash;25 roughly <b>half its generation (60% in 2024, ~46% in 2025) was curtailed</b> before it could reach the market &mdash; on the order of <b id="lostBig">&mdash;</b> of energy at hub value, every year.</p>
     <p><b>Contrast with McCrae (ERCOT)</b> &rarr; McCrae is barely curtailed (~3%); its damage is <i>price suppression</i> &mdash; it sells the volume but earns a poor generation-weighted basis (~&minus;$3 to &minus;$5). Canadian Hills earns a <i>similar</i> delivered basis only because it's switched off in the bad hours; its real hit is the 60% it never gets to sell. <a href="/model">See the McCrae congestion model &rarr;</a></p>
     <p><b>Same underlying mechanism:</b> SPP wind over-supply binds the export path, so windy hours crater the price (calm-hour basis &minus;$6 vs windy-hour &minus;$22) &mdash; and SPP responds by curtailing. For an M&amp;A case the key sensitivities are <b>curtailment trajectory</b> (does transmission relief arrive?) and the basis on delivered energy.</p>
   </div>
@@ -115,7 +115,11 @@ const sgn = (v,d=1)=> (v>=0?'+':'')+v.toFixed(d);
 fetch('/api/cdnhills/summary').then(r=>r.json()).then(D=>{
   const Y = (D.yearly||[]).filter(y=>y.YR>=2020 && y.CURT_MWH!=null);
   if(!Y.length){ $('cards').innerHTML='<div class="note">No data logged yet. Run cdnhills_log.py --log.</div>'; return; }
-  const last = Y.filter(y=>y.CURT_PCT>0).slice(-1)[0] || Y[Y.length-1];
+  // Headline cards use the last COMPLETE year -- the current calendar year is still
+  // filling in (partial), so showing it would understate the annual curtailment/lost value.
+  const curYr = new Date().getFullYear();
+  const last = Y.filter(y=>y.YR<curYr && y.CURT_PCT>0).slice(-1)[0]
+            || Y.filter(y=>y.CURT_PCT>0).slice(-1)[0] || Y[Y.length-1];
   const cf = 100*last.DELIV_MWH/(298*8760);
   $('cards').innerHTML = `
     <div class="scard"><div class="k">Curtailment</div><div class="v neg">${Math.round(last.CURT_PCT*100)}%</div><div class="s">of generation, ${last.YR}</div></div>

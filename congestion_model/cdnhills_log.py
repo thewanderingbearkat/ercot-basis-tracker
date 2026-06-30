@@ -45,9 +45,13 @@ def summarize(g, curt_mwh):
             "lost_val": curt_mwh * g["HUB"].mean()}
 
 
+# NOTE: the Anemoi file's "Year" column is mislabeled for 2026 (every 2026-month row still
+# says Year=2025 -- only "Month" rolled over). Derive the year from the reliable Month-Ending
+# date so 2026 curtailment isn't silently absorbed into 2025.
+cur["YR"] = pd.to_datetime(cur["Month-Ending"]).dt.year
 d["P"] = d["HOUR"].dt.to_period("M")
 d["yr"] = d["HOUR"].dt.year
-yearly = {y: summarize(g, cur[cur["Year"] == y][ccol].sum()) for y, g in d.groupby("yr")}
+yearly = {y: summarize(g, cur[cur["YR"] == y][ccol].sum()) for y, g in d.groupby("yr")}
 monthly = {p: summarize(g, float(cur_m.get(p, np.nan))) for p, g in d.groupby("P")}
 
 print("Canadian Hills yearly (ATC | GWA | delivGWh | curtGWh | curt% | lost$M @hub):")

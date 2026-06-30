@@ -53,8 +53,8 @@ if os.path.exists(xw_path):
 cur = pd.read_excel(CURTAIL_XLSX, sheet_name="CHW_Curtailment_monthly")
 cur.columns = [str(c).strip() for c in cur.columns]
 ccol = [c for c in cur.columns if "Curtail" in c][0]
-cur_y = cur.groupby("Year")[ccol].sum()
 cur["ym"] = pd.to_datetime(cur[[c for c in cur.columns if c == "Month-Ending"][0]]).dt.to_period("M")
+cur_y = cur.groupby(cur["ym"].dt.year)[ccol].sum()   # use Month-Ending date; file's "Year" col is mislabeled for 2026 (stuck at 2025)
 d["ym"] = d["HOUR"].dt.to_period("M")
 dgm = d.groupby("ym")["GEN_MW"].sum().rename("deliv_mwh")          # delivered MWh per month
 cm = cur.set_index("ym")[ccol].rename("curt_mwh")
