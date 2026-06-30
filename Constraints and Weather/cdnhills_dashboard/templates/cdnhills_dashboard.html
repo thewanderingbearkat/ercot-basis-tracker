@@ -71,10 +71,10 @@
   </div>
 
   <div class="panel">
-    <h2>Congestion drivers &mdash; past year (Yes Energy BETA shift factors, Jun&rsquo;25&ndash;May&rsquo;26)</h2>
+    <h2>Congestion drivers &mdash; past year (SPP constraint prices &times; BETA shift factors, Jun&rsquo;25&ndash;May&rsquo;26)</h2>
     <div id="drivers"></div>
     <div class="legend"><span><span class="sw" style="background:#b91c1c"></span>Basis impact ($/MWh, modeled)</span></div>
-    <div class="note" style="margin-top:8px">Computed from <b>our own Yes Energy BETA shift factors</b> (not nFront): top SPP facilities binding between Canadian Hills (CANADIAN_HILLS_1) and SPP South hub, ranked by basis impact = shadow&nbsp;&times;&nbsp;(node&nbsp;&minus;&nbsp;hub shift factor), averaged over the year, with binding days at right. Unlike McCrae &mdash; where one West-TX export GTC dominated &mdash; Canadian Hills congestion is <b>diffuse</b>: ~10 SPP 138&ndash;345 kV elements each contribute, no single fix. The ranking lines up with nFront&rsquo;s 4E-2 basis-to-hub table (Duncan, Davis&ndash;Mustang, Gracmont, Cleveland&ndash;AECI&hellip;); magnitudes run higher because BETA is modeled <i>daily</i> off binding-interval shadow prices rather than nFront&rsquo;s hourly SCED average.</div>
+    <div class="note" style="margin-top:8px">Computed the <b>same way as the ERCOT and PJM congestion tools</b>: authoritative hourly SPP binding-constraint shadow prices (<code>ALL_CONSTRAINTS_PMV</code>) weighted by our Yes Energy BETA shift factors, then differenced node&nbsp;&minus;&nbsp;hub (Canadian Hills vs SPP South) so the result is the modeled contribution to <i>basis</i>. Impact = &minus;(price&nbsp;&times;&nbsp;shift factor) averaged over all hours in the year; binding hours at right. Unlike McCrae &mdash; where one West-TX export GTC dominated &mdash; Canadian Hills congestion is <b>diffuse</b>: ~10 SPP 138&ndash;345 kV elements each contribute, no single fix. Ranking and binding-hours match nFront&rsquo;s 4E-2 basis-to-hub table (Duncan, Davis&ndash;Mustang, Gracmont, Cleveland&ndash;AECI&hellip;); shift factors are modeled (BETA), so magnitudes are directional.</div>
   </div>
 
   <div class="panel">
@@ -164,22 +164,22 @@ function drawBasis(Y){
 // nFront 4E binding constraints (past year) -- static study data
 function drawDrivers(){
   const D=[
-    {f:'SW_134TP &ndash; WESTMOR4', mcc:4.52, days:40},
-    {f:'DVISN &ndash; MSTNG1', mcc:3.87, days:17},
-    {f:'XFMR CIMARRON &ndash; CIMARRON', mcc:3.45, days:14},
-    {f:'XFMR DUNCAN &ndash; DUNCAN', mcc:3.17, days:93},
-    {f:'XFMR SEMINOLE &ndash; SEMINOLE', mcc:2.56, days:30},
-    {f:'GRACMONT &ndash; ANADARKO', mcc:2.34, days:104},
-    {f:'BOYD &ndash; CDRLN', mcc:1.87, days:26},
-    {f:'XFMR LAW_ES &ndash; LAW_ES', mcc:1.65, days:22},
-    {f:'MDWST &ndash; FRNKLN1', mcc:1.61, days:32},
-    {f:'XFMR NOWST1 &ndash; NOWST1', mcc:1.48, days:5},
-    {f:'QUAIL &ndash; SKYLN', mcc:1.16, days:12}];
+    {f:'XFMR DUNCAN &ndash; DUNCAN', mcc:0.65, hrs:853},
+    {f:'DVISN &ndash; MSTNG1', mcc:0.43, hrs:93},
+    {f:'XFMR NOWST1 &ndash; NOWST1', mcc:0.27, hrs:51},
+    {f:'QUAIL &ndash; SKYLN', mcc:0.25, hrs:82},
+    {f:'SW_134TP &ndash; WESTMOR4', mcc:0.24, hrs:352},
+    {f:'CLEVLND7 &ndash; CLEV_AEC', mcc:0.22, hrs:898},
+    {f:'GRACMONT &ndash; ANADARKO', mcc:0.21, hrs:1021},
+    {f:'DVISN &ndash; LAKSD', mcc:0.19, hrs:37},
+    {f:'BOYD &ndash; CDRLN', mcc:0.17, hrs:156},
+    {f:'XFMR SEMINOLE &ndash; SEMINOLE', mcc:0.16, hrs:176},
+    {f:'XFMR CIMARRON &ndash; CIMARRON', mcc:0.15, hrs:81}];
   const mx=Math.max(...D.map(d=>d.mcc));
   $('drivers').innerHTML=D.map(d=>`<div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
     <span style="flex:0 0 210px;font-size:12.5px;font-weight:500">${d.f}</span>
     <div style="flex:1;height:14px;background:#f1f5f9;border-radius:3px;overflow:hidden"><div style="height:100%;width:${Math.round(d.mcc/mx*100)}%;background:#b91c1c"></div></div>
-    <span style="flex:0 0 120px;font-size:11.5px;color:#6b7280;text-align:right">&minus;$${d.mcc.toFixed(2)} &middot; ${d.days} d</span></div>`).join('');
+    <span style="flex:0 0 120px;font-size:11.5px;color:#6b7280;text-align:right">&minus;$${d.mcc.toFixed(2)} &middot; ${d.hrs} hr</span></div>`).join('');
 }
 function drawForward(){
   const F=[
