@@ -102,6 +102,8 @@
   .fbox h4 code, .fbox li code { font-size:11px; background:#eef1f4; padding:1px 5px; border-radius:3px; font-weight:500; }
   .fbox ul { margin:4px 0 0; padding-left:18px; } .fbox li { font-size:12.5px; color:#374151; line-height:1.6; margin-bottom:2px; }
   .fbox li b { color:#0E2C51; }
+  .flowchart-wrap { background:#fff; border:1px solid #e5e7eb; border-radius:8px; padding:16px 14px; margin-bottom:16px; overflow-x:auto; }
+  .flowchart-wrap svg { width:100%; min-width:800px; height:auto; display:block; }
 </style>
 </head>
 <body>
@@ -284,8 +286,9 @@
 
   <!-- ============================ DATA FLOW ============================ -->
   <div id="flow" class="hide">
+    <div class="flowchart-wrap"><div id="flowchart"></div></div>
     <div class="panel">
-      <h2>Data flow &mdash; sources &rarr; model &rarr; structure &rarr; output</h2>
+      <h2>The same flow, in detail</h2>
 
       <div class="flow-lab">1 &middot; Input data sources</div>
       <div class="src-grid">
@@ -558,6 +561,47 @@ function recompute(){ let tot=0;
   Object.keys(CONSTR).forEach(k=>{ const sh=+$('sl_'+k).value, c=-(sh*CONSTR[k].rel_sf);
     $('sp_'+k).textContent='$'+sh+' shadow'; $('bz_'+k).textContent=c.toFixed(1); tot+=c; });
   $('calcTotal').textContent=sgn(tot)+' $/MWh'; }
+
+// ===== data-flow chart (infographic-style gradient ribbons) =====
+function drawFlow(){
+  const W=1180, H=560;
+  const N={
+    mkt :{x:24, y:24, w:196,h:58,c:'#22c55e',t:'Market prices', s:'node − hub LMP = basis'},
+    wx  :{x:24, y:102,w:196,h:58,c:'#14b8a6',t:'Weather',       s:'Xweather wind + GHI'},
+    grid:{x:24, y:180,w:196,h:58,c:'#3b82f6',t:'Grid data',     s:'gen · load · outages'},
+    gen :{x:24, y:258,w:196,h:58,c:'#f59e0b',t:'Actual gen',    s:'HARALD_UNIT1 SCED'},
+    sf  :{x:24, y:418,w:196,h:58,c:'#8b5cf6',t:'Shift factors', s:'GTC physics'},
+    asm :{x:322,y:128,w:188,h:74,c:'#06b6d4',t:'Feature table', s:'nbohr_hourly.csv'},
+    ml  :{x:620,y:110,w:188,h:74,c:'#2563eb',t:'scikit-learn',  s:'quantile · mean · risk'},
+    st  :{x:620,y:400,w:188,h:74,c:'#7c3aed',t:'Structural',    s:'shift-factor physics'},
+    o1  :{x:952,y:24, w:204,h:56,c:'#16a34a',t:'7-day forecast',s:'tracked vs realized'},
+    o2  :{x:952,y:100,w:204,h:56,c:'#16a34a',t:'Budget 3mo / 3y',s:'ATC + GWA'},
+    o3  :{x:952,y:176,w:204,h:56,c:'#db2777',t:'Drivers',       s:'what moves risk'},
+    o4  :{x:952,y:410,w:204,h:56,c:'#ea580c',t:'Scenario calc', s:'structural what-ifs'},
+  };
+  const E=[['mkt','asm'],['wx','asm'],['grid','asm'],['gen','asm'],['asm','ml'],['sf','st'],['ml','st'],['ml','o1'],['ml','o2'],['ml','o3'],['st','o4']];
+  let defs='',rib='',cards='';
+  E.forEach((e,i)=>{ const a=N[e[0]],b=N[e[1]],id='fg'+i; let d;
+    if(b.x >= a.x+a.w-10){ const x1=a.x+a.w,y1=a.y+a.h/2,x2=b.x,y2=b.y+b.h/2,mx=(x1+x2)/2;
+      d=`M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`;
+      defs+=`<linearGradient id="${id}" x1="0" x2="1" y1="0" y2="0"><stop offset="0" stop-color="${a.c}"/><stop offset="1" stop-color="${b.c}"/></linearGradient>`;
+    } else { const x1=a.x+a.w/2,y1=a.y+a.h,x2=b.x+b.w/2,y2=b.y,my=(y1+y2)/2;
+      d=`M${x1},${y1} C${x1},${my} ${x2},${my} ${x2},${y2}`;
+      defs+=`<linearGradient id="${id}" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="${a.c}"/><stop offset="1" stop-color="${b.c}"/></linearGradient>`;
+    }
+    rib+=`<path d="${d}" fill="none" stroke="url(#${id})" stroke-width="11" stroke-linecap="round" opacity="0.92"/>`;
+  });
+  Object.values(N).forEach(n=>{ const cy=n.y+n.h/2;
+    cards+=`<g><rect x="${n.x}" y="${n.y}" width="${n.w}" height="${n.h}" rx="13" fill="${n.c}"/>`
+      +`<circle cx="${n.x+22}" cy="${cy}" r="13" fill="rgba(255,255,255,0.26)"/>`
+      +`<circle cx="${n.x+22}" cy="${cy-3}" r="4" fill="#fff"/>`
+      +`<path d="M${n.x+15},${cy+9} a7,7 0 0 1 14,0" fill="#fff"/>`
+      +`<text x="${n.x+44}" y="${cy-2}" fill="#fff" font-size="13.5" font-weight="700">${n.t}</text>`
+      +`<text x="${n.x+44}" y="${cy+14}" fill="rgba(255,255,255,0.85)" font-size="10.5">${n.s}</text></g>`;
+  });
+  $('flowchart').innerHTML=`<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" font-family="inherit"><defs>${defs}</defs>${rib}${cards}</svg>`;
+}
+drawFlow();
 </script>
 </body>
 </html>
