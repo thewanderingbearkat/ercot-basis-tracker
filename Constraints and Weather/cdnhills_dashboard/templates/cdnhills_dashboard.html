@@ -83,25 +83,6 @@
     <div class="note" style="margin-top:8px">Direction &amp; rough magnitude of the forward drivers in nFront&rsquo;s assumptions. The renewable build-out dwarfs the load growth, and the transmission relief is back-loaded to the 2030s &mdash; so the near-term push on Canadian Hills basis is <b>negative</b>.</div>
   </div>
 
-  <div class="panel story">
-    <h2>nFront&rsquo;s forecast &mdash; and the risks vs. our data</h2>
-    <p><b>What nFront is saying:</b> this deliverable is an <i>assumptions / transmission-assessment</i> study &mdash; it does <b>not</b> state an explicit forward basis number for Canadian Hills (that would be a separate results/budget file, as with McCrae). Its forecast logic: run SPP SCED dispatch under <b>+~12 GW new wind / +20 GW solar</b>, <b>~2&ndash;3%/yr</b> load growth, and transmission upgrades phasing in <b>2032&ndash;2037</b>. Implied path: congestion stays heavy near-term, relieved only as those upgrades land. They proxy with <b>Kingfisher</b> and use the <b>SPP South</b> hub (both confirmed against our data).</p>
-    <p style="margin-bottom:4px"><b>Risks against the data we have:</b></p>
-    <ul style="font-size:13px;color:#374151;line-height:1.6;margin-top:0">
-      <li><b>Timing slip (high):</b> SPP ITP (2032&ndash;37), Grain Belt HVDC (PJM Phase 2 withdrew Nov&rsquo;25), MISO Tranche 1 are chronically delayed &mdash; if they slip, the bad-basis window extends.</li>
-      <li><b>Build-out outpaces relief:</b> the new VER hits the same constrained paths <i>before</i> the upgrades; our realized basis is already &minus;$7 to &minus;$27, and more supply pushes it the wrong way.</li>
-      <li><b>Proxy &amp; curtailment:</b> Kingfisher is adjacent, not identical; and nFront&rsquo;s curtailment context is SPP-wide (~few %) while Canadian Hills&rsquo; own is <b>~60%</b> &mdash; a basis-only read understates the hit.</li>
-      <li><b>Recent calm looks fragile:</b> realized basis eased to &minus;$4 to &minus;$7 in 2025&ndash;26 (from &minus;$22 in 2024), but that&rsquo;s <i>before</i> the build-out wave, so it likely doesn&rsquo;t hold.</li>
-    </ul>
-  </div>
-
-  <div class="panel story">
-    <h2>How it differs from McCrae</h2>
-    <p class="big">Canadian Hills' economics are dominated by <b>lost volume</b>, not the price on what it sells. In 2024&ndash;25 roughly <b>half its generation (60% in 2024, ~46% in 2025) was curtailed</b> before it could reach the market &mdash; on the order of <b id="lostBig">&mdash;</b> of energy at hub value, every year.</p>
-    <p><b>Contrast with McCrae (ERCOT)</b> &rarr; McCrae is barely curtailed (~3%); its damage is <i>price suppression</i> &mdash; it sells the volume but earns a poor generation-weighted basis (~&minus;$3 to &minus;$5). Canadian Hills earns a <i>similar</i> delivered basis only because it's switched off in the bad hours; its real hit is the 60% it never gets to sell. <a href="/model">See the McCrae congestion model &rarr;</a></p>
-    <p><b>Same underlying mechanism:</b> SPP wind over-supply binds the export path, so windy hours crater the price (calm-hour basis &minus;$6 vs windy-hour &minus;$22) &mdash; and SPP responds by curtailing. For an M&amp;A case the key sensitivities are <b>curtailment trajectory</b> (does transmission relief arrive?) and the basis on delivered energy.</p>
-  </div>
-
   <div class="panel">
     <h2>Data flow &mdash; Canadian Hills (SPP)</h2>
     <div class="flowchart-wrap"><div id="flowchart"></div></div>
@@ -127,7 +108,6 @@ fetch('/api/cdnhills/summary').then(r=>r.json()).then(D=>{
     <div class="scard"><div class="k">Node basis (ATC)</div><div class="v neg">${sgn(last.ATC)}</div><div class="s">$/MWh vs SPP South</div></div>
     <div class="scard"><div class="k">Captured basis (GWA)</div><div class="v neg">${sgn(last.GWA)}</div><div class="s">on delivered MWh</div></div>
     <div class="scard"><div class="k">Curtailed energy value</div><div class="v neg">$${(last.LOST_VALUE/1e6).toFixed(0)}M</div><div class="s">@ hub price, ${last.YR}</div></div>`;
-  $('lostBig').textContent = '$'+(last.LOST_VALUE/1e6).toFixed(0)+'M';
   drawCurt(Y); drawBasis(Y);
 });
 
