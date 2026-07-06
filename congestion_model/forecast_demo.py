@@ -3,8 +3,10 @@
 This is the payoff of the co-located Xweather pull -- the model running FORWARD on data
 you actually have ahead of time. Forecast-mode features only (no actual generation):
   * XW_WIND / XW_GUST / XW_GHI  -> Xweather 7-day hourly forecast at the node (1 API call)
-  * ERCOT_LOAD / WEST_LOAD      -> month x hour climatology from history (load is predictable)
-  * N_OUTAGE                    -> recent level (outages move slowly)
+  * ERCOT_LOAD / WEST_LOAD      -> Yes Energy LOAD_FORECASTS (ERCOT MTLF, hourly ~8d fwd;
+                                   falls back to month x hour climatology past the horizon)
+  * N_OUTAGE                    -> scheduled forward outages (planned windows are known ahead;
+                                   falls back to the recent level)
   * HOD / MONTH / DOW           -> calendar
 
 Outputs a daily basis band + per-hour blowout probability + the largest drivers, and writes
@@ -62,9 +64,74 @@ print("largest drivers (AUC drop when shuffled):",
 fc = xw.fetch_forecast(168)                       # Xweather 7-day hourly wind+GHI (1 call)
 fc["HOD"], fc["MONTH"], fc["DOW"] = fc["HOUR"].dt.hour, fc["HOUR"].dt.month, fc["HOUR"].dt.dayofweek
 
+# Real forwards from Yes Energy (the Jul-5 miss review showed persisted shapes carry no event
+# info): ERCOT MTLF hourly load forecast + the scheduled forward outage count. Climatology /
+# recent-level only as fallback (offline, or hours past the forecast horizon).
 clim = d.groupby(["MONTH", "HOD"])[["ERCOT_LOAD", "WEST_LOAD"]].median().reset_index()
-fc = fc.merge(clim, on=["MONTH", "HOD"], how="left")
-fc["N_OUTAGE"] = d.sort_values("HOUR").tail(30 * 24)["N_OUTAGE"].median()   # recent level
+fc = fc.merge(clim.rename(columns={"ERCOT_LOAD": "_ERCOT_CLIM", "WEST_LOAD": "_WEST_CLIM"}),
+              on=["MONTH", "HOD"], how="left")
+fc["_OUT_RECENT"] = d.sort_values("HOUR").tail(30 * 24)["N_OUTAGE"].median()
+
+
+def _forward_from_snowflake(fc):
+    """ERCOT/WEST hourly load forecast (latest publish per target hour) + scheduled daily
+    outage count over the fc window. Returns (load_df|None, out_df|None)."""
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "Constraints and Weather"))
+    from constraint_map.db import YES, query
+    lo, hi = fc["HOUR"].min(), fc["HOUR"].max()
+    ld = pd.DataFrame(query(f"""
+        SELECT DATETIME, OBJECTID, LOAD FROM {YES}.LOAD_FORECASTS
+        WHERE OBJECTID IN (10000712973, 10000712971) AND FORECASTTYPE = 'LF'
+          AND DATETIME BETWEEN '{lo:%Y-%m-%d %H:%M}' AND '{hi:%Y-%m-%d %H:%M}'
+        QUALIFY ROW_NUMBER() OVER (PARTITION BY OBJECTID, DATETIME ORDER BY PUBLISHDATE DESC) = 1"""))
+    load = None
+    if len(ld):
+        ld["DATETIME"] = pd.to_datetime(ld["DATETIME"])
+        load = ld.pivot_table(index="DATETIME", columns="OBJECTID", values="LOAD").reset_index()
+        load.columns = ["HOUR"] + ["ERCOT_LOAD" if c == 10000712973 else "WEST_LOAD" for c in load.columns[1:]]
+    # scheduled outages: same LN/XF + real-end rules as build_hourly, planned windows forward
+    ot = pd.DataFrame(query(f"""
+        WITH days AS (SELECT DATEADD('day', SEQ4(), '{lo:%Y-%m-%d}'::DATE)::DATE D
+                      FROM TABLE(GENERATOR(ROWCOUNT=>9))),
+        o AS (SELECT TICKETID, COALESCE(STARTDATE, PLANNED_STARTDATE)::DATE s,
+                     COALESCE(ENDDATE, PLANNED_ENDDATE)::DATE e
+              FROM {YES}.ERCOT_OUTAGES
+              WHERE STATUS IN ('Apprv','Accpt') AND VOLTAGELEVEL >= 138
+                AND EQUIPMENTTYPE IN ('LN','XF')
+                AND COALESCE(STARTDATE, PLANNED_STARTDATE) IS NOT NULL
+                AND COALESCE(ENDDATE, PLANNED_ENDDATE) IS NOT NULL
+                AND DATEDIFF('day', COALESCE(STARTDATE, PLANNED_STARTDATE),
+                             COALESCE(ENDDATE, PLANNED_ENDDATE)) BETWEEN 0 AND 365)
+        SELECT d.D AS DAY, COUNT(DISTINCT o.TICKETID) N_OUTAGE
+        FROM days d JOIN o ON d.D BETWEEN o.s AND o.e GROUP BY d.D"""))
+    out = None
+    if len(ot):
+        ot["DAY"] = pd.to_datetime(ot["DAY"]).dt.date
+        out = ot
+    return load, out
+
+
+try:
+    _load_fwd, _out_fwd = _forward_from_snowflake(fc)
+except Exception as e:
+    print(f"forward Snowflake pull failed ({e}); using climatology/recent-level fallbacks")
+    _load_fwd, _out_fwd = None, None
+
+if _load_fwd is not None:
+    fc = fc.merge(_load_fwd, on="HOUR", how="left")
+    n_real = fc["ERCOT_LOAD"].notna().sum()
+    print(f"load forecast (MTLF): {n_real}/{len(fc)} fwd hours real, rest climatology")
+else:
+    fc["ERCOT_LOAD"], fc["WEST_LOAD"] = np.nan, np.nan
+fc["ERCOT_LOAD"] = fc["ERCOT_LOAD"].fillna(fc["_ERCOT_CLIM"])
+fc["WEST_LOAD"] = fc["WEST_LOAD"].fillna(fc["_WEST_CLIM"])
+if _out_fwd is not None:
+    fc["N_OUTAGE"] = fc["HOUR"].dt.date.map(dict(zip(_out_fwd["DAY"], _out_fwd["N_OUTAGE"])))
+    print(f"scheduled outages: {fc['N_OUTAGE'].notna().sum()}/{len(fc)} fwd hours real, rest recent level")
+else:
+    fc["N_OUTAGE"] = np.nan
+fc["N_OUTAGE"] = fc["N_OUTAGE"].fillna(fc["_OUT_RECENT"])
+fc = fc.drop(columns=["_ERCOT_CLIM", "_WEST_CLIM", "_OUT_RECENT"])
 
 Xf = fc[FCAST]
 fc["q10"], fc["q50"], fc["q90"] = (qmodels[q].predict(Xf) for q in (0.1, 0.5, 0.9))

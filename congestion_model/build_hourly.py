@@ -64,13 +64,22 @@ ld = pull("load", f"""
     WHERE OBJECTID IN ({ERCOT_LOAD},{WEST_LOAD}) AND DATATYPEID=47 AND {WIN}
     GROUP BY 1""")
 
-out = pull("outages (active >=138kV transmission, daily)", f"""
+# NOTE: end date must be COALESCE(ENDDATE, PLANNED_ENDDATE) with an end REQUIRED --
+# ~45% of tickets have null ENDDATE, and the old COALESCE(..., CURRENT_DATE) counted them
+# as active forever (feature read ~220k = cumulative tickets-ever, a disguised time trend).
+# Also restrict to LN/XF (lines + transformers); DSC/CB switching tickets dominate the raw
+# pool ~10:1 and are noise for congestion. Sane value is tens of active outages per day.
+out = pull("outages (active >=138kV lines+transformers, daily)", f"""
     WITH days AS (SELECT DATEADD('day', SEQ4(), DATEADD('year',-3,CURRENT_DATE))::DATE D
-                  FROM TABLE(GENERATOR(ROWCOUNT=>1110)))
+                  FROM TABLE(GENERATOR(ROWCOUNT=>1110))),
+    o AS (SELECT TICKETID, STARTDATE::DATE s, COALESCE(ENDDATE, PLANNED_ENDDATE)::DATE e
+          FROM {Y}.ERCOT_OUTAGES
+          WHERE STATUS IN ('Apprv','Accpt') AND VOLTAGELEVEL >= 138
+            AND EQUIPMENTTYPE IN ('LN','XF') AND STARTDATE IS NOT NULL
+            AND COALESCE(ENDDATE, PLANNED_ENDDATE) IS NOT NULL
+            AND DATEDIFF('day', STARTDATE, COALESCE(ENDDATE, PLANNED_ENDDATE)) BETWEEN 0 AND 365)
     SELECT d.D AS DAY, COUNT(DISTINCT o.TICKETID) N_OUTAGE
-    FROM days d JOIN {Y}.ERCOT_OUTAGES o
-      ON d.D >= o.STARTDATE::DATE AND d.D <= COALESCE(o.ENDDATE::DATE, CURRENT_DATE)
-    WHERE o.STATUS IN ('Apprv','Accpt') AND o.VOLTAGELEVEL >= 138 AND o.STARTDATE IS NOT NULL
+    FROM days d JOIN o ON d.D BETWEEN o.s AND o.e
     GROUP BY d.D""")
 
 print("merging ...")
