@@ -232,6 +232,15 @@ try:
 except Exception as _chw_err:
     logger.exception("Canadian Hills blueprint failed to load; other tabs unaffected: %s", _chw_err)
 
+# M&A Seller Screener tab -- self-service faceted screen over the >=50MW renewables
+# universe. Read-only; the plant table is pushed to SKYVEST.DBO.MA_SCREEN_PLANTS by
+# "Constraints and Weather/ma_screener/load_to_snowflake.py" after each screener run.
+try:
+    from ma_screener.web import ma_screener_bp
+    app.register_blueprint(ma_screener_bp)
+except Exception as _mas_err:
+    logger.exception("M&A Screener blueprint failed to load; other tabs unaffected: %s", _mas_err)
+
 # Configuration - ERCOT
 NODE_1 = "NBOHR_RN"
 NODE_2 = "HOLSTEIN_ALL"
@@ -4731,6 +4740,7 @@ def dashboard():
         <a href="/kepler" style="display: inline-block; padding: 8px 16px; font-size: 13px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.25; color: #6b7280; text-decoration: none; border-bottom: 2px solid transparent; margin-bottom: -2px; font-weight: 500;">Kepler <span style="font-size:9px; color:#a855f7; font-weight:700; vertical-align:super;">BETA</span></a>
         <a href="/model" style="display: inline-block; padding: 8px 16px; font-size: 13px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.25; color: #6b7280; text-decoration: none; border-bottom: 2px solid transparent; margin-bottom: -2px; font-weight: 500;">Congestion Model <span style="font-size:9px; color:#a855f7; font-weight:700; vertical-align:super;">BETA</span></a>
         <a href="/canadian-hills" style="display: inline-block; padding: 8px 16px; font-size: 13px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.25; color: #6b7280; text-decoration: none; border-bottom: 2px solid transparent; margin-bottom: -2px; font-weight: 500;">Canadian Hills <span style="font-size:9px; color:#a855f7; font-weight:700; vertical-align:super;">BETA</span></a>
+        <a href="/ma-screener" style="display: inline-block; padding: 8px 16px; font-size: 13px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.25; color: #6b7280; text-decoration: none; border-bottom: 2px solid transparent; margin-bottom: -2px; font-weight: 500;">M&amp;A Screener</a>
     </div>
     <div class="p-3 md:p-4" style="background: linear-gradient(135deg, #f8f9fa 0%, #ffffff 100%);">
         <div class="max-w-7xl mx-auto">

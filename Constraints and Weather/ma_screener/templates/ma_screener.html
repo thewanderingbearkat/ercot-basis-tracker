@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>M&amp;A Seller Screener</title>
+<style>
+  html, body { margin:0; padding:0; background:#f8f9fa; }
+  body { font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color:#0E2C51; }
+  .tab-nav { display:flex; gap:4px; padding:20px 20px 0 20px; border-bottom:2px solid #e5e7eb; background:#f8f9fa; line-height:1.25; flex-wrap:wrap; }
+  .tab-nav a { display:inline-block; padding:8px 16px; font-size:13px; color:#6b7280; text-decoration:none; border-bottom:2px solid transparent; margin-bottom:-2px; font-weight:500; }
+  .tab-nav a:hover { color:#0E2C51; } .tab-nav a.active { color:#0E2C51; border-bottom-color:#0E2C51; font-weight:600; }
+  .page-wrap { padding:16px; } .page-inner { max-width:96rem; margin:0 auto; }
+  h1 { font-size:24px; line-height:32px; margin:0 0 4px; font-weight:700; }
+  .subtitle { color:#2291EB; font-size:12px; font-weight:600; margin-bottom:14px; text-transform:uppercase; letter-spacing:.5px; }
+  .layout { display:grid; grid-template-columns:262px 1fr; gap:14px; align-items:start; }
+  @media (max-width:900px){ .layout{grid-template-columns:1fr;} }
+  .panel { background:#fff; border:1px solid #e5e7eb; border-radius:8px; padding:14px 16px; margin-bottom:14px; }
+  .panel h2 { font-size:12.5px; text-transform:uppercase; letter-spacing:.5px; color:#6b7280; margin:0 0 10px; }
+  .note { font-size:12px; color:#6b7280; line-height:1.55; }
+  .facet { border-bottom:1px solid #f1f3f5; padding:9px 0; }
+  .facet:last-child { border-bottom:none; }
+  .facet h3 { font-size:11.5px; margin:0 0 6px; text-transform:uppercase; letter-spacing:.4px; color:#0E2C51; display:flex; justify-content:space-between; }
+  .facet h3 .clr { font-size:10.5px; color:#2291EB; cursor:pointer; font-weight:500; text-transform:none; letter-spacing:0; display:none; }
+  .facet.active h3 .clr { display:inline; }
+  .fopt { display:flex; align-items:center; gap:6px; font-size:12.5px; padding:2.5px 0; cursor:pointer; color:#374151; }
+  .fopt input { margin:0; accent-color:#0E2C51; }
+  .fopt .cnt { margin-left:auto; font-size:11px; color:#9ca3af; font-variant-numeric:tabular-nums; }
+  .fopt.gap .lbl { color:#b45309; font-style:italic; }
+  .fopt.zero { opacity:.45; }
+  .minmax { display:flex; gap:6px; align-items:center; font-size:12px; }
+  .minmax input { width:70px; padding:4px 6px; border:1px solid #d1d5db; border-radius:5px; font-size:12px; }
+  .search input { width:100%; box-sizing:border-box; padding:6px 8px; border:1px solid #d1d5db; border-radius:6px; font-size:12.5px; }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:10px; margin-bottom:14px; }
+  .scard { border:1px solid #e5e7eb; border-radius:8px; padding:10px 12px; background:#fff; }
+  .scard .k { font-size:10.5px; text-transform:uppercase; letter-spacing:.4px; color:#6b7280; font-weight:600; }
+  .scard .v { font-size:21px; font-weight:800; margin-top:3px; line-height:1.1; }
+  .scard .s { font-size:11px; color:#9ca3af; margin-top:2px; }
+  table.grid { width:100%; border-collapse:collapse; font-size:12.3px; }
+  .grid th { text-align:left; font-size:10.5px; text-transform:uppercase; letter-spacing:.4px; color:#6b7280; padding:7px 8px; border-bottom:2px solid #e5e7eb; cursor:pointer; white-space:nowrap; user-select:none; position:sticky; top:0; background:#fff; }
+  .grid th.sorted { color:#0E2C51; }
+  .grid td { padding:6px 8px; border-bottom:1px solid #f1f3f5; vertical-align:top; }
+  .grid tr.row:hover { background:#f6f9fc; cursor:pointer; }
+  .grid td.num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .gap { color:#b45309; }
+  .neg { color:#b91c1c; } .pos { color:#15803d; }
+  .chip { display:inline-block; background:#eef2f7; border-radius:9px; padding:1px 7px; font-size:10.5px; margin:1px 2px 1px 0; color:#334155; white-space:nowrap; }
+  .chip.warn { background:#fef3c7; color:#92400e; }
+  .chip.sell { background:#dcfce7; color:#166534; }
+  .chip.tag { background:#e0edff; color:#1e40af; }
+  .detail { background:#fbfcfe; font-size:12px; }
+  .detail .drow { display:grid; grid-template-columns:150px 1fr; gap:6px; padding:2px 0; }
+  .detail .dk { color:#6b7280; }
+  .toolbar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:8px; }
+  .btn { background:#0E2C51; color:#fff; border:none; border-radius:6px; padding:7px 13px; font-size:12.5px; font-weight:600; cursor:pointer; }
+  .btn.sec { background:#fff; color:#0E2C51; border:1px solid #d1d5db; }
+  .pager { margin-left:auto; font-size:12px; color:#6b7280; display:flex; gap:8px; align-items:center; }
+  .pager button { border:1px solid #d1d5db; background:#fff; border-radius:5px; padding:3px 9px; cursor:pointer; font-size:12px; }
+  .pager button:disabled { opacity:.4; cursor:default; }
+  .covgrid { width:100%; border-collapse:collapse; font-size:12px; }
+  .covgrid th { text-align:left; font-size:10.5px; text-transform:uppercase; color:#6b7280; padding:5px 8px; border-bottom:1px solid #e5e7eb; }
+  .covgrid td { padding:5px 8px; border-bottom:1px solid #f1f3f5; }
+  .covbar { height:7px; border-radius:4px; background:#f1f3f5; overflow:hidden; min-width:110px; }
+  .covbar > div { height:100%; background:#2291EB; }
+  details.covwrap summary { cursor:pointer; font-size:12.5px; color:#2291EB; font-weight:600; }
+</style>
+</head>
+<body>
+<div class="tab-nav">
+  <a href="/">Basis Tracker / PnL</a>
+  <a href="/shadow">Shadow Trading</a>
+  <a href="/hail">Hail Monitor</a>
+  <a href="/constraints">ERCOT Constraint Map</a>
+  <a href="/pjm-constraints">PJM Constraint Map</a>
+  <a href="/kepler">Kepler</a>
+  <a href="/model">Congestion Model</a>
+  <a href="/canadian-hills">Canadian Hills</a>
+  <a href="/ma-screener" class="active">M&amp;A Screener</a>
+</div>
+
+<div class="page-wrap"><div class="page-inner">
+  <h1>M&amp;A Seller Screener</h1>
+  <div class="subtitle">Self-service screen &mdash; you choose the signals; gaps are shown, not hidden</div>
+
+  <div class="layout">
+    <div>
+      <div class="panel" id="filters">
+        <h2>Filters <span class="note" style="float:right;cursor:pointer;color:#2291EB" onclick="resetAll()">reset all</span></h2>
+        <div class="facet search"><input id="q" placeholder="Search plant / owner / county&hellip;" oninput="apply()"></div>
+        <div class="facet"><h3>Size <span></span></h3>
+          <div class="minmax">MW <input id="mwMin" type="number" value="50" oninput="apply()"> &ndash; <input id="mwMax" type="number" placeholder="max" oninput="apply()"></div>
+        </div>
+        <div id="facetRail"></div>
+      </div>
+      <div class="panel">
+        <h2>Reading gaps</h2>
+        <div class="note">Amber italic options are <b>data gaps</b>, not verdicts &mdash; e.g. &ldquo;Not assessed&rdquo; means S&amp;P/EQR carry no contract info for that plant (common in ERCOT, where EQR has no jurisdiction). Selecting a gap bucket is often the point: unassessed old wind is exactly where quiet deals hide.</div>
+      </div>
+    </div>
+
+    <div>
+      <div class="cards" id="kpis"></div>
+      <div class="panel">
+        <div class="toolbar">
+          <button class="btn" onclick="exportCsv()">Export filtered CSV</button>
+          <button class="btn sec" onclick="resetAll()">Reset</button>
+          <span class="note" id="loadedAt"></span>
+          <span class="pager"><button onclick="page(-1)" id="prevB">&larr;</button><span id="pageInfo"></span><button onclick="page(1)" id="nextB">&rarr;</button></span>
+        </div>
+        <div style="overflow-x:auto">
+        <table class="grid"><thead id="thead"></thead><tbody id="tbody"></tbody></table>
+        </div>
+      </div>
+      <div class="panel">
+        <details class="covwrap"><summary>Data coverage &mdash; what we can and cannot calculate (full universe)</summary>
+          <table class="covgrid" id="covgrid" style="margin-top:10px"></table>
+          <div class="note" style="margin-top:8px">Denominator is all plants &ge;50 MW in the S&amp;P screen (2,221). Coverage varies by signal because each comes from a different source with different jurisdiction &mdash; the screen never silently drops a plant for missing data.</div>
+        </details>
+      </div>
+    </div>
+  </div>
+</div></div>
+
+<script>
+let ALL = [], VIEW = [], PAGE = 0, SORT = {k:'composite', dir:-1};
+const PER = 100;
+
+const TAG_LIST = ['capitulation','cf-collapse','mechanical-fix','curtailment-play','neg-price-bleed',
+                  'yieldco-stress','fund-life-exit','oem-orphan','busted-flip','ptc-merchant'];
+
+// facet spec: id, title, and a classifier fn(plant) -> value label. 'gap' marks data-gap buckets.
+const FACETS = [
+ {id:'contract', title:'Contract status', vals:['Merchant','Hybrid / partial','Contracted','Not assessed'],
+  gaps:['Not assessed'], of:p => p.contract_status},
+ {id:'ppaexp', title:'PPA expiry', vals:['≤3 yrs','3–5 yrs','>5 yrs','No PPA / unknown'],
+  gaps:['No PPA / unknown'], of:p => {
+    if (!p.ppa_expiry) return 'No PPA / unknown';
+    const y = (new Date(p.ppa_expiry) - new Date('2026-07-09')) / 3.156e10;
+    return y <= 3 ? '≤3 yrs' : y <= 5 ? '3–5 yrs' : '>5 yrs'; }},
+ {id:'ptc', title:'PTC / vintage', vals:['PTC expired','PTC active','Repowered','N/A (non-wind)','Unknown'],
+  gaps:['Unknown'], of:p => p.ptc_status},
+ {id:'seller', title:'Willing-seller signals (any of)', multiFlags:true, vals:[
+    ['Live sale process', p=>p.seller_live===1], ['Distressed', p=>p.seller_distressed===1],
+    ['Repeat seller', p=>p.seller_repeat===1], ['Sold once', p=>p.seller_once===1],
+    ['Financial owner', p=>p.financial_owner===1], ['Fund past term (≥2018 entry)', p=>p.fund_life===1],
+    ['No signal', p=>!(p.seller_live===1||p.seller_distressed===1||p.seller_repeat===1||p.seller_once===1||p.financial_owner===1||p.fund_life===1)]],
+  gaps:['No signal']},
+ {id:'tags', title:'Opportunity tags (any of)', multiFlags:true,
+  vals: TAG_LIST.map(t => [t, p => (p.tags||'').includes(t)]).concat([['untagged', p => !(p.tags||'').trim()]]),
+  gaps:['untagged']},
+ {id:'cf', title:'Capacity factor', radio:true, vals:[
+    ['Any', ()=>true], ['Has CF data', p=>p.cf_2324!=null],
+    ['Below cohort P50', p=>p.cf_ratio!=null && p.cf_ratio<1],
+    ['≤0.85 of P50', p=>p.cf_ratio!=null && p.cf_ratio<=0.85],
+    ['≤0.7 of P50', p=>p.cf_ratio!=null && p.cf_ratio<=0.7],
+    ["CF collapse '23→'24", p=>p.cf_collapse===1],
+    ['No CF data (gap)', p=>p.cf_2324==null]],
+  gaps:['No CF data (gap)']},
+ {id:'cong', title:'Congestion (node, 2025)', radio:true, vals:[
+    ['Any', ()=>true], ['Benign (score 0–1)', p=>p.cong_score!=null && p.cong_score<=1],
+    ['Congested (score 2–3)', p=>p.cong_score!=null && p.cong_score>=2],
+    ['Worsening y/y', p=>p.cong_trend!=null && p.cong_trend<-1],
+    ['≥15% negative-price hrs', p=>p.negp_da_25!=null && p.negp_da_25>=0.15],
+    ['No node data (gap)', p=>p.cong_score==null]],
+  gaps:['No node data (gap)']},
+ {id:'tech', title:'Technology', vals:['Wind','Solar','Battery'], of:p => p.tech},
+ {id:'iso', title:'ISO', vals:['ERCOT','MISO','SPP','CAISO','PJM','Dual / seam','Non-ISO','New England','New York'],
+  of:p => { const s = p.iso || '';
+    if (!s) return 'Non-ISO';
+    if (s.includes(',')) return 'Dual / seam';
+    return ['ERCOT','MISO','SPP','CAISO','PJM','New England','New York'].includes(s) ? s : 'Non-ISO'; }},
+ {id:'own', title:'Owner tier', vals:['Independent','Top-50 (capital-stressed)','Top-50'], of:p => p.top50_status},
+ {id:'dc', title:'Data-center proximity', radio:true, vals:[
+    ['Any', ()=>true], ['Some (score ≥1)', p=>(p.dc_score||0)>=1], ['Strong (score ≥2)', p=>(p.dc_score||0)>=2],
+    ['None', p=>!(p.dc_score>0)]]},
+];
+let SEL = {};   // facet id -> Set of selected labels ('' for radio = first val)
+
+function initFacets(){
+  SEL = {}; FACETS.forEach(f => SEL[f.id] = f.radio ? new Set([f.vals[0][0]]) : new Set());
+  const rail = document.getElementById('facetRail');
+  rail.innerHTML = FACETS.map(f => `<div class="facet" id="f_${f.id}"><h3>${f.title}<span class="clr" onclick="clearFacet('${f.id}')">clear</span></h3><div class="opts"></div></div>`).join('');
+}
+
+function matcherFor(f, label){
+  if (f.multiFlags || f.radio){ const pair = f.vals.find(v => v[0]===label); return pair ? pair[1] : (()=>false); }
+  return p => f.of(p) === label;
+}
+
+function passes(p, skipId){
+  const mwMin = +document.getElementById('mwMin').value || 0;
+  const mwMax = +document.getElementById('mwMax').value || Infinity;
+  if (p.mw < mwMin || p.mw > mwMax) return false;
+  const q = document.getElementById('q').value.trim().toLowerCase();
+  if (q && !((p.plant||'')+(p.owners||'')+(p.ult_parents||'')+(p.county||'')+(p.state||'')).toLowerCase().includes(q)) return false;
+  for (const f of FACETS){
+    if (f.id === skipId) continue;
+    const sel = SEL[f.id];
+    if (f.radio){ const lab = [...sel][0]; if (!matcherFor(f, lab)(p)) return false; }
+    else if (sel.size){ let ok = false; for (const lab of sel){ if (matcherFor(f, lab)(p)) { ok = true; break; } } if (!ok) return false; }
+  }
+  return true;
+}
+
+function renderFacets(){
+  for (const f of FACETS){
+    const base = ALL.filter(p => passes(p, f.id));
+    const el = document.querySelector(`#f_${f.id} .opts`);
+    const labels = f.vals.map(v => Array.isArray(v) ? v[0] : v);
+    el.innerHTML = labels.map(lab => {
+      const n = base.filter(p => matcherFor(f, lab)(p)).length;
+      const checked = SEL[f.id].has(lab);
+      const isGap = (f.gaps||[]).includes(lab);
+      return `<label class="fopt ${isGap?'gap':''} ${n===0&&!checked?'zero':''}">
+        <input type="${f.radio?'radio':'checkbox'}" name="fr_${f.id}" ${checked?'checked':''}
+          onchange="toggle('${f.id}','${lab.replace(/'/g,"\\'")}',this)">
+        <span class="lbl">${lab}</span><span class="cnt">${n.toLocaleString()}</span></label>`;
+    }).join('');
+    document.getElementById('f_'+f.id).classList.toggle('active', f.radio ? [...SEL[f.id]][0]!==f.vals[0][0] : SEL[f.id].size>0);
+  }
+}
+
+function toggle(id, lab, input){
+  const f = FACETS.find(x => x.id===id);
+  if (f.radio) SEL[id] = new Set([lab]);
+  else input.checked ? SEL[id].add(lab) : SEL[id].delete(lab);
+  apply();
+}
+function clearFacet(id){ const f = FACETS.find(x=>x.id===id); SEL[id] = f.radio ? new Set([f.vals[0][0]]) : new Set(); apply(); }
+function resetAll(){ document.getElementById('q').value=''; document.getElementById('mwMin').value=50; document.getElementById('mwMax').value=''; initFacets(); apply(); }
+
+const COLS = [
+ {k:'plant', t:'Plant', render:p=>esc(p.plant)},
+ {k:'tech', t:'Tech'}, {k:'mw', t:'MW', num:1, render:p=>fmt(p.mw,0)},
+ {k:'iso', t:'ISO', render:p=>esc(p.iso||'—')}, {k:'state', t:'St'},
+ {k:'cod_yr', t:'COD', num:1, render:p=>p.cod_yr?p.cod_yr.toFixed(0):g()},
+ {k:'contract_status', t:'Contract', render:p=>p.contract_status==='Not assessed'?g('Not assessed'):esc(p.contract_status)},
+ {k:'ppa_expiry', t:'PPA exp', render:p=>p.ppa_expiry?p.ppa_expiry.slice(0,10):'—'},
+ {k:'_seller', t:'Seller signals', render:p=>sellerChips(p), sortVal:p=>sellerCount(p)},
+ {k:'tags', t:'Tags', render:p=>(p.tags||'').split(';').filter(Boolean).map(t=>`<span class="chip tag">${t.trim()}</span>`).join('')||'—', sortVal:p=>(p.tags||'').split(';').filter(Boolean).length},
+ {k:'cf_ratio', t:'CF vs P50', num:1, render:p=>p.cf_ratio==null?g():`<span class="${p.cf_ratio<0.85?'neg':''}">${p.cf_ratio.toFixed(2)}x</span>`},
+ {k:'cong_da_25', t:"DA cong '25", num:1, render:p=>p.cong_da_25==null?g():`<span class="${p.cong_da_25<-3?'neg':''}">$${p.cong_da_25.toFixed(2)}</span>`},
+ {k:'negp_da_25', t:'Neg px', num:1, render:p=>p.negp_da_25==null?g():(p.negp_da_25*100).toFixed(0)+'%'},
+ {k:'dc_score', t:'DC', num:1, render:p=>p.dc_score==null?g():p.dc_score.toFixed(0)},
+ {k:'top50_status', t:'Owner tier', render:p=>p.top50_status==='Independent'?'Indep.':(p.top50_status.includes('stressed')?'<span class="chip warn">T50 stressed</span>':'Top-50')},
+ {k:'composite', t:'Score*', num:1, render:p=>p.composite==null?'—':p.composite.toFixed(1)},
+];
+function g(txt){ return `<span class="gap">${txt||'— no data'}</span>`; }
+function esc(s){ return (''+(s??'')).replace(/&/g,'&amp;').replace(/</g,'&lt;'); }
+function fmt(v,d){ return v==null?'—':(+v).toLocaleString(undefined,{maximumFractionDigits:d}); }
+function sellerCount(p){ return ['seller_live','seller_distressed','seller_repeat','seller_once','financial_owner','fund_life'].reduce((a,k)=>a+(p[k]===1?1:0),0); }
+function sellerChips(p){
+  const m = [['seller_live','live process','sell'],['seller_distressed','distressed','warn'],
+    ['seller_repeat','repeat seller','sell'],['seller_once','sold once',''],
+    ['financial_owner','financial owner',''],['fund_life','fund past term','warn']];
+  const c = m.filter(([k])=>p[k]===1).map(([,l,cls])=>`<span class="chip ${cls}">${l}</span>`).join('');
+  return c || '—';
+}
+
+function apply(){
+  VIEW = ALL.filter(p => passes(p, null));
+  const sv = COLS.find(c=>c.k===SORT.k)?.sortVal;
+  VIEW.sort((a,b)=>{
+    let x = sv?sv(a):a[SORT.k], y = sv?sv(b):b[SORT.k];
+    if (x==null) return 1; if (y==null) return -1;
+    if (typeof x === 'string') return SORT.dir * x.localeCompare(y);
+    return SORT.dir * (x - y);
+  });
+  PAGE = 0;
+  renderFacets(); renderKpis(); renderTable();
+}
+
+function renderKpis(){
+  const mw = VIEW.reduce((a,p)=>a+(p.mw||0),0);
+  const meds = arr => { const s=arr.filter(v=>v!=null).sort((a,b)=>a-b); return s.length?s[Math.floor(s.length/2)]:null; };
+  document.getElementById('kpis').innerHTML = [
+    ['Plants', VIEW.length.toLocaleString(), 'of '+ALL.length.toLocaleString()],
+    ['Total MW', fmt(mw,0), ''],
+    ['Median MW', fmt(meds(VIEW.map(p=>p.mw)),0), ''],
+    ['Median COD', meds(VIEW.map(p=>p.cod_yr))?.toFixed(0)||'—', ''],
+    ['With CF data', VIEW.filter(p=>p.cf_2324!=null).length.toLocaleString(), 'gap: '+VIEW.filter(p=>p.cf_2324==null).length],
+    ['Node priced', VIEW.filter(p=>p.cong_score!=null).length.toLocaleString(), 'gap: '+VIEW.filter(p=>p.cong_score==null).length],
+  ].map(([k,v,s])=>`<div class="scard"><div class="k">${k}</div><div class="v">${v}</div><div class="s">${s}</div></div>`).join('');
+}
+
+function renderTable(){
+  const th = document.getElementById('thead');
+  th.innerHTML = '<tr>' + COLS.map(c=>`<th class="${SORT.k===c.k?'sorted':''}" onclick="sortBy('${c.k}')">${c.t}${SORT.k===c.k?(SORT.dir<0?' ↓':' ↑'):''}</th>`).join('') + '</tr>';
+  const tb = document.getElementById('tbody');
+  const rows = VIEW.slice(PAGE*PER, (PAGE+1)*PER);
+  tb.innerHTML = rows.map((p,i)=>{
+    const cells = COLS.map(c=>`<td class="${c.num?'num':''}">${c.render?c.render(p):esc(p[c.k]??'—')}</td>`).join('');
+    return `<tr class="row" onclick="toggleDetail(${i})">${cells}</tr><tr class="detail" id="det${i}" style="display:none"><td colspan="${COLS.length}">${detail(p)}</td></tr>`;
+  }).join('') || `<tr><td colspan="${COLS.length}" class="note" style="padding:20px">No plants match. Loosen a facet &mdash; counts beside each option show where the matches went.</td></tr>`;
+  const np = Math.max(1, Math.ceil(VIEW.length/PER));
+  document.getElementById('pageInfo').textContent = `${PAGE+1} / ${np}`;
+  document.getElementById('prevB').disabled = PAGE<=0;
+  document.getElementById('nextB').disabled = PAGE>=np-1;
+}
+function toggleDetail(i){ const el = document.getElementById('det'+i); el.style.display = el.style.display==='none'?'':'none'; }
+function detail(p){
+  const rows = [
+    ['Contract evidence', p.contract_reason], ['EQR label', p.eqr_label && (p.eqr_label + (p.eqr_rolloff===1?' (roll-off: bilateral sales ended, went dark)':''))],
+    ['PPA counterparty', p.ppa_counterparty], ['Seller evidence', p.seller_reason],
+    ['Owners', p.owners], ['Ultimate parents', p.ult_parents],
+    ['Likely passive / TE', p.te_owner], ['# owners', p.n_owners],
+    ['CF 2023 / 2024', p.cf_2023!=null?`${p.cf_2023}% / ${p.cf_2024??'—'}%${p.cf_collapse===1?' — CF COLLAPSE flag':''}`:null],
+    ['Cong trend', p.cong_trend!=null?`$${p.cong_trend.toFixed(2)}/MWh y/y (${p.cong_trend<0?'worsening':'improving'})`:null],
+    ['DC MW within 50mi', p.dc_mw_50!=null?fmt(p.dc_mw_50,0):null],
+    ['OEM', p.oem_mfrs && (p.oem_mfrs + (p.oem_orphan===1?' — ORPHANED PLATFORM':''))],
+    ['Pillar scores', `contract ${p.s_contract} · flip ${p.s_flip} · vintage ${p.s_vintage} · seller ${p.s_seller} · CF ${p.s_cf} · tags ${p.s_tags}`],
+  ].filter(([,v])=>v!=null && v!=='');
+  return rows.map(([k,v])=>`<div class="drow"><span class="dk">${k}</span><span>${esc(v)}</span></div>`).join('');
+}
+function sortBy(k){ SORT = {k, dir: SORT.k===k ? -SORT.dir : -1}; apply(); }
+function page(d){ PAGE = Math.max(0, PAGE+d); renderTable(); }
+
+function renderCoverage(){
+  const items = [
+    ['Contract status assessed (S&P or EQR)', p=>p.contract_status!=='Not assessed', 'S&P PPA fields + FERC EQR; EQR is blind in ERCOT and misses IOU rate-base plants'],
+    ['EQR seller matched', p=>p.eqr_label!=null, 'name-match to FERC EQR filings; ~structural zero for ERCOT'],
+    ['CF 2023-24 (vs cohort P50)', p=>p.cf_2324!=null, 'EIA-923 via S&P; missing = too new (<2 full yrs) or not in the v2 screen'],
+    ['CF 2023 & 2024 trajectory', p=>p.cf_2023!=null && p.cf_2024!=null, 'ownership export covers wind+solar in organized ISOs only (no batteries)'],
+    ['Node congestion priced', p=>p.cong_score!=null, 'plant→EIA→node chain; missing = non-ISO plants and some 2024-25 CODs'],
+    ['Negative-price hours', p=>p.negp_da_25!=null, 'same node chain (DART_PRICES)'],
+    ['Ownership stake detail (flip fingerprints)', p=>p.n_owners!=null, 'stake-level export; batteries/non-ISO absent'],
+    ['Data-center proximity', p=>p.dc_score!=null, 'needs plant coords (2 plants missing)'],
+  ];
+  document.getElementById('covgrid').innerHTML = '<tr><th>Signal</th><th style="width:130px"></th><th>Coverage</th><th>Why gaps exist</th></tr>' +
+    items.map(([t,fn,why])=>{ const n = ALL.filter(fn).length, pct = 100*n/ALL.length;
+      return `<tr><td>${t}</td><td><div class="covbar"><div style="width:${pct.toFixed(0)}%"></div></div></td>
+        <td class="num" style="white-space:nowrap">${n.toLocaleString()} / ${ALL.length.toLocaleString()} (${pct.toFixed(0)}%)</td>
+        <td class="note">${why}</td></tr>`; }).join('');
+}
+
+function exportCsv(){
+  const keys = ['plant','tech','mw','iso','state','county','cod_yr','contract_status','ppa_status','ppa_expiry','ppa_counterparty','eqr_label','ptc_status','seller_live','seller_distressed','seller_repeat','seller_once','financial_owner','fund_life','seller_reason','tags','cf_2023','cf_2024','cf_2324','cohort_p50','cf_ratio','cf_collapse','cong_score','cong_da_25','cong_trend','negp_da_25','dc_score','dc_mw_50','top50_status','n_owners','owners','ult_parents','te_owner','oem_mfrs','s_contract','s_flip','s_vintage','s_seller','s_cf','s_tags','composite','rank'];
+  const csv = [keys.join(',')].concat(VIEW.map(p=>keys.map(k=>{
+    let v = p[k]; if (v==null) return '';
+    v = ''+v; return /[",\n]/.test(v) ? '"'+v.replace(/"/g,'""')+'"' : v;
+  }).join(','))).join('\n');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob(['﻿'+csv], {type:'text/csv'}));
+  a.download = 'ma_screen_filtered.csv'; a.click();
+}
+
+async function boot(){
+  document.getElementById('tbody').innerHTML = '<tr><td class="note" style="padding:20px">Loading plant universe&hellip;</td></tr>';
+  const r = await fetch('/api/mascreen/plants');
+  const j = await r.json();
+  if (j.error){ document.getElementById('tbody').innerHTML = `<tr><td class="note" style="padding:20px">Failed to load: ${esc(j.error)}</td></tr>`; return; }
+  ALL = j.plants;
+  document.getElementById('loadedAt').textContent = `${j.n.toLocaleString()} plants · data loaded ${j.loaded_at ? j.loaded_at.slice(0,16).replace('T',' ') : '—'} · *Score = optional composite, one sort among many`;
+  initFacets(); renderCoverage(); apply();
+}
+boot();
+</script>
+</body>
+</html>

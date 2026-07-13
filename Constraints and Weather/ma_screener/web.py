@@ -1,0 +1,63 @@
+"""M&A Seller Screener tab -- self-service faceted screen over the plant universe.
+
+    GET /ma-screener            -- the page (filter rail + table + coverage panel)
+    GET /api/mascreen/plants    -- full plant table from SKYVEST.DBO.MA_SCREEN_PLANTS
+                                   (cached; ?fresh=1 bypasses)
+
+READ-ONLY. Data is produced by the screener pipeline (assemble_v3.py) and pushed by
+ma_screener/load_to_snowflake.py. Design intent: the tab is NOT prescriptive -- every
+facet carries an explicit "Not assessed"/"Unknown" bucket so data gaps are visible
+and selectable, and the composite score is just one optional sort among many.
+"""
+import datetime as dt
+import decimal
+import logging
+import time
+
+from flask import Blueprint, jsonify, render_template, request
+
+from constraint_map.db import query
+
+logger = logging.getLogger(__name__)
+ma_screener_bp = Blueprint("ma_screener", __name__, template_folder="templates")
+
+CACHE_TTL = 900.0
+_cache: dict | None = None
+_cache_at: float = 0.0
+
+
+def _clean(rows):
+    out = []
+    for r in rows:
+        o = {}
+        for k, v in r.items():
+            if isinstance(v, decimal.Decimal):
+                v = float(v)
+            elif isinstance(v, (dt.date, dt.datetime)):
+                v = v.isoformat()
+            o[k.lower()] = v
+        out.append(o)
+    return out
+
+
+@ma_screener_bp.route("/ma-screener")
+def page():
+    return render_template("ma_screener.html")
+
+
+@ma_screener_bp.route("/api/mascreen/plants")
+def api_plants():
+    global _cache, _cache_at
+    age = time.time() - _cache_at
+    if request.args.get("fresh") != "1" and _cache is not None and age < CACHE_TTL:
+        return jsonify({**_cache, "cache_age_seconds": round(age, 1)})
+    try:
+        rows = _clean(query(
+            "SELECT * FROM SKYVEST.DBO.MA_SCREEN_PLANTS ORDER BY COMPOSITE DESC"))
+        loaded = max((r.get("loaded_at") or "" for r in rows), default=None)
+        data = {"plants": rows, "n": len(rows), "loaded_at": loaded}
+    except Exception as e:
+        logger.exception("mascreen plants failed")
+        return jsonify({"plants": [], "n": 0, "error": str(e)}), 502
+    _cache, _cache_at = data, time.time()
+    return jsonify({**data, "cache_age_seconds": 0})
