@@ -63,6 +63,23 @@
   .covbar { height:7px; border-radius:4px; background:#f1f3f5; overflow:hidden; min-width:110px; }
   .covbar > div { height:100%; background:#2291EB; }
   details.covwrap summary { cursor:pointer; font-size:12.5px; color:#2291EB; font-weight:600; }
+  .notechip { cursor:pointer; color:#2291EB; white-space:nowrap; font-weight:600; }
+  .notechip.empty { color:#9ca3af; font-weight:400; }
+  .drawer { position:fixed; top:0; right:-380px; width:350px; height:100vh; background:#fff; border-left:1px solid #e5e7eb; box-shadow:-6px 0 18px rgba(14,44,81,.10); transition:right .18s ease; z-index:60; display:flex; flex-direction:column; }
+  .drawer.open { right:0; }
+  .drawer .dhead { padding:14px 16px 10px; border-bottom:1px solid #e5e7eb; }
+  .drawer .dhead h3 { margin:0; font-size:14px; line-height:1.3; }
+  .drawer .dhead .sub { font-size:11px; color:#6b7280; margin-top:2px; }
+  .drawer .dclose { position:absolute; top:10px; right:12px; cursor:pointer; border:none; background:none; font-size:16px; color:#6b7280; }
+  .drawer .dlist { flex:1; overflow-y:auto; padding:10px 16px; }
+  .noteitem { border:1px solid #eef1f4; border-left:3px solid #2291EB; border-radius:6px; padding:8px 10px; margin-bottom:8px; background:#fbfcfe; }
+  .noteitem .meta { font-size:10.5px; color:#6b7280; margin-bottom:3px; }
+  .noteitem .body { font-size:12.5px; line-height:1.5; white-space:pre-wrap; word-break:break-word; }
+  .drawer .dform { border-top:1px solid #e5e7eb; padding:10px 16px 14px; }
+  .drawer .dform input, .drawer .dform textarea { width:100%; box-sizing:border-box; border:1px solid #d1d5db; border-radius:6px; font-size:12.5px; padding:6px 8px; font-family:inherit; }
+  .drawer .dform textarea { height:74px; resize:vertical; margin-top:6px; }
+  .drawer .dform .row2 { display:flex; gap:8px; margin-top:8px; align-items:center; }
+  .drawer .dform .note-hint { font-size:10.5px; color:#9ca3af; }
 </style>
 </head>
 <body>
@@ -120,6 +137,23 @@
     </div>
   </div>
 </div></div>
+
+<div class="drawer" id="drawer">
+  <div class="dhead">
+    <button class="dclose" onclick="closeDrawer()">&times;</button>
+    <h3 id="dTitle">&nbsp;</h3>
+    <div class="sub" id="dSub">Running ledger &mdash; append-only, shared by everyone on the dashboard</div>
+  </div>
+  <div class="dlist" id="dList"></div>
+  <div class="dform">
+    <input id="dAuthor" placeholder="Your initials (remembered)" maxlength="60">
+    <textarea id="dText" placeholder="Add a note&hellip; (call outcomes, diligence findings, who owns the relationship)" maxlength="4000"></textarea>
+    <div class="row2">
+      <button class="btn" onclick="addNote()" id="dSave">Add note</button>
+      <span class="note-hint">Saved to SKYVEST.DBO.MA_SCREEN_NOTES with a timestamp</span>
+    </div>
+  </div>
+</div>
 
 <script>
 let ALL = [], VIEW = [], PAGE = 0, SORT = {k:'composite', dir:-1};
@@ -244,6 +278,9 @@ const COLS = [
  {k:'dc_score', t:'DC', num:1, render:p=>p.dc_score==null?g():p.dc_score.toFixed(0)},
  {k:'top50_status', t:'Owner tier', render:p=>p.top50_status==='Independent'?'Indep.':(p.top50_status.includes('stressed')?'<span class="chip warn">T50 stressed</span>':'Top-50')},
  {k:'composite', t:'Score*', num:1, render:p=>p.composite==null?'—':p.composite.toFixed(1)},
+ {k:'_notes', t:'Notes', render:(p,i)=>{const n=(NOTES[p.plant]||[]).length;
+    return `<span class="notechip ${n?'':'empty'}" onclick="event.stopPropagation();openNotes(${i})">&#128172; ${n||'+'}</span>`;},
+  sortVal:p=>(NOTES[p.plant]||[]).length},
 ];
 function g(txt){ return `<span class="gap">${txt||'— no data'}</span>`; }
 function esc(s){ return (''+(s??'')).replace(/&/g,'&amp;').replace(/</g,'&lt;'); }
@@ -289,7 +326,7 @@ function renderTable(){
   const tb = document.getElementById('tbody');
   const rows = VIEW.slice(PAGE*PER, (PAGE+1)*PER);
   tb.innerHTML = rows.map((p,i)=>{
-    const cells = COLS.map(c=>`<td class="${c.num?'num':''}">${c.render?c.render(p):esc(p[c.k]??'—')}</td>`).join('');
+    const cells = COLS.map(c=>`<td class="${c.num?'num':''}">${c.render?c.render(p,i):esc(p[c.k]??'—')}</td>`).join('');
     return `<tr class="row" onclick="toggleDetail(${i})">${cells}</tr><tr class="detail" id="det${i}" style="display:none"><td colspan="${COLS.length}">${detail(p)}</td></tr>`;
   }).join('') || `<tr><td colspan="${COLS.length}" class="note" style="padding:20px">No plants match. Loosen a facet &mdash; counts beside each option show where the matches went.</td></tr>`;
   const np = Math.max(1, Math.ceil(VIEW.length/PER));
@@ -346,6 +383,54 @@ function exportCsv(){
   a.download = 'ma_screen_filtered.csv'; a.click();
 }
 
+// ---- notes ledger ----
+let NOTES = {}, DRAWER_PLANT = null;
+async function loadNotes(){
+  try {
+    const j = await (await fetch('/api/mascreen/notes')).json();
+    NOTES = {};
+    (j.notes||[]).forEach(n => (NOTES[n.plant] = NOTES[n.plant]||[]).push(n));
+  } catch(e){ NOTES = {}; }
+}
+function openNotes(i){
+  const p = VIEW[PAGE*PER + i];
+  if (!p) return;
+  DRAWER_PLANT = p.plant;
+  document.getElementById('dTitle').textContent = p.plant;
+  document.getElementById('dAuthor').value = localStorage.getItem('ma_notes_author') || '';
+  renderDrawerList();
+  document.getElementById('drawer').classList.add('open');
+  document.getElementById('dText').focus();
+}
+function closeDrawer(){ document.getElementById('drawer').classList.remove('open'); DRAWER_PLANT = null; }
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeDrawer(); });
+function renderDrawerList(){
+  const list = NOTES[DRAWER_PLANT] || [];
+  document.getElementById('dList').innerHTML = list.length ? list.map(n =>
+    `<div class="noteitem"><div class="meta">${esc((n.created_at||'').slice(0,16).replace('T',' '))}${n.author?' &middot; '+esc(n.author):''}</div><div class="body">${esc(n.note)}</div></div>`
+  ).join('') : '<div class="note" style="padding:8px 0">No notes yet — first one starts the ledger.</div>';
+}
+async function addNote(){
+  const text = document.getElementById('dText').value.trim();
+  const author = document.getElementById('dAuthor').value.trim();
+  if (!text || !DRAWER_PLANT) return;
+  localStorage.setItem('ma_notes_author', author);
+  const btn = document.getElementById('dSave');
+  btn.disabled = true; btn.textContent = 'Saving…';
+  try {
+    const r = await fetch('/api/mascreen/notes', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({plant: DRAWER_PLANT, note: text, author})});
+    const j = await r.json();
+    if (j.saved){
+      (NOTES[DRAWER_PLANT] = NOTES[DRAWER_PLANT]||[]).unshift(j.saved);
+      document.getElementById('dText').value = '';
+      renderDrawerList(); renderTable();
+    } else { alert('Save failed: ' + (j.error||r.status)); }
+  } catch(e){ alert('Save failed: ' + e); }
+  btn.disabled = false; btn.textContent = 'Add note';
+}
+
 async function boot(){
   document.getElementById('tbody').innerHTML = '<tr><td class="note" style="padding:20px">Loading plant universe&hellip;</td></tr>';
   const r = await fetch('/api/mascreen/plants');
@@ -353,6 +438,7 @@ async function boot(){
   if (j.error){ document.getElementById('tbody').innerHTML = `<tr><td class="note" style="padding:20px">Failed to load: ${esc(j.error)}</td></tr>`; return; }
   ALL = j.plants;
   document.getElementById('loadedAt').textContent = `${j.n.toLocaleString()} plants · data loaded ${j.loaded_at ? j.loaded_at.slice(0,16).replace('T',' ') : '—'} · *Score = optional composite, one sort among many`;
+  await loadNotes();
   initFacets(); renderCoverage(); apply();
 }
 boot();
