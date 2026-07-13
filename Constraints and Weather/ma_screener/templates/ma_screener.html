@@ -130,7 +130,7 @@ const TAG_LIST = ['capitulation','cf-collapse','mechanical-fix','curtailment-pla
 
 // facet spec: id, title, and a classifier fn(plant) -> value label. 'gap' marks data-gap buckets.
 const FACETS = [
- {id:'contract', title:'Contract status', vals:['Merchant','Hybrid / partial','Contracted','Not assessed'],
+ {id:'contract', title:'Contract status', vals:['Merchant','Merchant (behavioral)','Hybrid / partial','Contracted','Contracted (behavioral)','Not assessed'],
   gaps:['Not assessed'], of:p => p.contract_status},
  {id:'ppaexp', title:'PPA expiry', vals:['≤3 yrs','3–5 yrs','>5 yrs','No PPA / unknown'],
   gaps:['No PPA / unknown'], of:p => {
@@ -301,6 +301,7 @@ function toggleDetail(i){ const el = document.getElementById('det'+i); el.style.
 function detail(p){
   const rows = [
     ['Contract evidence', p.contract_reason], ['EQR label', p.eqr_label && (p.eqr_label + (p.eqr_rolloff===1?' (roll-off: bilateral sales ended, went dark)':''))],
+    ['SCED behavior (ERCOT)', p.behavior_label && (p.behavior_label + (p.shutdown_est?` — revealed revenue floor ${p.shutdown_est}`:''))],
     ['PPA counterparty', p.ppa_counterparty], ['Seller evidence', p.seller_reason],
     ['Owners', p.owners], ['Ultimate parents', p.ult_parents],
     ['Likely passive / TE', p.te_owner], ['# owners', p.n_owners],
@@ -319,6 +320,7 @@ function renderCoverage(){
   const items = [
     ['Contract status assessed (S&P or EQR)', p=>p.contract_status!=='Not assessed', 'S&P PPA fields + FERC EQR; EQR is blind in ERCOT and misses IOU rate-base plants'],
     ['EQR seller matched', p=>p.eqr_label!=null, 'name-match to FERC EQR filings; ~structural zero for ERCOT'],
+    ['SCED behavioral read (ERCOT only)', p=>p.behavior_label!=null && !['no-sced-match','insufficient-data','n/a-battery'].includes(p.behavior_label), '60-day SCED dispatch vs node price; needs enough negative-price hours at the node'],
     ['CF 2023-24 (vs cohort P50)', p=>p.cf_2324!=null, 'EIA-923 via S&P; missing = too new (<2 full yrs) or not in the v2 screen'],
     ['CF 2023 & 2024 trajectory', p=>p.cf_2023!=null && p.cf_2024!=null, 'ownership export covers wind+solar in organized ISOs only (no batteries)'],
     ['Node congestion priced', p=>p.cong_score!=null, 'plant→EIA→node chain; missing = non-ISO plants and some 2024-25 CODs'],

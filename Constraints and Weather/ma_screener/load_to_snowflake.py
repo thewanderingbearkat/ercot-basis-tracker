@@ -36,6 +36,11 @@ def contract_status(r):
         return "Hybrid / partial"
     if r.get("ppa_status") == "Yes" or r.get("eqr_label") == "CONTRACTED":
         return "Contracted"
+    # ERCOT: no S&P/EQR view, but 60-day SCED dispatch behavior reveals the economics
+    if r.get("behavior_label") == "merchant-behaving":
+        return "Merchant (behavioral)"
+    if r.get("behavior_label") in ("must-take", "ptc-economics"):
+        return "Contracted (behavioral)"
     return "Not assessed"
 
 
@@ -56,6 +61,7 @@ def load(csv_path: str) -> pd.DataFrame:
         "STATE": df.state, "COUNTY": df.county, "COD_YR": df.cod_yr,
         "LAT": df.lat, "LON": df.lon,
         "CONTRACT_STATUS": df.apply(contract_status, axis=1),
+        "BEHAVIOR_LABEL": df.get("behavior_label"), "SHUTDOWN_EST": df.get("shutdown_est"),
         "PPA_STATUS": df.ppa_status, "PPA_EXPIRY": df.ppa_expiry,
         "PPA_COUNTERPARTY": df.ppa_counterparty, "CONTRACT_REASON": df.contract_reason,
         "EQR_LABEL": df.eqr_label, "EQR_ROLLOFF": df.eqr_rolloff,
@@ -97,6 +103,7 @@ def push(out: pd.DataFrame) -> None:
     cols = list(out.columns)
     typemap = {"PLANT": "VARCHAR", "TECH": "VARCHAR", "ISO": "VARCHAR", "STATE": "VARCHAR",
                "COUNTY": "VARCHAR", "CONTRACT_STATUS": "VARCHAR", "PPA_STATUS": "VARCHAR",
+               "BEHAVIOR_LABEL": "VARCHAR", "SHUTDOWN_EST": "VARCHAR",
                "PPA_EXPIRY": "DATE", "PPA_COUNTERPARTY": "VARCHAR", "CONTRACT_REASON": "VARCHAR",
                "EQR_LABEL": "VARCHAR", "PTC_STATUS": "VARCHAR", "SELLER_REASON": "VARCHAR",
                "TAGS": "VARCHAR", "TOP50_STATUS": "VARCHAR", "TE_OWNER": "VARCHAR",

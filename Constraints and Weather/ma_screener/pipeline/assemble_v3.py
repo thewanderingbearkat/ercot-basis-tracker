@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 
 DESK = r"C:\Users\TylerMartin\OneDrive - ArcLight Renewable Services\Desktop"
-SCRATCH = os.environ.get("MA_SCREEN_WORKDIR", r"C:\ma_screen_work")  # workdir with component CSVs
+SCRATCH = os.environ.get("MA_SCREEN_WORKDIR", "C:/ma_screen_work")  # workdir with component CSVs
 OUT = os.path.join(DESK, "Seller_Screen_v3_Scores.csv")
 ASOF = pd.Timestamp("2026-07-09")
 
@@ -126,7 +126,8 @@ bf = load("bustedflip_port.csv")
 cong = load("congestion_overlay.csv")
 flipx = load("flip_precision.csv")
 negp = load("negprice_overlay.csv")
-for c in (eqr, sell, dc, bf, cong, flipx, negp):
+recon = load("ercot_revealed_econ.csv")
+for c in (eqr, sell, dc, bf, cong, flipx, negp, recon):
     if c is not None:
         overlap = [col for col in c.columns if col != "POWER_PLANT" and col in p.columns]
         p = p.merge(c.drop(columns=overlap), on="POWER_PLANT", how="left")
@@ -173,6 +174,30 @@ def contract_row(r):
                 score, why = 15, "EQR: bilateral offtake (contracted; S&P blank)"
             elif r.ppa_status == "No":
                 score, why = 35, "CONFLICT: S&P says no PPA but EQR shows bilateral sales"
+    # ERCOT revealed economics (SCED behavior) — fills the EQR blind spot and
+    # cross-examines paper labels. Only meaningful labels act; mixed/insufficient don't.
+    beh = r.get("behavior_label")
+    if isinstance(beh, str) and beh in ("merchant-behaving", "must-take", "ptc-economics"):
+        note = f"SCED behavior: {beh} (revealed floor {r.get('shutdown_est')})"
+        if r.ppa_status == "NotAssessed" and not isinstance(lab, str):
+            if beh == "merchant-behaving":
+                score, why = 85, ("SCED behavior: output cut at negative node prices — "
+                                  "merchant-behaving (no PTC / no must-take offtake)")
+            elif beh == "must-take":
+                score, why = 20, ("SCED behavior: runs through deep negative prices — "
+                                  "must-take offtake / PTC economics")
+            else:
+                score, why = 35, "SCED behavior: PTC-style economics (curtails only below ~-$25)"
+        elif r.ppa_status == "Yes" and beh == "merchant-behaving" and score <= 60:
+            score, why = 60, ("VERIFY: S&P shows a PPA but the plant behaves merchant at its "
+                              "node (buyer curtailment rights, financial hedge, or stale record)")
+        elif r.ppa_status == "Yes" and beh == "merchant-behaving":
+            why += "; " + note + " — merchant-exposed dispatch despite PPA"
+        elif r.ppa_status == "No" and beh == "must-take":
+            score, why = 60, ("VERIFY: S&P says no PPA but plant runs through deep negatives "
+                              "(hidden offtake or PTC)")
+        else:
+            why += "; " + note
     return pd.Series({"score_contract": score, "contract_reason": why})
 
 p = pd.concat([p, p.apply(contract_row, axis=1)], axis=1)
@@ -326,6 +351,7 @@ cols = ["rank", "composite", "filter_pass", "POWER_PLANT", "tech", "OPER_CAPACIT
         "LARGEST_PPA_COUNTERPARTY", "ppa_expiry",
         "eqr_label", "eqr_seller", "eqr_iso_share", "eqr_top_bilat_buyer",
         "eqr_bilat_avg_px", "eqr_bilat_max_end", "eqr_rolloff",
+        "behavior_label", "shutdown_est", "n_neg_hours",
         "score_seller", "seller_reason", "seller_live_process", "seller_distressed",
         "seller_deal_count", "asset_traded", "asset_trade_year", "asset_trade_buyer",
         "score_flip", "flip_source", "flip_reason", "bf_te_owner", "bf_rank",
