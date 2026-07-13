@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 
 DESK = r"C:\Users\TylerMartin\OneDrive - ArcLight Renewable Services\Desktop"
-SCRATCH = r"C:\Users\TYLERM~1\AppData\Local\Temp\claude\C--Users-TylerMartin\be345640-8abd-4677-a763-c3972730811c\scratchpad"
+SCRATCH = os.environ.get("MA_SCREEN_WORKDIR", r"C:\ma_screen_work")  # workdir with component CSVs
 OUT = os.path.join(DESK, "Seller_Screen_v3_Scores.csv")
 ASOF = pd.Timestamp("2026-07-09")
 
