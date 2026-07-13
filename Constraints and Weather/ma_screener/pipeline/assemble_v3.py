@@ -139,68 +139,59 @@ exp = pd.to_datetime(p.LARGEST_PPA_CONTRACTED_EXPIRATION_DATE, errors="coerce")
 p["ppa_expiry"] = exp.dt.date
 
 def contract_row(r):
-    score, why = 40, "PPA not assessed by S&P"
-    if r.ppa_status == "No":
-        score, why = 90, "S&P: no active PPA (merchant)"
-    elif r.ppa_status == "Yes":
-        e = pd.to_datetime(r.ppa_expiry) if pd.notna(r.ppa_expiry) else None
-        if e is not None and e <= ASOF + pd.DateOffset(years=3):
-            score, why = 80, f"PPA expiring {e.date()}"
-        elif e is not None and e <= ASOF + pd.DateOffset(years=5):
-            score, why = 60, f"PPA expiring {e.date()}"
-        else:
-            score, why = 10, "long-dated PPA"
-        if pd.notna(r.contracted_pct) and r.contracted_pct < 0.5 and score < 65:
-            score, why = 65, f"only {r.contracted_pct:.0%} of capacity contracted"
+    """Contract-cliff pillar: contract STATE (merchant vs PPA) is a characteristic,
+    not a quality rating — it stays a facet. Only revenue EVENTS score: roll-offs,
+    expiry cliffs, and paper-vs-reality conflicts. Everything stable is neutral 40."""
     lab = r.get("eqr_label")
-    if isinstance(lab, str):
-        end = pd.to_datetime(r.get("eqr_bilat_max_end"), errors="coerce")
-        dark = pd.notna(end) and end < ASOF - pd.DateOffset(months=12)
-        if lab == "MERCHANT":
-            if r.get("eqr_rolloff") == 1:
-                score, why = 100, "EQR: bilateral sales ended, now selling to ISO (PPA roll-off)"
-            else:
-                score, why = max(score, 95), "EQR: >=80% of MWh sold to ISO (merchant)"
-        elif lab == "HYBRID":
-            score, why = max(score, 70), "EQR: mixed ISO/bilateral sales"
-        elif lab == "CONTRACTED":
-            if dark and r.ppa_status == "Yes":
-                score, why = 60, (f"VERIFY: EQR bilateral sales ended {end.date()} but S&P shows "
-                                  "active PPA (possible stale/mismatched EQR entity)")
-            elif dark:
-                score, why = 90, (f"EQR: bilateral sales ended {end.date()}, no successor visible "
-                                  "(roll-off, gone dark)")
-            elif r.ppa_status == "NotAssessed":
-                score, why = 15, "EQR: bilateral offtake (contracted; S&P blank)"
-            elif r.ppa_status == "No":
-                score, why = 35, "CONFLICT: S&P says no PPA but EQR shows bilateral sales"
-    # ERCOT revealed economics (SCED behavior) — fills the EQR blind spot and
-    # cross-examines paper labels. Only meaningful labels act; mixed/insufficient don't.
     beh = r.get("behavior_label")
-    if isinstance(beh, str) and beh in ("merchant-behaving", "must-take", "ptc-economics"):
-        note = f"SCED behavior: {beh} (revealed floor {r.get('shutdown_est')})"
-        if r.ppa_status == "NotAssessed" and not isinstance(lab, str):
-            if beh == "merchant-behaving":
-                score, why = 85, ("SCED behavior: output cut at negative node prices — "
-                                  "merchant-behaving (no PTC / no must-take offtake)")
-            elif beh == "must-take":
-                score, why = 20, ("SCED behavior: runs through deep negative prices — "
-                                  "must-take offtake / PTC economics")
-            else:
-                score, why = 35, "SCED behavior: PTC-style economics (curtails only below ~-$25)"
-        elif r.ppa_status == "Yes" and beh == "merchant-behaving" and score <= 60:
-            score, why = 60, ("VERIFY: S&P shows a PPA but the plant behaves merchant at its "
-                              "node (buyer curtailment rights, financial hedge, or stale record)")
-        elif r.ppa_status == "Yes" and beh == "merchant-behaving":
-            why += "; " + note + " — merchant-exposed dispatch despite PPA"
-        elif r.ppa_status == "No" and beh == "must-take":
-            score, why = 60, ("VERIFY: S&P says no PPA but plant runs through deep negatives "
-                              "(hidden offtake or PTC)")
+    end = pd.to_datetime(r.get("eqr_bilat_max_end"), errors="coerce")
+    dark = pd.notna(end) and end < ASOF - pd.DateOffset(months=12)
+    e = pd.to_datetime(r.ppa_expiry) if pd.notna(r.ppa_expiry) else None
+    score, why = 40, None
+    if lab == "MERCHANT" and r.get("eqr_rolloff") == 1:
+        score, why = 100, "EQR: bilateral sales ended, now selling to ISO (PPA roll-off)"
+    elif lab == "CONTRACTED" and dark and r.ppa_status != "Yes":
+        score, why = 90, (f"EQR: bilateral sales ended {end.date()}, no successor visible "
+                          "(roll-off, gone dark)")
+    elif r.ppa_status == "Yes" and e is not None and e <= ASOF + pd.DateOffset(years=3):
+        score, why = 85, f"PPA expiring {e.date()} — re-contract / exit decision point"
+    elif r.ppa_status == "Yes" and e is not None and e <= ASOF + pd.DateOffset(years=5):
+        score, why = 60, f"PPA expiring {e.date()}"
+    elif lab == "CONTRACTED" and dark and r.ppa_status == "Yes":
+        score, why = 55, (f"VERIFY: EQR bilateral sales ended {end.date()} but S&P shows active "
+                          "PPA (stale record or mismatched EQR entity)")
+    elif r.ppa_status == "Yes" and lab == "MERCHANT":
+        score, why = 55, ("VERIFY: S&P shows a PPA but EQR shows >=80% of MWh sold to the ISO "
+                          "(hub-settled hedge, buyer resale, or stale record)")
+    elif r.ppa_status == "Yes" and beh == "merchant-behaving":
+        score, why = 55, ("VERIFY: S&P shows a PPA but dispatch is merchant-exposed at the node "
+                          "(buyer curtailment rights, financial hedge, or stale record)")
+    elif r.ppa_status == "No" and (lab == "CONTRACTED" or beh == "must-take"):
+        score, why = 55, ("VERIFY: S&P says no PPA but bilateral sales / must-take dispatch "
+                          "observed (hidden offtake or PTC)")
+    elif r.ppa_status == "Yes" and pd.notna(r.contracted_pct) and r.contracted_pct < 0.5:
+        score, why = 50, f"only {r.contracted_pct:.0%} of capacity contracted (partial merchant exposure)"
+    if why is None:  # stable states — described, not scored
+        if r.ppa_status == "No" or lab == "MERCHANT" or beh == "merchant-behaving":
+            why = "merchant, stable (characteristic — not scored; filter by contract status instead)"
+        elif r.ppa_status == "Yes" or lab in ("CONTRACTED", "HYBRID") or beh in ("must-take", "ptc-economics"):
+            why = "contracted, stable (characteristic — not scored)"
         else:
-            why += "; " + note
+            why = "not assessed — no revenue event visible"
+        if isinstance(beh, str) and beh not in ("no-sced-match", "insufficient-data", "n/a-battery"):
+            why += f"; SCED: {beh} (floor {r.get('shutdown_est')})"
     return pd.Series({"score_contract": score, "contract_reason": why})
 
 p = pd.concat([p, p.apply(contract_row, axis=1)], axis=1)
+
+# explicit state flags for tags/audit (state is a characteristic; tags may still USE it,
+# with user-editable points, but the pillar above no longer rates it)
+p["merchant_exposed"] = ((p.ppa_status == "No") | (p.eqr_label == "MERCHANT")
+                         | (p.eqr_rolloff == 1)
+                         | (p.behavior_label == "merchant-behaving")).astype(int)
+p["ppa_exp_3yr"] = ((p.ppa_status == "Yes")
+                    & (pd.to_datetime(p.ppa_expiry, errors="coerce")
+                       <= ASOF + pd.DateOffset(years=3))).astype(int)
 
 # ---------- pillar: vintage / PTC ----------
 def vint(r):
@@ -307,8 +298,8 @@ TAG_POINTS = {  # canonical order — Read Me tag-points block and Tag Audit fla
     "capitulation": 40, "cf-collapse": 35, "mechanical-fix": 25, "curtailment-play": 25,
     "neg-price-bleed": 30, "yieldco-stress": 30, "fund-life-exit": 25, "oem-orphan": 20,
     "busted-flip": 25, "ptc-merchant": 30}
-p["tag_capitulation"] = ((p.score_contract >= 80) & p.cong_trend.notna()
-                         & (p.cong_trend < -1)).astype(int)
+p["tag_capitulation"] = (((p.merchant_exposed == 1) | (p.ppa_exp_3yr == 1))
+                         & p.cong_trend.notna() & (p.cong_trend < -1)).astype(int)
 p["tag_cf_collapse"] = p.cf_collapse
 p["tag_mechanical_fix"] = ((p.score_cf >= 65) & p.cong_da_25.notna()
                            & (p.cong_da_25 > -3)).astype(int)
@@ -321,7 +312,7 @@ p["tag_fund_life_exit"] = ((p.financial_owner == 1) & p.oldest_current_stake_yr.
                            & (p.oldest_current_stake_yr <= 2018)).astype(int)
 p["tag_oem_orphan"] = p.oem_orphan
 p["tag_busted_flip"] = (p.score_flip >= 85).astype(int)
-p["tag_ptc_merchant"] = ((p.ptc_expired == 1) & (p.score_contract >= 80)).astype(int)
+p["tag_ptc_merchant"] = ((p.ptc_expired == 1) & (p.merchant_exposed == 1)).astype(int)
 TAG_COL = {"capitulation": "tag_capitulation", "cf-collapse": "tag_cf_collapse",
            "mechanical-fix": "tag_mechanical_fix", "curtailment-play": "tag_curtailment_play",
            "neg-price-bleed": "tag_neg_price_bleed", "yieldco-stress": "tag_yieldco_stress",
@@ -351,7 +342,7 @@ cols = ["rank", "composite", "filter_pass", "POWER_PLANT", "tech", "OPER_CAPACIT
         "LARGEST_PPA_COUNTERPARTY", "ppa_expiry",
         "eqr_label", "eqr_seller", "eqr_iso_share", "eqr_top_bilat_buyer",
         "eqr_bilat_avg_px", "eqr_bilat_max_end", "eqr_rolloff",
-        "behavior_label", "shutdown_est", "n_neg_hours",
+        "behavior_label", "shutdown_est", "n_neg_hours", "merchant_exposed", "ppa_exp_3yr",
         "score_seller", "seller_reason", "seller_live_process", "seller_distressed",
         "seller_deal_count", "asset_traded", "asset_trade_year", "asset_trade_buyer",
         "score_flip", "flip_source", "flip_reason", "bf_te_owner", "bf_rank",

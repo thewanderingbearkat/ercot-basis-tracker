@@ -10,7 +10,7 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 DESK = r"C:\Users\TylerMartin\OneDrive - ArcLight Renewable Services\Desktop"
-SCRATCH = os.environ.get("MA_SCREEN_WORKDIR", r"C:\ma_screen_work")  # workdir with component CSVs
+SCRATCH = os.environ.get("MA_SCREEN_WORKDIR", "C:/ma_screen_work")  # workdir with component CSVs
 OUT = os.path.join(DESK, "Seller_Screen_v3.xlsx")
 
 F = "Arial"
@@ -81,7 +81,7 @@ put(rm, 3, 2, "Ranks operating renewables (>=50 MW) by likelihood the owner is a
               "blue weights below and the Screen tab re-ranks.", italic=True)
 
 put(rm, 5, 2, "WEIGHTS (blue cells — must sum to 1.00)", bold=True, size=11, color=NAVY)
-WROWS = {"Contract posture": (6, "Merchant / PPA-expiring / EQR roll-off. 100=confirmed roll-off, 95=EQR merchant, 90=S&P no-PPA, 80=PPA exp <=3yr, 65=partially contracted, 60=exp <=5yr or verify-conflict, 40=not assessed, 15=EQR contracted, 10=long-dated PPA.", "Src EQR + All Plants (S&P PPA cols)"),
+WROWS = {"Contract cliff / event": (6, "Scores revenue EVENTS only — contract STATE (merchant vs PPA) is a characteristic, filterable on the dashboard, not a rating. 100=EQR roll-off, 90=gone dark, 85=PPA exp <=3yr, 60=exp <=5yr, 55=paper-vs-reality VERIFY conflict, 50=partially contracted, 40=neutral (stable merchant / stable contracted / not assessed).", "Src EQR + All Plants (S&P PPA cols, SCED behavior)"),
          "Busted-flip fingerprint": (7, "v2 Co-Own rubric (4+ owners=100, 3=85, 2=65, 1=15/45/5) lifted to >=90 when stake data shows sponsor <=10% beside fund >=60%, >=80 when co-owners entered on one date/KeyDeal (single financing close).", "Src BustedFlip + Src Ownership"),
          "Vintage / PTC": (8, "Wind: COD<=2016 & not repowered=100 (PTC fully expired), 2017-18=50, newer=10, repowered=15. Solar: <=2016=70, <=2019=55, <=2021=45 (ITC recapture cleared), newer=10. Battery=10.", "All Plants (COD, repower flags)"),
          "Willing-seller behavior": (9, "Live sale process=100 (owner) / 70 (parent-only); distressed=95/80; repeat seller=80/50; sold once=60/40; financial owner floor=55; asset traded 2024+ caps at 30 (just bought); traded <=2023 lifts to 65 (fund-recycle).", "Src Sellers"),
@@ -104,7 +104,7 @@ rm.conditional_formatting.add("C12", CellIsRule(
     operator="notEqual", formula=["1"], fill=PatternFill("solid", start_color="F4CCCC")))
 
 # TAG POINTS — blue editable cells C15:C24; order MUST match Tag Audit flag columns
-TAGS = [("capitulation", 40, "merchant/PPA-expiring AND congestion worsening >$1/MWh y/y — both revenue legs deteriorating"),
+TAGS = [("capitulation", 40, "merchant-exposed OR PPA expiring <=3yr, AND congestion worsening >$1/MWh y/y — both revenue legs deteriorating"),
         ("cf-collapse", 35, "2024 CF < 75% of 2023 (full-baseline, non-repowered plants only; 94% EIA-validated)"),
         ("mechanical-fix", 25, "CF underperformer at a benign node — availability problem, buy-and-fix thesis"),
         ("curtailment-play", 25, "CF underperformer at a congested node — economic curtailment, congestion-optionality/repower thesis"),
@@ -113,7 +113,7 @@ TAGS = [("capitulation", 40, "merchant/PPA-expiring AND congestion worsening >$1
         ("fund-life-exit", 25, "financial owner in the position since <=2018 — past typical fund term"),
         ("oem-orphan", 20, "turbines from a dead/exited OEM (Suzlon, Clipper, Senvion, Mitsubishi...) — O&M cost spiral, repower case"),
         ("busted-flip", 25, "flip pillar >=85 — tax-equity structure past its scheduled flip"),
-        ("ptc-merchant", 30, "PTC expired AND merchant/PPA-expiring — sponsor economics dead")]
+        ("ptc-merchant", 30, "PTC expired AND merchant-exposed (S&P no-PPA / EQR merchant / roll-off / SCED merchant-behaving) — sponsor economics dead")]
 TAG_PT_ROW0 = 15  # first tag-points row on Read Me
 put(rm, 14, 2, "TAG POINTS (blue — each tripped tag adds points to the Opportunity-tags "
                "pillar, capped at 100; edit to re-rank)", bold=True, size=11, color=NAVY)
@@ -170,17 +170,21 @@ for i, c in enumerate(CAV):
 
 # ============ Tag Audit ============
 TA_INPUTS = [  # header, final-df column
-    ("Plant", "plant"), ("Contract score", "score_contract"),
+    ("Plant", "plant"), ("Cliff score", "score_contract"),
     ("Cong trend $/MWh", "cong_trend"), ("CF score", "score_cf"),
     ("DA cong '25", "cong_da_25"), ("CF 2023 %", "cf_2023"), ("CF 2024 %", "cf_2024"),
     ("COD", "cod_yr"), ("Repowered", "repowered"), ("PTC expired", "ptc_expired"),
     ("Neg px share '25", "negp_da_25"), ("Stressed top-50", "top50_stressed"),
     ("Financial owner", "financial_owner"), ("Oldest stake yr", "oldest_current_stake_yr"),
     ("OEM orphan", "oem_orphan"), ("OEM makes", "oem_mfrs"), ("Flip score", "score_flip"),
+    ("Merchant exposed", "merchant_exposed"), ("PPA exp <=3yr", "ppa_exp_3yr"),
 ]
 # per-tag flag formulas over the input columns above (same rules as assemble_v3.py / Read Me)
+# input letters: B cliff, C trend, D cf-score, E cong, F cf23, G cf24, H cod, I repow,
+# J ptc, K negpx, L stressed, M fin, N stake-yr, O oem, P oem-makes, Q flip,
+# R merchant-exposed, S ppa-exp-3yr
 TA_FLAGS = [
-    ("capitulation", "=IF(AND($B{x}>=80,ISNUMBER($C{x}),$C{x}<-1),1,0)"),
+    ("capitulation", "=IF(AND(OR($R{x}=1,$S{x}=1),ISNUMBER($C{x}),$C{x}<-1),1,0)"),
     ("cf-collapse", "=IF(AND(ISNUMBER($F{x}),ISNUMBER($G{x}),$F{x}>5,$G{x}<0.75*$F{x},"
                     "ISNUMBER($H{x}),$H{x}<=2022,$I{x}=0),1,0)"),
     ("mechanical-fix", "=IF(AND($D{x}>=65,ISNUMBER($E{x}),$E{x}>-3),1,0)"),
@@ -190,7 +194,7 @@ TA_FLAGS = [
     ("fund-life-exit", "=IF(AND($M{x}=1,ISNUMBER($N{x}),$N{x}<=2018),1,0)"),
     ("oem-orphan", "=IF($O{x}=1,1,0)"),
     ("busted-flip", "=IF($Q{x}>=85,1,0)"),
-    ("ptc-merchant", "=IF(AND($J{x}=1,$B{x}>=80),1,0)"),
+    ("ptc-merchant", "=IF(AND($J{x}=1,$R{x}=1),1,0)"),
 ]
 assert [t for t, _ in TA_FLAGS] == [t for t, _, _ in TAGS]  # row/col order must match Read Me
 ta = wb.create_sheet("Tag Audit")
@@ -256,7 +260,7 @@ SPEC = [  # header, width, fmt, value fn (row dict, excel row) -> value
     ("ISO", 10, None, lambda r, x: r["iso"]),
     ("St", 5, None, lambda r, x: r["state"]),
     ("COD", 7, "0", lambda r, x: r["cod_yr"]),
-    ("Contract", 9, "0", lambda r, x: r["score_contract"]),
+    ("Cliff", 7, "0", lambda r, x: r["score_contract"]),
     ("Flip", 6, "0", lambda r, x: r["score_flip"]),
     ("Vintage", 8, "0", lambda r, x: r["score_vintage"]),
     ("Seller", 7, "0", lambda r, x: r["score_seller"]),
@@ -301,7 +305,7 @@ for j, (h, wdt, _, _) in enumerate(SPEC, 1):
     ws.cell(row=2, column=j, value=h)
     ws.column_dimensions[get_column_letter(j)].width = wdt
 style_header(ws, 2, len(SPEC))
-PILLAR_NOTES = {"Contract": "0.25 wt — see Read Me rubric; evidence in 'Contract evidence' + Src EQR",
+PILLAR_NOTES = {"Cliff": "0.21 wt — revenue EVENTS only (roll-off, expiry cliff, VERIFY conflict); stable contract state is neutral 40. See Read Me rubric.",
                 "Flip": "0.20 wt — v2 Co-Own + stake fingerprints; see 'Flip / TE evidence' + Src Ownership",
                 "Vintage": "0.20 wt — PTC/ITC rubric on Read Me; COD + Repow cols",
                 "Seller": "0.20 wt — deal-intel signals; see 'Seller evidence' + Src Sellers",
