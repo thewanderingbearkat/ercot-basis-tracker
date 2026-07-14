@@ -42,6 +42,42 @@ ALIAS_WHITELIST = [
     ("SHELL", "SAVION"), ("PINE GATE", "MORNINGSKY"),
     ("BROOKFIELD", "SCOUT"), ("DERIVA", "SCOUT"),
 ]
+
+# 2026-07 public-information audit of all matched pairs (4 web-verification agents,
+# sources in session notes): pairs verified FALSE — pure name coincidences. Cleared
+# outright and kept here as a permanent blocklist.
+FALSE_PAIRS = [
+    "E.ON Climate & Renewables North America Inc. -> TPG Rise Climate",
+    "Tokyo Gas America Ltd. -> Tokyo Electric Power Company Holdings (TEPCO)",
+    "Tri-State Generation and Transmission Association Inc. -> Tri Global Energy",
+    "Atlantic Wind, LLC -> Global Atlantic Financial Group",
+    "Columbia Universal Corp. -> New Columbia Solar",
+    "E&P Financial Group Limited -> Global Atlantic Financial Group",
+    "House Mountain LLC -> New Mountain Capital",
+    "Pacific Wind Development LLC -> Pacific Gas and Electric Company (PG&E)",
+    "Rocky Mountain Power, Inc. -> New Mountain Capital",
+    "Star Point Wind Project LLC -> East Point Energy",
+    "Sun Life Financial Inc. -> New York Life",
+    "GE Energy Financial Services -> Global Atlantic Financial Group",
+    "Qualitas Equity Partners -> New Energy Equity",
+]
+
+# Pairs verified as real-but-SIBLING relationships (same group, different platform):
+# attributing the entity's deals to these owners' plants only holds at group level.
+# Rewriting the owner side makes assemble_v3's direct-vs-parent logic score them at
+# parent strength automatically (matched name no longer appears in the owners list).
+SIBLING_REWRITES = {
+    "Deriva Energy, LLC -> Scout Clean Energy":
+        "Brookfield group (Deriva sibling) -> Scout Clean Energy",
+    "Pine Gate Renewables, LLC -> MorningSky Power":
+        "Fundamental Advisors successor (Pine Gate pipeline) -> MorningSky Power",
+    "JERA Americas Inc. -> JERA Nex":
+        "JERA group (sibling) -> JERA Nex",
+    "Mitsubishi Heavy Industries America, Inc. -> Mitsubishi Power Americas":
+        "MHI group (sibling) -> Mitsubishi Power Americas",
+    "RWE Renewables Europe & Australia GmbH -> RWE Clean Energy":
+        "RWE group (sibling region) -> RWE Clean Energy",
+}
 GENERIC_EXTRA = {"CLIMATE", "CLEAN", "GREEN", "SUSTAINABLE", "NEW", "RISE", "SOLAR",
                  "WIND", "STORAGE", "DEVELOPMENT", "MANAGEMENT", "INVESTMENTS",
                  "INVESTMENT", "GLOBAL", "NORTH", "AMERICA", "AMERICAN"}
@@ -62,6 +98,22 @@ def main(workdir):
 
     path = f"{workdir}\\seller_signals.csv"
     s = pd.read_csv(path, encoding="utf-8-sig")
+
+    # Gate 0: audited blocklist — verified-false pairs cleared; sibling pairs
+    # rewritten so they score at parent strength (live flags don't cross siblings).
+    matched0 = s.seller_owner_matched.fillna("")
+    blocked = matched0.isin(FALSE_PAIRS)
+    for col in ("seller_owner_matched", "seller_last_sold", "seller_deal_count",
+                "seller_op_deal_count", "seller_live_process", "seller_distressed"):
+        s.loc[blocked, col] = pd.NA
+    n_sib = 0
+    for old, new in SIBLING_REWRITES.items():
+        m = s.seller_owner_matched.fillna("") == old
+        s.loc[m, "seller_owner_matched"] = new
+        s.loc[m, "seller_live_process"] = 0
+        n_sib += int(m.sum())
+    print(f"audited blocklist cleared: {int(blocked.sum())} plants; "
+          f"sibling pairs downgraded to parent strength: {n_sib} plants")
 
     # Gate 1: kill matches whose owner and seller entity share NO distinctive token
     # (generic-token accidents), unless whitelisted as a known corporate alias.
