@@ -51,6 +51,12 @@ def page():
     return render_template("ma_screener.html")
 
 
+@ma_screener_bp.route("/screener-map")
+def lineage_map():
+    """Radial lineage web: screener -> pillars -> data sources -> columns."""
+    return render_template("ma_screener_map.html")
+
+
 @ma_screener_bp.route("/api/mascreen/plants")
 def api_plants():
     global _cache, _cache_at

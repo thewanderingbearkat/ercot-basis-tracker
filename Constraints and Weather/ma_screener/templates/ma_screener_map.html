@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Screener Map &mdash; scoring lineage</title>
+<style>
+  html, body { margin:0; padding:0; background:#f8f9fa; }
+  body { font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color:#0E2C51; }
+  .tab-nav { display:flex; gap:4px; padding:20px 20px 0 20px; border-bottom:2px solid #e5e7eb; background:#f8f9fa; line-height:1.25; flex-wrap:wrap; }
+  .tab-nav a { display:inline-block; padding:8px 16px; font-size:13px; color:#6b7280; text-decoration:none; border-bottom:2px solid transparent; margin-bottom:-2px; font-weight:500; }
+  .tab-nav a:hover { color:#0E2C51; } .tab-nav a.active { color:#0E2C51; border-bottom-color:#0E2C51; font-weight:600; }
+  .page-wrap { padding:16px; } .page-inner { max-width:88rem; margin:0 auto; }
+  h1 { font-size:24px; line-height:32px; margin:0 0 4px; font-weight:700; }
+  .subtitle { color:#2291EB; font-size:12px; font-weight:600; margin-bottom:14px; text-transform:uppercase; letter-spacing:.5px; }
+  .panel { background:#fff; border:1px solid #e5e7eb; border-radius:8px; padding:14px 16px; margin-bottom:14px; }
+  .note { font-size:12px; color:#6b7280; line-height:1.55; }
+  #web { width:100%; height:auto; display:block; }
+  .infobox { position:sticky; bottom:10px; background:#fff; border:1px solid #e5e7eb; border-radius:8px; padding:10px 14px; font-size:12.5px; min-height:40px; box-shadow:0 2px 10px rgba(14,44,81,.06); }
+  .infobox b { color:#0E2C51; }
+  .infobox .k { color:#2291EB; font-weight:600; text-transform:uppercase; font-size:10.5px; letter-spacing:.4px; margin-right:6px; }
+  .legend { font-size:11.5px; color:#6b7280; }
+  .legend .sw { display:inline-block; width:12px; height:12px; border-radius:3px; vertical-align:-2px; margin:0 4px 0 12px; }
+</style>
+</head>
+<body>
+<div class="tab-nav">
+  <a href="/">Basis Tracker / PnL</a>
+  <a href="/shadow">Shadow Trading</a>
+  <a href="/hail">Hail Monitor</a>
+  <a href="/constraints">ERCOT Constraint Map</a>
+  <a href="/pjm-constraints">PJM Constraint Map</a>
+  <a href="/kepler">Kepler</a>
+  <a href="/model">Congestion Model</a>
+  <a href="/canadian-hills">Canadian Hills</a>
+  <a href="/ma-screener">M&amp;A Screener</a>
+  <a href="/screener-map" class="active">Screener Map</a>
+</div>
+
+<div class="page-wrap"><div class="page-inner">
+  <h1>Screener Map</h1>
+  <div class="subtitle">How every score is built &mdash; composite &rarr; pillars &rarr; sources &rarr; columns. Hover to trace; click to pin.</div>
+
+  <div class="panel">
+    <svg id="web" viewBox="0 0 1500 1500" xmlns="http://www.w3.org/2000/svg"></svg>
+    <div class="legend" id="legend"></div>
+  </div>
+  <div class="infobox" id="info"><span class="k">Hover a node</span> Rings: center = the screener &middot; ring 1 = scoring pillars (weights are live on the workbook / editable) &middot; ring 2 = data sources &middot; ring 3 = the columns actually used. Overlays are reported beside scores but carry no weight.</div>
+</div></div>
+
+<script>
+// Lineage: pillar -> sources -> columns. Mirrors assemble_v3.py + component builders.
+const TREE = {
+  name: "M&A Seller Screener", info: "2,221 plants ≥50 MW scored; 421 pass filters. Composite = weighted pillars (weights editable). Every node here traces to a Src tab on the workbook / a facet on the dashboard.",
+  children: [
+    { name: "Contract cliff / event", w: "0.21", color: "#2291EB",
+      info: "Scores revenue EVENTS only — roll-offs, expiry cliffs, paper-vs-reality conflicts. Stable merchant / contracted / not-assessed are all neutral 40 (state is a filter facet, not a rating).",
+      children: [
+        { name: "S&P Asset Screen (xlsx)", info: "CIQ Pro Power Plants export, plant + PPA fields. Tri-state PPA flag: Yes / No / blank = not assessed.",
+          children: [
+            { name: "ACTIVE_POWER_PURCH_AGR" }, { name: "LARGEST_PPA_EXPIRATION" },
+            { name: "LARGEST_PPA_COUNTERPARTY" }, { name: "TOTAL_CONTRACTED_CAPACITY" } ] },
+        { name: "FERC EQR (Snowflake AMA.EQR)", info: "EQR_TRANSACTIONS_SUMMARY, 2024+. Revealed sales: ≥80% MWh to ISO = merchant; flat-price bilateral = PPA; ended bilaterals = roll-off. Blind in ERCOT.",
+          children: [
+            { name: "SELLER_COMPANY_NAME" }, { name: "CUSTOMER_COMPANY_NAME" },
+            { name: "TRANSACTION_QUANTITY_SUM" }, { name: "TRANSACTION_END_DATE" },
+            { name: "PRICE_MIN / PRICE_MAX" } ] },
+        { name: "ERCOT 60-day SCED (YESDATA)", info: "ERCOT_60D_SCED_GEN_RESOURCE_DATA_RAW. Dispatch behavior vs node price reveals the revenue floor — fills the EQR blind spot. Offer curves useless (everyone bids -$250).",
+          children: [
+            { name: "TELEMETERED_NET_OUTPUT" }, { name: "HSL" },
+            { name: "ERCOTUNIT2UNIT link" }, { name: "DART_PRICES.RTLMP" } ] } ] },
+    { name: "Busted-flip fingerprint", w: "0.17", color: "#7C5CBF",
+      info: "Tax-equity structures past their flip: co-ownership counts, financing-event dates, sponsor ≤10% beside fund ≥60%.",
+      children: [
+        { name: "BustedFlip v2 workbook", info: "Prior screen, ported by exact plant name (1,289 plants). Co-Own rubric: 4+ owners=100 … sole IPP=5.",
+          children: [ { name: "Co-Own score" }, { name: "# Owners" }, { name: "Likely Passive / TE Owner" } ] },
+        { name: "Ownership Records (xlsx)", info: "Stake-level CIQ export: 11,281 owner-stakes / 7,011 plants. Same Own Event Date across owners = one financing close.",
+          children: [ { name: "Own %" }, { name: "Own Event Date" }, { name: "KeyDeal ID" }, { name: "Owner / Ultimate Parent" } ] } ] },
+    { name: "Vintage / PTC", w: "0.17", color: "#D97A29",
+      info: "Wind COD ≤2016 & not repowered = PTC fully expired (100). Solar on the ITC-recapture clock. Repowered = 15.",
+      children: [
+        { name: "S&P Asset Screen (xlsx)", info: "Plant-level original COD (kept even after repower).",
+          children: [ { name: "YR_1ST_UNIT_IN_SVC" }, { name: "TECH_TYPE" } ] },
+        { name: "S&P Unit Screen (.xls)", info: "Unit-level years + equipment. unit_min_year − plant COD ≥ 5 = repowered. Dead-OEM turbines = oem-orphan tag.",
+          children: [ { name: "YR_UNIT_IN_SVC" }, { name: "EQUIPMENT_MANUFACTURER" }, { name: "EQUIPMENT_MODEL" } ] } ] },
+    { name: "Willing-seller behavior", w: "0.17", color: "#15803D",
+      info: "Live sale processes, repeat sellers, distress, fund-past-term. Owner-level matches audited against public sources; sector-gated; blocklisted false pairs.",
+      children: [
+        { name: "transaction.csv (deal intel)", info: "1,302 deals 2021-26. Live renewable 'Project M&A Process' rows = strongest willing-NOW flag.",
+          children: [ { name: "Seller / Buyer" }, { name: "Live Deal?" }, { name: "Type | Sub Type" }, { name: "Sectors" }, { name: "Reported" } ] },
+        { name: "projects-export.csv", info: "543-project registry; 141 with named buyers AND sellers = confirmed traded assets.",
+          children: [ { name: "Project Name" }, { name: "Buyers / Sellers" }, { name: "Status" } ] },
+        { name: "Ownership Records (xlsx)", info: "Financial owner in the stake since ≤2018 = fund past typical term.",
+          children: [ { name: "Own Event Date" }, { name: "Owner names → financial lexicon" } ] } ] },
+    { name: "CF vs cohort P50", w: "0.13", color: "#B4451F",
+      info: "CF'23-24 vs median CF of mature peers (Tech × ISO × vintage bucket). EIA-923-derived via S&P; validated vs raw EIA-923 (~90% within 3pp; collapse flags 94% confirmed).",
+      children: [
+        { name: "BustedFlip v2 (EIA-923 via S&P)", info: "CF levels + cohort P50 benchmark, ported by name.",
+          children: [ { name: "CF '23-24" }, { name: "Cohort P50" }, { name: "CF Basis" } ] },
+        { name: "Ownership Records (xlsx)", info: "Per-year CF — powers the cf-collapse flag (2024 < 75% of 2023, full-baseline non-repowered plants only).",
+          children: [ { name: "CF 2023 (%)" }, { name: "CF 2024 (%)" } ] },
+        { name: "Yes Energy EIA-923 (validation)", info: "TS_EIA923_GEN_V + DS_UNITS nameplate — the independent check on S&P's derivation.",
+          children: [ { name: "monthly net gen" }, { name: "NAMEPLATE" } ] } ] },
+    { name: "Opportunity tags", w: "0.15", color: "#0E7C86",
+      info: "10 tags, each = points (editable) when tripped, capped at 100. Live 0/1 formulas on the workbook's Tag Audit tab.",
+      children: [
+        { name: "Derived flags (Tag Audit)", info: "Inputs computed by the pipeline from the other pillars' sources — every flag's rule is a visible Excel formula.",
+          children: [ { name: "merchant_exposed" }, { name: "ppa_exp_3yr" }, { name: "cf_collapse" }, { name: "top50_stressed" }, { name: "oem_orphan" }, { name: "oldest_stake_yr" } ] },
+        { name: "Yes Energy DART_PRICES", info: "Node-level hourly prices → congestion trend (capitulation tag) and negative-price-hour share (neg-price-bleed).",
+          children: [ { name: "DACONG / node−hub basis" }, { name: "cong_trend '24→'25" }, { name: "share RTLMP < 0" } ] },
+        { name: "data-center.csv", info: "Pipeline DC load within 50/100 mi — demand-growth context (announcement-inflated; capped + weighted).",
+          children: [ { name: "Total MWs" }, { name: "Status" }, { name: "Lat/Lon + accuracy" } ] } ] },
+    { name: "Overlays (not weighted)", w: "—", color: "#6b7280",
+      info: "Reported beside the scores for valuation/diligence context — deliberately excluded from the composite.",
+      children: [
+        { name: "Plant→node mapping chain", info: "EIA Site Code → DS_PLANTS.PLANT_CODE → UNIT2PLANT → UNIT2PNODE → PRICE_NODES. Exact join since the EIA-coded ownership export.",
+          children: [ { name: "EIA Site Code" }, { name: "OBJECT_RELATIONSHIPS" }, { name: "PRICE_NODES" } ] },
+        { name: "Congestion / basis (DART_PRICES)", info: "2024/2025 DA congestion (node−HB_HUBAVG basis in ERCOT). Time-average, not gen-weighted.",
+          children: [ { name: "cong_da_24 / cong_da_25" }, { name: "cong_score 0-3" } ] },
+        { name: "Notes ledger (MA_SCREEN_NOTES)", info: "Append-only per-plant notes from the dashboard drawer — the human layer.",
+          children: [ { name: "NOTE / AUTHOR / CREATED_AT" } ] } ] },
+  ]
+};
+
+const svg = document.getElementById('web'), NS = 'http://www.w3.org/2000/svg';
+const CX = 750, CY = 750, R = [0, 170, 330, 545];
+
+// assign angles: leaves get even slots; parents sit at the mean of their children
+let slot = 0, leaves = 0;
+(function count(n){ n.children ? n.children.forEach(count) : leaves++; })(TREE);
+function layout(n, depth, color){
+  n.depth = depth; n.color = n.color || color;
+  if (n.children){ n.children.forEach(c => layout(c, depth+1, n.color));
+    n.angle = n.children.reduce((a,c)=>a+c.angle,0)/n.children.length;
+  } else { n.angle = (slot++ / leaves) * 2*Math.PI - Math.PI/2; }
+  n.x = CX + R[Math.min(depth,3)] * Math.cos(n.angle);
+  n.y = CY + R[Math.min(depth,3)] * Math.sin(n.angle);
+}
+layout(TREE, 0, '#0E2C51');
+
+function el(tag, attrs, parent){ const e = document.createElementNS(NS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]); (parent||svg).appendChild(e); return e; }
+
+// faint ring guides
+[1,2,3].forEach(i => el('circle', {cx:CX, cy:CY, r:R[i], fill:'none', stroke:'#eef1f5', 'stroke-width':1}));
+
+const nodes = [], links = [];
+(function collect(n, parent){ nodes.push(n); if (parent) links.push([parent, n]);
+  (n.children||[]).forEach(c => collect(c, n)); })(TREE, null);
+
+const gL = el('g', {}), gN = el('g', {});
+links.forEach(([a,b],i) => {
+  const mx = CX + (R[Math.min(a.depth,3)] + R[Math.min(b.depth,3)])/2 * Math.cos(b.angle);
+  const my = CY + (R[Math.min(a.depth,3)] + R[Math.min(b.depth,3)])/2 * Math.sin(b.angle);
+  const p = el('path', {d:`M${a.x},${a.y} Q${mx},${my} ${b.x},${b.y}`, fill:'none',
+    stroke: b.color, 'stroke-opacity':0.35, 'stroke-width': b.depth===1?2.2:b.depth===2?1.5:1}, gL);
+  b.linkEl = p;
+});
+nodes.forEach(n => {
+  const g = el('g', {cursor:'pointer'}, gN);
+  n.el = g;
+  const r = n.depth===0?60 : n.depth===1?11 : n.depth===2?6.5 : 3.5;
+  if (n.depth===0){
+    el('circle', {cx:n.x, cy:n.y, r, fill:'#0E2C51'}, g);
+    const t = el('text', {x:n.x, y:n.y-6, 'text-anchor':'middle', fill:'#fff', 'font-size':15, 'font-weight':700}, g);
+    t.textContent = 'M&A Seller';
+    const t2 = el('text', {x:n.x, y:n.y+14, 'text-anchor':'middle', fill:'#fff', 'font-size':15, 'font-weight':700}, g);
+    t2.textContent = 'Screener';
+  } else {
+    el('circle', {cx:n.x, cy:n.y, r, fill:n.color, 'fill-opacity':n.depth===1?1:.85, stroke:'#fff', 'stroke-width':1.2}, g);
+    const deg = n.angle*180/Math.PI, flip = (deg>90||deg<-90);
+    const off = r + 6, tx = n.x + off*Math.cos(n.angle), ty = n.y + off*Math.sin(n.angle);
+    const t = el('text', {x:tx, y:ty, 'font-size': n.depth===1?14:n.depth===2?12:10.5,
+      'font-weight': n.depth===1?700:n.depth===2?600:400,
+      fill: n.depth===3?'#374151':n.color,
+      transform:`rotate(${flip?deg+180:deg} ${tx} ${ty})`,
+      'text-anchor': flip?'end':'start', 'dominant-baseline':'middle'}, g);
+    t.textContent = n.name + (n.w && n.w!=='—' ? `  (${n.w})` : '');
+  }
+});
+
+// hover/click: highlight ancestor+descendant chain
+let pinned = null;
+function chain(n){ const s = new Set(); (function up(x){ s.add(x); if(x.p) up(x.p); })(n);
+  (function down(x){ s.add(x); (x.children||[]).forEach(down); })(n); return s; }
+(function setP(n){ (n.children||[]).forEach(c => { c.p = n; setP(c); }); })(TREE);
+function focus(n){
+  const s = n ? chain(n) : null;
+  nodes.forEach(m => m.el.setAttribute('opacity', !s || s.has(m) ? 1 : 0.12));
+  nodes.forEach(m => { if (m.linkEl) m.linkEl.setAttribute('stroke-opacity', !s ? 0.35 : (s.has(m) && s.has(m.p) ? 0.9 : 0.05)); });
+  const info = document.getElementById('info');
+  if (n){
+    const ring = ['Composite','Pillar','Data source','Column'][Math.min(n.depth,3)];
+    info.innerHTML = `<span class="k">${ring}${n.w && n.w!=='—' ? ' · weight '+n.w : ''}</span><b>${n.name}</b>` +
+      (n.info ? ` — ${n.info}` : (n.p ? ` — used by <b>${n.p.name}</b>${n.p.info ? ' ('+n.p.info+')' : ''}` : ''));
+  }
+}
+nodes.forEach(n => {
+  n.el.addEventListener('mouseenter', () => { if (!pinned) focus(n); });
+  n.el.addEventListener('mouseleave', () => { if (!pinned) focus(null); });
+  n.el.addEventListener('click', e => { e.stopPropagation(); pinned = (pinned===n)?null:n; focus(pinned); });
+});
+svg.addEventListener('click', () => { pinned = null; focus(null); });
+
+document.getElementById('legend').innerHTML =
+  TREE.children.map(c => `<span class="sw" style="background:${c.color}"></span>${c.name}${c.w && c.w!=='—' ? ' ('+c.w+')' : ''}`).join('');
+</script>
+</body>
+</html>
