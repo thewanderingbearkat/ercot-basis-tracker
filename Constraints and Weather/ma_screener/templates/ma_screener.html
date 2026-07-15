@@ -63,6 +63,14 @@
   .covbar { height:7px; border-radius:4px; background:#f1f3f5; overflow:hidden; min-width:110px; }
   .covbar > div { height:100%; background:#2291EB; }
   details.covwrap summary { cursor:pointer; font-size:12.5px; color:#2291EB; font-weight:600; }
+  .wgrid { display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:4px 16px; }
+  .wrow { font-size:11.5px; color:#374151; }
+  .wrow .wlab { display:flex; justify-content:space-between; margin-bottom:1px; }
+  .wrow .wlab b { color:#0E2C51; } .wrow .wval { font-variant-numeric:tabular-nums; color:#2291EB; font-weight:700; }
+  .wrow input[type=range] { width:100%; accent-color:#0E2C51; height:18px; margin:0; }
+  .wsum { font-weight:700; } .wsum.ok { color:#15803d; } .wsum.bad { color:#b45309; }
+  details.tagpts { margin-top:8px; } details.tagpts summary { cursor:pointer; font-size:12px; color:#2291EB; font-weight:600; }
+  .modbadge { background:#fef3c7; color:#92400e; border-radius:9px; padding:1px 8px; font-size:10.5px; font-weight:600; margin-left:8px; display:none; }
   .notechip { cursor:pointer; color:#2291EB; white-space:nowrap; font-weight:600; }
   .notechip.empty { color:#9ca3af; font-weight:400; }
   .drawer { position:fixed; top:0; right:-380px; width:350px; height:100vh; background:#fff; border-left:1px solid #e5e7eb; box-shadow:-6px 0 18px rgba(14,44,81,.10); transition:right .18s ease; z-index:60; display:flex; flex-direction:column; }
@@ -117,6 +125,19 @@
     </div>
 
     <div>
+      <div class="panel">
+        <h2>Weights &mdash; tinker live<span class="modbadge" id="wmod">modified</span>
+          <span class="note" style="float:right">sum <span class="wsum" id="wsum">1.00</span> &middot; local to your browser &mdash; official weights live in the pipeline/workbook</span></h2>
+        <div class="wgrid" id="wgrid"></div>
+        <details class="tagpts"><summary>Tag points (inside the Opportunity-tags pillar &mdash; each tripped tag adds points, capped at 100)</summary>
+          <div class="wgrid" id="tgrid" style="margin-top:8px"></div>
+        </details>
+        <div style="margin-top:8px; display:flex; gap:8px; align-items:center">
+          <button class="btn sec" onclick="resetWeights()">Reset defaults</button>
+          <button class="btn sec" onclick="normalizeWeights()">Normalize to 1.00</button>
+          <span class="note">Score* column, sort order and CSV export all follow your weights instantly.</span>
+        </div>
+      </div>
       <div class="cards" id="kpis"></div>
       <div class="panel">
         <div class="toolbar">
@@ -347,7 +368,7 @@ function detail(p){
     ['Cong trend', p.cong_trend!=null?`$${p.cong_trend.toFixed(2)}/MWh y/y (${p.cong_trend<0?'worsening':'improving'})`:null],
     ['DC MW within 50mi', p.dc_mw_50!=null?fmt(p.dc_mw_50,0):null],
     ['OEM', p.oem_mfrs && (p.oem_mfrs + (p.oem_orphan===1?' — ORPHANED PLATFORM':''))],
-    ['Pillar scores', `contract ${p.s_contract} · flip ${p.s_flip} · vintage ${p.s_vintage} · seller ${p.s_seller} · CF ${p.s_cf} · tags ${p.s_tags}`],
+    ['Pillar scores', `contract ${p.s_contract} · flip ${p.s_flip} · vintage ${p.s_vintage} · seller ${p.s_seller} · CF ${p.s_cf} · tags ${p.s_tags_live ?? p.s_tags}${p.s_tags_live!=null && p.s_tags_live!==p.s_tags ? ' (your points; pipeline: '+p.s_tags+')' : ''}`],
   ].filter(([,v])=>v!=null && v!=='');
   return rows.map(([k,v])=>`<div class="drow"><span class="dk">${k}</span><span>${esc(v)}</span></div>`).join('');
 }
@@ -382,6 +403,72 @@ function exportCsv(){
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob(['﻿'+csv], {type:'text/csv'}));
   a.download = 'ma_screen_filtered.csv'; a.click();
+}
+
+// ---- live weights ----
+const W_DEF = {contract:0.21, flip:0.17, vintage:0.17, seller:0.17, cf:0.13, tags:0.15};
+const W_LABEL = {contract:'Contract cliff / event', flip:'Busted-flip', vintage:'Vintage / PTC',
+                 seller:'Willing-seller', cf:'CF vs P50', tags:'Opportunity tags'};
+const TAGPT_DEF = {'capitulation':40, 'cf-collapse':35, 'mechanical-fix':25, 'curtailment-play':25,
+                   'neg-price-bleed':30, 'yieldco-stress':30, 'fund-life-exit':25, 'oem-orphan':20,
+                   'busted-flip':25, 'ptc-merchant':30};
+let W = {...W_DEF}, TAGPT = {...TAGPT_DEF};
+try { W = {...W_DEF, ...JSON.parse(localStorage.getItem('ma_w')||'{}')}; } catch(e){}
+try { TAGPT = {...TAGPT_DEF, ...JSON.parse(localStorage.getItem('ma_tagpt')||'{}')}; } catch(e){}
+
+function recomputeScores(){
+  for (const p of ALL){
+    const tl = (p.tags||'').split(';').map(t=>t.trim()).filter(Boolean);
+    const ts = Math.min(100, tl.reduce((a,t)=>a+(TAGPT[t]||0), 0));
+    p.s_tags_live = ts;
+    p.composite = Math.round(10*(W.contract*(p.s_contract||0) + W.flip*(p.s_flip||0)
+      + W.vintage*(p.s_vintage||0) + W.seller*(p.s_seller||0) + W.cf*(p.s_cf||0)
+      + W.tags*ts))/10;
+  }
+}
+function slider(grid, key, val, max, step, oninput){
+  const d = document.createElement('div'); d.className = 'wrow';
+  d.innerHTML = `<div class="wlab"><b>${key}</b><span class="wval" id="wv_${grid.id}_${key.replace(/[^a-z-]/gi,'')}">${val}</span></div>
+    <input type="range" min="0" max="${max}" step="${step}" value="${val}">`;
+  d.querySelector('input').addEventListener('input', e => {
+    d.querySelector('.wval').textContent = (+e.target.value).toFixed(step<0.1?2:0);
+    oninput(+e.target.value);
+  });
+  grid.appendChild(d);
+}
+let wTimer = null;
+function weightsChanged(){
+  localStorage.setItem('ma_w', JSON.stringify(W));
+  localStorage.setItem('ma_tagpt', JSON.stringify(TAGPT));
+  updateWsum();
+  clearTimeout(wTimer);
+  wTimer = setTimeout(() => { recomputeScores(); apply(); }, 120);
+}
+function updateWsum(){
+  const s = Object.values(W).reduce((a,b)=>a+b,0);
+  const el = document.getElementById('wsum');
+  el.textContent = s.toFixed(2);
+  el.className = 'wsum ' + (Math.abs(s-1) < 0.005 ? 'ok' : 'bad');
+  const mod = Object.keys(W_DEF).some(k => Math.abs(W[k]-W_DEF[k])>1e-9)
+           || Object.keys(TAGPT_DEF).some(k => TAGPT[k]!==TAGPT_DEF[k]);
+  document.getElementById('wmod').style.display = mod ? 'inline' : 'none';
+}
+function renderWeightPanel(){
+  const wg = document.getElementById('wgrid'), tg = document.getElementById('tgrid');
+  wg.innerHTML = ''; tg.innerHTML = '';
+  for (const k of Object.keys(W_DEF))
+    slider(wg, W_LABEL[k], W[k].toFixed(2), 0.5, 0.01, v => { W[k] = v; weightsChanged(); });
+  for (const t of Object.keys(TAGPT_DEF))
+    slider(tg, t, TAGPT[t], 50, 1, v => { TAGPT[t] = v; weightsChanged(); });
+  updateWsum();
+}
+function resetWeights(){ W = {...W_DEF}; TAGPT = {...TAGPT_DEF}; renderWeightPanel(); weightsChanged(); }
+function normalizeWeights(){
+  const s = Object.values(W).reduce((a,b)=>a+b,0) || 1;
+  for (const k in W) W[k] = Math.round(100*W[k]/s)/100;
+  const drift = 1 - Object.values(W).reduce((a,b)=>a+b,0);
+  W.contract = Math.round(100*(W.contract + drift))/100;  // absorb rounding remainder
+  renderWeightPanel(); weightsChanged();
 }
 
 // ---- notes ledger ----
@@ -440,6 +527,7 @@ async function boot(){
   ALL = j.plants;
   document.getElementById('loadedAt').textContent = `${j.n.toLocaleString()} plants · data loaded ${j.loaded_at ? j.loaded_at.slice(0,16).replace('T',' ') : '—'} · *Score = optional composite, one sort among many`;
   await loadNotes();
+  renderWeightPanel(); recomputeScores();
   initFacets(); renderCoverage(); apply();
 }
 boot();
