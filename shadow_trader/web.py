@@ -481,6 +481,27 @@ def _refresh_worker(start: str | None, end: str | None, merge: bool = False):
         forecasts = {k: {} for k in DART_ASSETS}
         tenaska_assets = [a for a in DART_ASSETS if ASSET_CONFIG[a]["forecast_source"] == "tenaska"]
         ercot_assets = [a for a in DART_ASSETS if ASSET_CONFIG[a]["forecast_source"] == "ercot_regional"]
+
+        # 'powerup' assets: plant-level Vaisala PowerUp ensemble (mean of members) for
+        # every forward hour it covers, OVERLAID on the ERCOT regional-share forecast.
+        # The regional-share base backfills recent history (PowerUp forecasts are
+        # forward-only from the newest issue) and is the full fallback when PowerUp
+        # returns nothing -- creds not set, farm entitlement pending, or API outage.
+        powerup_assets = [a for a in DART_ASSETS if ASSET_CONFIG[a]["forecast_source"] == "powerup"]
+        powerup_hours: dict[str, dict] = {}
+        if powerup_assets:
+            from shadow_trader.powerup import fetch_asset_ensembles
+            try:
+                ens = fetch_asset_ensembles({a: ASSET_CONFIG[a]["tech"] for a in powerup_assets})
+            except Exception as pu_err:
+                logger.exception("PowerUp ensemble fetch failed; using fallback only: %s", pu_err)
+                ens = {}
+            for a in powerup_assets:
+                hours = (ens.get(a) or {}).get("hours") or {}
+                powerup_hours[a] = {hk: rec["mean"] for hk, rec in hours.items()}
+                if ASSET_CONFIG[a].get("ercot_region"):
+                    ercot_assets.append(a)
+
         if tenaska_assets:
             tf, _ = fetch_forecasts(s, e, token)
             for a in tenaska_assets:
@@ -513,6 +534,15 @@ def _refresh_worker(start: str | None, end: str | None, merge: bool = False):
                     logger.exception("Wind forecast for region %s failed; continuing with empty wind forecasts: %s", region, wf_err)
                     for a in assets:
                         forecasts[a] = {}
+
+        # PowerUp overlay: plant-level forecast wins wherever it has an hour.
+        for a, hours in powerup_hours.items():
+            if hours:
+                forecasts[a].update(hours)
+                logger.info("PowerUp plant-level forecast overlaid for %s: %d hours", a, len(hours))
+            else:
+                logger.info("PowerUp returned no data for %s; regional-share forecast only", a)
+
         if merge:
             merge_and_save_cache(market_prices, generation, forecasts, s, e)
         else:

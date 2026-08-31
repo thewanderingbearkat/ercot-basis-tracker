@@ -60,8 +60,10 @@ ASSET_CONFIG = {
         "ppa_basis_exposure": 0.5,
         "iso": "ERCOT",
         "nameplate_mw": None,
-        # Tenaska doesn't publish wind forecasts; use ERCOT STWPF scaled by historical share
-        "forecast_source": "ercot_regional",
+        # Plant-level Vaisala PowerUp ensemble forecast, overlaid on the ERCOT
+        # STWPF-share base (which backfills history and is the fallback whenever
+        # PowerUp has no data -- missing creds, entitlement, or outage).
+        "forecast_source": "powerup",
         "ercot_region": "WEST",
         "tech": "wind",
     },
@@ -77,7 +79,7 @@ ASSET_CONFIG = {
         "ppa_basis_exposure": 1.0,
         "iso": "ERCOT",
         "nameplate_mw": None,
-        "forecast_source": "ercot_regional",
+        "forecast_source": "powerup",
         "ercot_region": "WEST",
         "tech": "wind",
     },
