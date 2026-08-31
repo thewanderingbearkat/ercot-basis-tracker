@@ -569,9 +569,9 @@ function renderAssetDay(d) {
     ? `<div class="item" style="flex-basis:100%;background:#fef3c7;border-left:3px solid #f59e0b;padding:8px 12px;border-radius:3px;">
          <div style="font-size:12px;color:#92400e;font-weight:600;">No real forecast available for ${d.asset_meta.display_name} on ${d.date}</div>
          <div style="font-size:11px;color:#92400e;margin-top:2px;">
-           ${d.asset_meta.forecast_source === 'ercot_regional'
-              ? 'ERCOT publishes STWPF on a rolling ~10-day window. Older days fall outside it.'
-              : 'Tenaska did not return a forecast for this date.'} Bars below show actual generation only; no shadow bid would have been placed.
+           ${d.asset_meta.forecast_source === 'tenaska'
+              ? 'Tenaska did not return a forecast for this date.'
+              : 'No PowerUp or ERCOT STWPF forecast covers this date (STWPF is a rolling ~10-day window; older days fall outside it).'} Bars below show actual generation only; no shadow bid would have been placed.
          </div>
        </div>` : '';
   const upliftClass = s.uplift > 0 ? 'positive' : s.uplift < 0 ? 'negative' : '';
