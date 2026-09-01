@@ -128,6 +128,15 @@ TRADER_CONFIG = {
     "extreme_heat_f": 100.0,
     "extreme_cold_f": 20.0,
 
+    # Low-wind scarcity stand-down (any tech): a hot-but-not-extreme afternoon keeps
+    # evening load high while calm site wind proxies an ERCOT-wide wind lull -- the
+    # RT blowout signature the extreme_heat gate misses (Aug 23/26 2026). Backtested
+    # Jul-Aug 2026 net +$102k, validated out-of-sample May-Jun +$10k at 13:1
+    # avoided-to-foregone; thresholds from that sweep (scarcity_gate_backtest).
+    "scarcity_heat_f": 97.0,          # afternoon (HE14-21) forecast peak temp, degF
+    "scarcity_calm_wind_mph": 12.0,   # gate hours with forecast wind at/below this
+    "scarcity_hours": (18, 24),       # hour-ending window to stand down
+
     # Wind-specific gates (80m wind speed / 10m gusts, mph)
     "wind_ramp_elevated_mph": 9.0,   # max hour-over-hour forecast swing -> half size
     "wind_ramp_standdown_mph": 14.0, # frontal passage -> stay out all day

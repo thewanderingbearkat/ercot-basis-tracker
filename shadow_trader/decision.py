@@ -20,7 +20,8 @@ implements:
      - large hour-over-hour swings in hub-height wind (frontal passages: the hardest days
        for wind forecasting, and the classic DART widow-maker in West Texas),
      - near-cut-out wind speeds / extreme gusts (turbines drop offline en masse),
-     - high cloud-cover volatility or model disagreement for solar (irradiance busts).
+     - high cloud-cover volatility or model disagreement for solar (irradiance busts),
+     - hot afternoons with calm evening wind (system-wide wind lull -> evening RT blowout).
 3. CONFIDENCE-AWARE SIZING -- track our own forecast error (bias and sigma by asset and
    hour-of-day, trailing window), bias-correct the forecast, and bid a conservative
    quantile (forecast - k*sigma) rather than the mean. Under-delivery is the expensive
@@ -165,6 +166,26 @@ def assess_weather_day(weather_day: dict, tech: str, cfg: dict) -> dict:
             for he in result:
                 flag(he, LEVEL_ELEVATED,
                      f"wind ramp risk: {max_ramp:.0f} mph/hr near HE{ramp_he:02d}")
+
+    # --- Day-level low-wind scarcity screen (all techs) ------------------------------
+    # The dangerous evenings are not just the >100F days: a ~97F afternoon keeps system
+    # load high into the evening while calm site wind proxies an ERCOT-wide wind lull,
+    # and RT prints at multiples of DA (Aug 23/26 2026: RT $290-600 vs DA $60-150).
+    # Presence-based gates can't see this -- the risk comes from the ABSENCE of wind.
+    # Backtested Jul-Aug 2026 (+$102k net vs ungated) and validated out-of-sample
+    # May-Jun 2026 (+$10k, 13:1 avoided:foregone).
+    afternoon_temps = [
+        weather_day[he].get("temp_f") for he in range(14, 22) if he in weather_day
+    ]
+    afternoon_temps = [t for t in afternoon_temps if t is not None]
+    day_peak_f = max(afternoon_temps) if afternoon_temps else None
+    if day_peak_f is not None and day_peak_f >= cfg["scarcity_heat_f"]:
+        lo, hi = cfg["scarcity_hours"]
+        for he in range(lo, hi + 1):
+            wind = weather_day.get(he, {}).get("wind_mph")
+            if wind is not None and wind <= cfg["scarcity_calm_wind_mph"]:
+                flag(he, LEVEL_STANDDOWN,
+                     f"scarcity risk: {day_peak_f:.0f}F afternoon + calm evening wind ({wind:.0f} mph)")
 
     # --- Day-level solar cloud volatility screen -----------------------------------
     # Partly-cloudy, fast-moving days are the hardest irradiance forecasts. A stable
