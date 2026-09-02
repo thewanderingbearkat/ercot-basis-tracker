@@ -25,7 +25,7 @@ from flask_cors import CORS
 
 from shadow_trader.aggregate import aggregate
 from shadow_trader.cache import CACHE_FILE, cache_age_seconds, latest_cache_date, load_cache, merge_and_save_cache
-from shadow_trader.config import ASSET_CONFIG, DART_ASSETS
+from shadow_trader.config import ASSET_CONFIG, DART_ASSETS, PNL_TRACKING_START
 from shadow_trader.ledger import entries_by_status
 from shadow_trader.risk import summarize
 from shadow_trader.strategy import simulate_shadow_da
@@ -134,6 +134,12 @@ def _common_forecast_window(forecasts: dict) -> dict | None:
     if not common:
         return None
     s = sorted(common)
+    # P&L tracking reset: default windows start no earlier than PNL_TRACKING_START so
+    # the dashboard measures only the current strategy parameters. If the whole common
+    # window predates the reset, fall back to the unclamped window rather than nothing.
+    clamped = [d for d in s if d >= PNL_TRACKING_START]
+    if clamped:
+        s = clamped
     return {"start": s[0], "end": s[-1], "days": len(s)}
 
 
@@ -236,14 +242,21 @@ def strategy():
         for asset in DART_ASSETS
     }
 
-    # Per-asset daily uplift series for the cumulative chart.
+    # Per-asset daily series: uplift (vs RT-only) for the existing charts, and
+    # absolute total P&L (market + PPA legs) for the daily-P&L chart.
     daily_by_asset: dict[str, dict[str, float]] = {a: {} for a in DART_ASSETS}
+    daily_pnl_by_asset: dict[str, dict[str, float]] = {a: {} for a in DART_ASSETS}
     for date, asset_buckets in agg["daily_asset"].items():
         for asset, b in asset_buckets.items():
             daily_by_asset[asset][date] = b["uplift"]
+            daily_pnl_by_asset[asset][date] = b["shadow_total_pnl"]
     dates = sorted({d for series in daily_by_asset.values() for d in series})
     series = {
         asset: [round(daily_by_asset[asset].get(d, 0), 2) for d in dates]
+        for asset in DART_ASSETS
+    }
+    pnl_series = {
+        asset: [round(daily_pnl_by_asset[asset].get(d, 0), 2) for d in dates]
         for asset in DART_ASSETS
     }
 
@@ -267,6 +280,8 @@ def strategy():
         "risk_per_asset": risk_per_asset,
         "daily_dates": dates,
         "daily_uplift_by_asset": series,
+        "daily_pnl_by_asset": pnl_series,
+        "pnl_tracking_start": PNL_TRACKING_START,
     })
 
 

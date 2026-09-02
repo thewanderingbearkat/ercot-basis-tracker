@@ -277,6 +277,10 @@
     <canvas id="cumChart"></canvas>
   </div>
   <div class="chart-card">
+    <div class="chart-title">Daily P&amp;L by asset (market + PPA)</div>
+    <canvas id="dailyPnlChart"></canvas>
+  </div>
+  <div class="chart-card">
     <div class="chart-title">Daily uplift by asset</div>
     <canvas id="dailyChart"></canvas>
   </div>
@@ -299,6 +303,7 @@ const fmtPct = (v) => (v == null || isNaN(v)) ? '--' : (v * 100).toFixed(1) + '%
 
 let cumChart = null;
 let dailyChart = null;
+let dailyPnlChart = null;
 let currentBidFraction = 100;
 
 function setError(msg) {
@@ -487,6 +492,27 @@ function renderStrategy(data) {
     dailyChart.data.labels = dates;
     dailyChart.data.datasets = dailyDatasets;
     dailyChart.update('none');
+  }
+
+  // Daily total P&L bar chart (absolute dollars: market + PPA legs, per asset)
+  const pnlDatasets = [];
+  for (const asset of Object.keys(data.daily_pnl_by_asset || {})) {
+    pnlDatasets.push({label: asset, data: data.daily_pnl_by_asset[asset], backgroundColor: pickColor(asset)});
+  }
+  if (!dailyPnlChart) {
+    dailyPnlChart = new Chart(document.getElementById('dailyPnlChart'), {
+      type: 'bar',
+      data: { labels: dates, datasets: pnlDatasets },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { position: 'top' } },
+        scales: { x: { stacked: true }, y: { stacked: true, ticks: { callback: v => '$' + v.toLocaleString() } } },
+      }
+    });
+  } else {
+    dailyPnlChart.data.labels = dates;
+    dailyPnlChart.data.datasets = pnlDatasets;
+    dailyPnlChart.update('none');
   }
 
   // Risk table

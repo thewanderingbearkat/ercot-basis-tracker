@@ -10,6 +10,14 @@ TENASKA_DART_FORECAST_URL = "https://api.ptp.energy/v1/markets/ERCOTNodal/endpoi
 # Backtest window (override via CLI flags in scripts/)
 BACKTEST_START_DATE = "2026-01-01"
 
+# P&L tracking reset: the dashboard's default window and aggregates start here, so
+# performance is measured only under the current strategy parameters (scarcity gate
+# + PowerUp forecast source, both deployed 2026-09-01). Data before this date stays
+# in the cache -- the trailing DART edge (14d), error stats (21d), and wind share
+# factor (30d) all need that history -- and older dates remain viewable by moving
+# the date pickers manually. Do NOT change BACKTEST_START_DATE for a P&L reset.
+PNL_TRACKING_START = "2026-09-01"
+
 # Trailing-average forecast lookback
 TRAILING_AVG_DAYS = 7
 
