@@ -55,6 +55,40 @@ def fetch_ercot_regional_wind(target_date: str | None = None) -> "pandas.DataFra
     return df
 
 
+def system_stwpf(region_df) -> dict:
+    """Extract the ERCOT-wide STWPF from the regional wind report -> {hour_key: mw}.
+
+    Prefers the SYSTEM_WIDE column; falls back to summing the regional STWPF columns
+    (the regions partition the system, so the sum is the system total). Used by the
+    trader decision engine's dusk system-wind screens.
+    """
+    stwpf_cols = [c for c in region_df.columns if str(c).upper().startswith("STWPF")]
+    sys_cols = [c for c in stwpf_cols if "SYSTEM" in str(c).upper()]
+    use_cols = sys_cols[:1] if sys_cols else stwpf_cols
+    if not use_cols:
+        logger.warning("No STWPF columns in regional wind report; system_stwpf empty")
+        return {}
+    logger.info("system_stwpf using column(s): %s", use_cols)
+    out: dict[str, float] = {}
+    for _, row in region_df.iterrows():
+        total = 0.0
+        seen = False
+        for c in use_cols:
+            v = row[c]
+            try:
+                v = float(v)
+            except (TypeError, ValueError):
+                continue
+            if v == v:  # not NaN
+                total += v
+                seen = True
+        if not seen:
+            continue
+        date_str, he = _to_cst_hour_key(row["Interval Start"])
+        out[f"{date_str} HE{he:02d}"] = round(total, 1)
+    return out
+
+
 def compute_region_share_by_hour(
     asset_hourly_gen: dict,
     region_df,
@@ -169,6 +203,7 @@ def build_wind_forecast(
     target_date: str | None = None,
     lookback_days: int = 30,
     only_future: bool = False,
+    region_df=None,
 ) -> dict:
     """Top-level: produce {asset_key: {hour_key: forecast_mw}} using ERCOT regional STWPF
     scaled by each asset's historical share of regional gen.
@@ -176,8 +211,11 @@ def build_wind_forecast(
     Only emits forecasts for hours covered by the fetched ERCOT report (typically a
     ~10-day rolling window around the publish date). No derived/computed fallback --
     if a real STWPF isn't available for a given hour, that hour isn't forecast.
+    region_df: pass a pre-fetched report to avoid a duplicate ERCOT MIS download
+    (the refresh worker also derives the system-wide STWPF from the same report).
     """
-    region_df = fetch_ercot_regional_wind(target_date)
+    if region_df is None:
+        region_df = fetch_ercot_regional_wind(target_date)
     out = {}
     for key in asset_keys:
         gen = asset_gen_by_key.get(key, {})

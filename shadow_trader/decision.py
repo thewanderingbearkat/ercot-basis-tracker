@@ -128,16 +128,20 @@ def forecast_error_stats(
     return out
 
 
-def assess_weather_day(weather_day: dict, tech: str, cfg: dict) -> dict:
+def assess_weather_day(weather_day: dict, tech: str, cfg: dict,
+                       system_wind_day: dict | None = None) -> dict:
     """Grade one operating day's weather per hour: {he: {'level': str, 'reasons': [str]}}.
 
     weather_day: {he: {temp_f, wind_mph, gust_mph, cloud_pct, wind_spread, cloud_spread}}
+    system_wind_day: optional {he: forecast ERCOT-wide wind MW} (D-1 STWPF) -- enables
+    the dusk system-wind screens; callers apply the seasonal gate (see decide_day).
     Missing weather data produces no gates (level 'ok') -- the strategy degrades to
     forecast-only rather than refusing to trade on a data outage.
     """
     result = {he: {"level": LEVEL_OK, "reasons": []} for he in range(1, 25)}
-    if not weather_day:
+    if not weather_day and not system_wind_day:
         return result
+    weather_day = weather_day or {}
 
     def flag(he: int, level: str, reason: str):
         rec = result[he]
@@ -166,6 +170,36 @@ def assess_weather_day(weather_day: dict, tech: str, cfg: dict) -> dict:
             for he in result:
                 flag(he, LEVEL_ELEVATED,
                      f"wind ramp risk: {max_ramp:.0f} mph/hr near HE{ramp_he:02d}")
+
+    # --- Dusk system-wind screens (all techs) -----------------------------------------
+    # Driver analysis (94 summer evenings, 2026): spike evenings ran ~8.5 GW of
+    # ERCOT-wide wind at dusk vs ~14 GW normal, while the daily ~25 GW solar rolloff
+    # exits into a still-high load. LEVEL is the stand-down trigger; a large forecast
+    # SWING across the window is a half-size caution only -- ramp magnitude did not
+    # separate spike evenings (4.1 vs 4.6 GW medians), but ramp-timing misses drive
+    # DART volatility (Sep 1 2026: wind arrived 2h late, RT hit $125 vs DA $66).
+    if system_wind_day:
+        d_lo, d_hi = cfg["dusk_hours"]
+        for he in range(d_lo, d_hi + 1):
+            sw = system_wind_day.get(he)
+            if sw is None:
+                continue
+            if sw <= cfg["dusk_system_wind_standdown_mw"]:
+                flag(he, LEVEL_STANDDOWN,
+                     f"dusk scarcity: system wind forecast {sw / 1000:.1f} GW")
+            elif sw <= cfg["dusk_system_wind_elevated_mw"]:
+                flag(he, LEVEL_ELEVATED,
+                     f"dusk caution: system wind forecast {sw / 1000:.1f} GW")
+        dusk_vals = [system_wind_day[he] for he in range(d_lo, d_hi + 1)
+                     if system_wind_day.get(he) is not None]
+        if len(dusk_vals) >= 2:
+            swing = max(dusk_vals) - min(dusk_vals)
+            if swing >= cfg["dusk_system_ramp_elevated_mw"]:
+                for he in range(d_lo, d_hi + 1):
+                    if system_wind_day.get(he) is not None:
+                        flag(he, LEVEL_ELEVATED,
+                             f"dusk wind ramp: {swing / 1000:.1f} GW swing across "
+                             f"HE{d_lo}-{d_hi}")
 
     # --- Day-level low-wind scarcity screen (all techs) ------------------------------
     # The dangerous evenings are not just the >100F days: a ~97F afternoon keeps system
@@ -247,8 +281,12 @@ def decide_day(
     weather: dict,
     base_fraction: float = 1.0,
     cfg: dict | None = None,
+    system_wind: dict | None = None,
 ) -> dict:
     """Build one asset-day of trader decisions: {hour_key: decision_record}.
+
+    system_wind: optional {hour_key: forecast ERCOT-wide wind MW} (D-1 STWPF);
+    dusk screens apply only in cfg['dusk_months'].
 
     decision_record:
         bid_mw       final DA bid (0 = stay out)
@@ -276,7 +314,16 @@ def decide_day(
         wx = weather.get(asset, {}).get(f"{target_date} HE{he:02d}")
         if wx:
             weather_day[he] = wx
-    wx_grades = assess_weather_day(weather_day, tech, cfg)
+    system_wind_day = None
+    if system_wind:
+        m_lo, m_hi = cfg["dusk_months"]
+        if m_lo <= int(target_date[5:7]) <= m_hi:
+            system_wind_day = {
+                he: system_wind[f"{target_date} HE{he:02d}"]
+                for he in range(1, 25)
+                if system_wind.get(f"{target_date} HE{he:02d}") is not None
+            } or None
+    wx_grades = assess_weather_day(weather_day, tech, cfg, system_wind_day=system_wind_day)
 
     out = {}
     for he in range(1, 25):
@@ -341,6 +388,7 @@ def build_bid_plan(
     weather: dict,
     base_fraction: float = 1.0,
     cfg: dict | None = None,
+    system_wind: dict | None = None,
 ) -> dict:
     """Full bid plan over a backtest window: {asset: {hour_key: decision_record}}.
 
@@ -354,7 +402,7 @@ def build_bid_plan(
         for d in sorted(dates):
             plan[asset].update(
                 decide_day(asset, d, forecasts, generation, dart_index, weather,
-                           base_fraction=base_fraction, cfg=cfg)
+                           base_fraction=base_fraction, cfg=cfg, system_wind=system_wind)
             )
     return plan
 

@@ -20,7 +20,8 @@ logger = logging.getLogger(__name__)
 CACHE_FILE = os.path.join(DATA_DIR, "raw_cache.json")
 
 
-def save_cache(start: str, end: str, market_prices: dict, generation: dict, forecasts: dict) -> None:
+def save_cache(start: str, end: str, market_prices: dict, generation: dict, forecasts: dict,
+               weather: dict | None = None, system_wind: dict | None = None) -> None:
     os.makedirs(DATA_DIR, exist_ok=True)
     blob = {
         "saved_at": datetime.now(ZoneInfo("America/Chicago")).isoformat(),
@@ -29,6 +30,11 @@ def save_cache(start: str, end: str, market_prices: dict, generation: dict, fore
         "market_prices": market_prices,
         "generation": generation,
         "forecasts": forecasts,
+        # Trader decision-engine inputs (optional; older caches lack them):
+        # weather: {asset: {hour_key: {temp_f, wind_mph, ...}}} forecast-vintage
+        # system_wind: {hour_key: ERCOT-wide STWPF MW}
+        "weather": weather or {},
+        "system_wind": system_wind or {},
     }
     with open(CACHE_FILE, "w") as f:
         json.dump(blob, f, default=str)
@@ -69,6 +75,7 @@ def latest_cache_date() -> Optional[str]:
 def merge_and_save_cache(
     new_market_prices: dict, new_generation: dict, new_forecasts: dict,
     fetch_start: str, fetch_end: str,
+    new_weather: dict | None = None, new_system_wind: dict | None = None,
 ) -> dict:
     """Merge newly-fetched data into the existing cache (new wins on key conflict), save,
     return the merged blob. Used by incremental auto-refresh -- preserves older history
@@ -101,6 +108,15 @@ def merge_and_save_cache(
         merged_fc.setdefault(asset, {})
         merged_fc[asset].update(data)
 
+    # Weather (per-asset hourly forecast dicts) and system wind (flat hourly dict):
+    # same new-wins merge; older cache blobs may lack these keys entirely.
+    merged_wx: dict = {asset: dict(data) for asset, data in (existing.get("weather") or {}).items()}
+    for asset, data in (new_weather or {}).items():
+        merged_wx.setdefault(asset, {})
+        merged_wx[asset].update(data)
+    merged_sw: dict = dict(existing.get("system_wind") or {})
+    merged_sw.update(new_system_wind or {})
+
     # Determine the union window for the cache metadata.
     all_dates: set[str] = set()
     for asset_data in merged_gen.values():
@@ -116,6 +132,8 @@ def merge_and_save_cache(
         "market_prices": merged_mp,
         "generation": merged_gen,
         "forecasts": merged_fc,
+        "weather": merged_wx,
+        "system_wind": merged_sw,
     }
     os.makedirs(DATA_DIR, exist_ok=True)
     with open(CACHE_FILE, "w") as f:

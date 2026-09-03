@@ -16,7 +16,7 @@ import logging
 import os
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -285,6 +285,77 @@ def strategy():
     })
 
 
+@shadow_bp.route("/api/shadow/trader")
+def trader():
+    """Gated trader strategy vs the naive always-bid baseline, over the same window.
+
+    Runs the decision engine (edge filter, sigma haircut, weather gates, scarcity
+    and dusk system-wind screens) on cached inputs and settles the resulting bid
+    plan through the same simulator as the naive strategy, so the two summaries are
+    directly comparable A/B ledgers.
+    """
+    _ensure_cache_loaded()
+    if _cache_blob is None:
+        return jsonify({"error": "No data cache yet."}), 503
+
+    from shadow_trader.decision import build_bid_plan, summarize_plan
+
+    bid_fraction = float(request.args.get("bid_fraction", 1.0))
+    start = request.args.get("start")
+    end = request.args.get("end")
+    if not start and not end:
+        common = _common_forecast_window(_cache_blob["forecasts"])
+        if common:
+            start, end = common["start"], common["end"]
+
+    market_prices, generation, forecasts = _filter_to_window(
+        _cache_blob["market_prices"], _cache_blob["generation"], _cache_blob["forecasts"], start, end,
+    )
+    weather = _cache_blob.get("weather") or {}
+    system_wind = _cache_blob.get("system_wind") or {}
+
+    dates = sorted({hk.split(" ")[0] for a in generation.values() for hk in a})
+    if start:
+        dates = [d for d in dates if d >= start]
+    if end:
+        dates = [d for d in dates if d <= end]
+
+    plan = build_bid_plan(dates, forecasts, generation, market_prices, weather,
+                          base_fraction=bid_fraction, system_wind=system_wind)
+    gated = simulate_shadow_da(market_prices, generation, forecasts, "cached",
+                               bid_fraction=bid_fraction, bid_plan=plan)
+    naive = simulate_shadow_da(market_prices, generation, forecasts, "cached",
+                               bid_fraction=bid_fraction)
+    agg_g, agg_n = aggregate(gated), aggregate(naive)
+
+    def daily_series(agg):
+        by_date = {d: sum(b["uplift"] for b in buckets.values())
+                   for d, buckets in agg["daily_asset"].items()}
+        return {d: round(v, 2) for d, v in sorted(by_date.items())}
+
+    return jsonify({
+        "window": {"start": start, "end": end},
+        "bid_fraction": bid_fraction,
+        "inputs": {
+            "weather_hours": {a: len(w) for a, w in weather.items()},
+            "system_wind_hours": len(system_wind),
+        },
+        "plan_summary": summarize_plan(plan),
+        "gated": {
+            "total_uplift": agg_g["total_uplift"],
+            "total_pnl_shadow": agg_g["total_pnl_shadow"],
+            "daily_uplift": daily_series(agg_g),
+            "risk": summarize(gated),
+        },
+        "naive": {
+            "total_uplift": agg_n["total_uplift"],
+            "total_pnl_shadow": agg_n["total_pnl_shadow"],
+            "daily_uplift": daily_series(agg_n),
+        },
+        "gate_value": round(agg_g["total_uplift"] - agg_n["total_uplift"], 2),
+    })
+
+
 @shadow_bp.route("/api/shadow/ledger")
 def ledger():
     return jsonify({"entries": entries_by_status(None)})
@@ -521,7 +592,21 @@ def _refresh_worker(start: str | None, end: str | None, merge: bool = False):
             tf, _ = fetch_forecasts(s, e, token)
             for a in tenaska_assets:
                 forecasts[a] = tf.get(a, {})
+        # ERCOT regional wind report: fetched ONCE and reused for both the per-asset
+        # share-scaled forecasts and the system-wide STWPF that feeds the trader's
+        # dusk screens. A fetch failure downgrades gracefully (empty system wind,
+        # per-region fallback fetch inside build_wind_forecast).
+        system_wind: dict = {}
+        region_df = None
         if ercot_assets:
+            from shadow_trader.wind_forecast import fetch_ercot_regional_wind, system_stwpf
+            try:
+                region_df = fetch_ercot_regional_wind(None)
+                system_wind = system_stwpf(region_df)
+                logger.info("System STWPF extracted: %d hours", len(system_wind))
+            except Exception as sw_err:
+                logger.exception("Regional wind report fetch failed: %s", sw_err)
+
             # For the wind share factor we want the FULL recent generation history so the
             # per-hour share factor is stable. If we're doing an incremental merge we only
             # just fetched the recent window, so combine with what's already in the cache.
@@ -542,7 +627,7 @@ def _refresh_worker(start: str | None, end: str | None, merge: bool = False):
                 # the whole refresh -- leave wind asset forecasts empty for this tick and
                 # let everything else (prices, generation, Holstein forecast) still cache.
                 try:
-                    wf = build_wind_forecast(asset_keys=assets, asset_gen_by_key=gen_for_share, region=region, target_date=None, lookback_days=30)
+                    wf = build_wind_forecast(asset_keys=assets, asset_gen_by_key=gen_for_share, region=region, target_date=None, lookback_days=30, region_df=region_df)
                     for a in assets:
                         forecasts[a] = wf.get(a, {})
                 except Exception as wf_err:
@@ -558,10 +643,29 @@ def _refresh_worker(start: str | None, end: str | None, merge: bool = False):
             else:
                 logger.info("PowerUp returned no data for %s; regional-share forecast only", a)
 
+        # Plant-site weather forecasts for the trader gates: archived forecasts for
+        # past days (no lookahead), live forecast forward. Failure leaves weather
+        # empty -- the decision engine treats missing weather as 'no gate'.
+        weather: dict = {}
+        try:
+            from shadow_trader.weather import fetch_asset_weather
+            today = datetime.now(ZoneInfo("America/Chicago")).strftime("%Y-%m-%d")
+            yesterday = (datetime.now(ZoneInfo("America/Chicago")) - timedelta(days=1)).strftime("%Y-%m-%d")
+            fwd_end = (datetime.now(ZoneInfo("America/Chicago")) + timedelta(days=8)).strftime("%Y-%m-%d")
+            if s <= yesterday:
+                weather = fetch_asset_weather(DART_ASSETS, s, yesterday, historical=True)
+            fwd = fetch_asset_weather(DART_ASSETS, today, fwd_end, historical=False)
+            for a, wx in fwd.items():
+                weather.setdefault(a, {}).update(wx)
+        except Exception as wx_err:
+            logger.exception("Weather fetch for trader gates failed: %s", wx_err)
+
         if merge:
-            merge_and_save_cache(market_prices, generation, forecasts, s, e)
+            merge_and_save_cache(market_prices, generation, forecasts, s, e,
+                                 new_weather=weather, new_system_wind=system_wind)
         else:
-            save_cache(s, e, market_prices, generation, forecasts)
+            save_cache(s, e, market_prices, generation, forecasts,
+                       weather=weather, system_wind=system_wind)
         with _cache_lock:
             _cache_blob = load_cache()
         _refresh_status["last_finished_at"] = datetime.now(ZoneInfo("America/Chicago")).isoformat()

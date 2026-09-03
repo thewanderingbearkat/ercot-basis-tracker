@@ -145,6 +145,19 @@ TRADER_CONFIG = {
     "scarcity_calm_wind_mph": 12.0,   # gate hours with forecast wind at/below this
     "scarcity_hours": (18, 24),       # hour-ending window to stand down
 
+    # Dusk system-wind screens (any tech), summer only: driver analysis over 94
+    # summer evenings found spike evenings run ~8.5 GW ERCOT-wide wind at dusk vs
+    # ~14 GW normal while ~25 GW of solar rolls off into a still-high load. LEVEL
+    # triggers the stand-down; a big forecast SWING across the window is a
+    # half-size caution (ramp magnitude alone didn't separate spike evenings, but
+    # ramp-timing misses drive DART volatility). Winter dusk hours PAY (Jan-Jun
+    # blanket test: -$107k) -- hence the seasonal switch.
+    "dusk_hours": (19, 23),                   # hour-ending window screened
+    "dusk_months": (6, 9),                    # active Jun-Sep inclusive
+    "dusk_system_wind_standdown_mw": 8000.0,  # D-1 system STWPF at/below -> stand down
+    "dusk_system_wind_elevated_mw": 11000.0,  # ...at/below -> half size
+    "dusk_system_ramp_elevated_mw": 6000.0,   # max-min STWPF swing across window -> half size
+
     # Wind-specific gates (80m wind speed / 10m gusts, mph)
     "wind_ramp_elevated_mph": 9.0,   # max hour-over-hour forecast swing -> half size
     "wind_ramp_standdown_mph": 14.0, # frontal passage -> stay out all day
