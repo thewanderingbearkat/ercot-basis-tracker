@@ -356,6 +356,76 @@ def trader():
     })
 
 
+@shadow_bp.route("/api/shadow/alerts")
+def alerts():
+    """Grid-condition alerts for today and tomorrow: which hours the decision engine
+    would flag (elevated / stand-down) and why, from the cached forward forecasts,
+    site weather, and system-wind STWPF. Powers the dashboard's alert strip."""
+    _ensure_cache_loaded()
+    if _cache_blob is None:
+        return jsonify({"error": "No data cache yet."}), 503
+
+    from shadow_trader.decision import build_dart_index, decide_day
+
+    now_ct = datetime.now(ZoneInfo("America/Chicago"))
+    dates = [(now_ct + timedelta(days=i)).strftime("%Y-%m-%d") for i in (0, 1)]
+
+    forecasts = _cache_blob["forecasts"]
+    generation = _cache_blob["generation"]
+    dart_index = build_dart_index(_cache_blob["market_prices"])
+    weather = _cache_blob.get("weather") or {}
+    system_wind = _cache_blob.get("system_wind") or {}
+
+    days_out = []
+    for d in dates:
+        # Rollup by (level, reason-prefix): per-hour reasons carry hour-specific
+        # numbers, so group on the prefix and keep one full example string.
+        rollup: dict[tuple, dict] = {}
+        for asset in DART_ASSETS:
+            plan = decide_day(asset, d, forecasts, generation, dart_index, weather,
+                              system_wind=system_wind)
+            for hk, rec in plan.items():
+                if rec["level"] == "ok" or not rec["reasons"]:
+                    continue
+                he = int(hk.split("HE")[1])
+                for reason in rec["reasons"]:
+                    key = (rec["level"], reason.split(":")[0])
+                    slot = rollup.setdefault(key, {"hours": set(), "assets": set(),
+                                                   "example": reason})
+                    slot["hours"].add(he)
+                    slot["assets"].add(asset)
+        alerts_list = [
+            {
+                "level": level,
+                "title": prefix,
+                "example": slot["example"],
+                "hours": sorted(slot["hours"]),
+                "assets": sorted(slot["assets"]),
+            }
+            # stand-downs first, then by first affected hour
+            for (level, prefix), slot in sorted(
+                rollup.items(),
+                key=lambda kv: (kv[0][0] != "standdown", min(kv[1]["hours"])),
+            )
+        ]
+        dusk_sw = [system_wind.get(f"{d} HE{he:02d}") for he in range(19, 24)]
+        dusk_sw = [v for v in dusk_sw if v is not None]
+        days_out.append({
+            "date": d,
+            "alerts": alerts_list,
+            "dusk_system_wind_min_mw": round(min(dusk_sw), 0) if dusk_sw else None,
+        })
+
+    return jsonify({
+        "generated_at": now_ct.isoformat(),
+        "days": days_out,
+        "inputs_available": {
+            "system_wind_hours": len(system_wind),
+            "weather_assets": sorted(a for a, w in weather.items() if w),
+        },
+    })
+
+
 @shadow_bp.route("/api/shadow/ledger")
 def ledger():
     return jsonify({"entries": entries_by_status(None)})

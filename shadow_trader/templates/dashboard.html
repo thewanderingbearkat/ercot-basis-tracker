@@ -192,9 +192,18 @@
   </div>
 </div>
 
+<!-- Grid-condition alerts for today/tomorrow: what the decision engine's gates see
+     (dusk system wind, scarcity, ramps, cloud volatility) before the DA deadline. -->
+<div id="alertsStrip" style="margin:0 0 12px 0;"></div>
+
 <div class="summary-cards">
+  <div class="card" id="traderUpliftCard">
+    <div class="label">Trader uplift (gated)</div>
+    <div class="value" id="traderUplift">--</div>
+    <div class="sub" id="traderUpliftSub">decision engine + gates</div>
+  </div>
   <div class="card" id="totalUpliftCard">
-    <div class="label">Total uplift</div>
+    <div class="label">Naive uplift (always-bid)</div>
     <div class="value" id="totalUplift">$0</div>
     <div class="sub" id="totalUpliftSub">vs RT-only</div>
   </div>
@@ -273,6 +282,10 @@
 
 <div class="charts">
   <div class="chart-card">
+    <div class="chart-title">Cumulative uplift: gated trader vs naive (portfolio)</div>
+    <canvas id="traderChart"></canvas>
+  </div>
+  <div class="chart-card">
     <div class="chart-title">Cumulative uplift over time (per asset)</div>
     <canvas id="cumChart"></canvas>
   </div>
@@ -304,6 +317,7 @@ const fmtPct = (v) => (v == null || isNaN(v)) ? '--' : (v * 100).toFixed(1) + '%
 let cumChart = null;
 let dailyChart = null;
 let dailyPnlChart = null;
+let traderChart = null;
 let currentBidFraction = 100;
 
 function setError(msg) {
@@ -395,9 +409,110 @@ async function fetchStrategy() {
     }
     setError(null);
     renderStrategy(await resp.json());
+    fetchTrader();  // gated A/B uses the same window + bid fraction
   } catch (e) {
     setError(e.message);
   }
+}
+
+async function fetchTrader() {
+  const bf = currentBidFraction / 100.0;
+  const start = document.getElementById('startDate').value;
+  const end = document.getElementById('endDate').value;
+  const params = new URLSearchParams({bid_fraction: bf});
+  if (start) params.set('start', start);
+  if (end) params.set('end', end);
+  try {
+    const resp = await fetch('/api/shadow/trader?' + params);
+    if (!resp.ok) return;   // trader inputs may not be cached yet; keep the card at --
+    renderTrader(await resp.json());
+  } catch (e) { /* non-fatal: naive view still renders */ }
+}
+
+function renderTrader(t) {
+  const gu = t.gated.total_uplift || 0;
+  const nu = t.naive.total_uplift || 0;
+  const card = document.getElementById('traderUpliftCard');
+  card.className = 'card ' + (gu > 0 ? 'positive' : gu < 0 ? 'negative' : '');
+  document.getElementById('traderUplift').textContent = fmtDollar(gu);
+  const gv = t.gate_value || 0;
+  document.getElementById('traderUpliftSub').textContent =
+    `gates ${gv >= 0 ? 'saved' : 'cost'} ${fmtDollar(Math.abs(gv))} vs naive`;
+
+  // Portfolio cumulative: gated vs naive on the same date axis.
+  const dates = Object.keys(t.naive.daily_uplift).sort();
+  const cum = (series) => {
+    let acc = 0;
+    return dates.map(d => acc += (series[d] || 0));
+  };
+  const datasets = [
+    {label: 'Gated trader', data: cum(t.gated.daily_uplift), borderColor: '#0E2C51',
+     backgroundColor: '#0E2C5120', tension: 0.1, fill: false, borderWidth: 2.5},
+    {label: 'Naive always-bid', data: cum(t.naive.daily_uplift), borderColor: '#94a3b8',
+     backgroundColor: '#94a3b820', tension: 0.1, fill: false, borderDash: [6, 4]},
+  ];
+  if (!traderChart) {
+    traderChart = new Chart(document.getElementById('traderChart'), {
+      type: 'line',
+      data: { labels: dates, datasets },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { position: 'top' } },
+        scales: { y: { ticks: { callback: v => '$' + v.toLocaleString() } } },
+      }
+    });
+  } else {
+    traderChart.data.labels = dates;
+    traderChart.data.datasets = datasets;
+    traderChart.update('none');
+  }
+}
+
+async function fetchAlerts() {
+  try {
+    const resp = await fetch('/api/shadow/alerts');
+    if (!resp.ok) return;
+    renderAlerts(await resp.json());
+  } catch (e) { /* non-fatal */ }
+}
+
+function renderAlerts(data) {
+  const strip = document.getElementById('alertsStrip');
+  const dayLabel = (i, d) => (i === 0 ? 'Today' : 'Tomorrow') + ' ' + d;
+  const heRange = (hours) => {
+    if (!hours.length) return '';
+    // compress [19,20,21,23] -> "HE19-21, HE23"
+    const parts = [];
+    let s = hours[0], p = hours[0];
+    for (const h of hours.slice(1).concat([null])) {
+      if (h !== p + 1) {
+        parts.push(s === p ? `HE${s}` : `HE${s}-${p}`);
+        s = h;
+      }
+      p = h;
+    }
+    return parts.join(', ');
+  };
+  let html = '';
+  for (let i = 0; i < data.days.length; i++) {
+    const day = data.days[i];
+    const swNote = day.dusk_system_wind_min_mw != null
+      ? `  <span style="color:#64748b;font-weight:400;">(dusk system wind min ${(day.dusk_system_wind_min_mw / 1000).toFixed(1)} GW)</span>` : '';
+    if (!day.alerts.length) {
+      html += `<div style="background:#dcfce7;border-left:3px solid #22c55e;padding:6px 12px;border-radius:3px;margin-bottom:4px;font-size:12px;">
+        <b style="color:#166534;">${dayLabel(i, day.date)}: no grid-condition alerts</b>${swNote}</div>`;
+      continue;
+    }
+    const rows = day.alerts.map(a => {
+      const isStand = a.level === 'standdown';
+      const badge = `<span style="background:${isStand ? '#dc2626' : '#f59e0b'};color:white;border-radius:3px;padding:1px 6px;font-size:10px;font-weight:700;">${isStand ? 'STAND DOWN' : 'HALF SIZE'}</span>`;
+      return `<div style="margin-top:3px;">${badge} <b>${heRange(a.hours)}</b> - ${a.example} <span style="color:#64748b;">[${a.assets.join(', ')}]</span></div>`;
+    }).join('');
+    const worst = day.alerts.some(a => a.level === 'standdown');
+    html += `<div style="background:${worst ? '#fee2e2' : '#fef3c7'};border-left:3px solid ${worst ? '#dc2626' : '#f59e0b'};padding:6px 12px;border-radius:3px;margin-bottom:4px;font-size:12px;color:#1e293b;">
+      <b>${dayLabel(i, day.date)}</b>${swNote}${rows}</div>`;
+  }
+  strip.innerHTML = html;
 }
 
 function renderStrategy(data) {
@@ -880,8 +995,10 @@ document.getElementById('refreshDataBtn').addEventListener('click', async () => 
 // Initial + auto-refresh
 fetchHealth();
 fetchStrategy();
+fetchAlerts();
 setInterval(fetchHealth, 5000);
 setInterval(fetchStrategy, 30000);
+setInterval(fetchAlerts, 300000);   // alerts move with refresh cycles, not sliders
 </script>
 
 </div><!-- /page-inner -->
