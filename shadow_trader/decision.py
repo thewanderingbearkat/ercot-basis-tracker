@@ -166,8 +166,9 @@ def assess_weather_day(weather_day: dict, tech: str, cfg: dict,
     # Forecast site wind is the strongest ex-ante separator of DART risk in the Jan-Oct
     # 2026 swing analysis: calm West Texas hours run negative mean DART with fat RT-spike
     # tails (dusk <=12 mph: 1st pct DART -$340 to -$535), windy hours earn steadily. It
-    # applies to every tech -- site wind proxies system tightness, and solar bids full
-    # size into calm evenings regardless. Subsumes the old 97F + calm-evening scarcity
+    # applies to every tech because site wind proxies system tightness, not the asset's
+    # own output: for solar it mostly gates calm midday hours (zero-forecast hours after
+    # sunset are never bid anyway). Subsumes the old 97F + calm-evening scarcity
     # gate (every hour it gated is <=12 mph). Backtest vs the prior gate set, ex Jan
     # storm: +$447k with the ramp/cloud changes, worst-5%-day avg -$61k -> -$47k, better
     # in both Jan-Jun and Jul-Oct.
