@@ -46,10 +46,10 @@ _cache_lock = threading.Lock()
 _cache_blob: dict[str, Any] | None = None
 _refresh_thread: threading.Thread | None = None
 _refresh_status = {"running": False, "last_error": None, "last_finished_at": None, "running_since": None}
-# If a refresh appears to have been running for longer than this, assume the worker
-# died mid-flight and the running=True flag got stuck. The auto-refresh loop and the
-# manual /api/refresh endpoint both ignore the flag in that case.
-REFRESH_STUCK_THRESHOLD_SECONDS = 15 * 60
+# Thread currently executing _refresh_worker. "Stuck" is judged by whether this thread
+# is still alive, not by elapsed time: a full-year rebuild legitimately runs 30-45 min,
+# and the old 15-minute cutoff let a second refresh start alongside it.
+_refresh_owner: threading.Thread | None = None
 
 # Auto-refresh background thread (matches NWOH dashboard's background_data_fetch pattern).
 # Periodically calls the same refresh worker /api/refresh uses, so cached data tracks the
@@ -185,8 +185,8 @@ def health():
     common = _common_forecast_window(blob["forecasts"]) if blob else None
     # Route the running flag through the stuck-state self-heal helper so a refresh
     # that was killed mid-flight (worker recycle, OOM, etc.) doesn't permanently
-    # grey out the dashboard's Refresh button. The helper clears the flag if it's
-    # been "running" longer than REFRESH_STUCK_THRESHOLD_SECONDS.
+    # grey out the dashboard's Refresh button. The helper clears the flag if the
+    # worker thread that set it is no longer alive.
     refresh_snapshot = dict(_refresh_status)
     refresh_snapshot["running"] = _refresh_is_actually_running()
     return jsonify({
@@ -627,7 +627,8 @@ def _refresh_worker(start: str | None, end: str | None, merge: bool = False):
                            Used by the auto-refresh loop to incrementally extend the cache
                            without re-fetching settled history.
     """
-    global _cache_blob
+    global _cache_blob, _refresh_owner
+    _refresh_owner = threading.current_thread()
     _refresh_status["running"] = True
     _refresh_status["last_error"] = None
     _refresh_status["running_since"] = datetime.now(ZoneInfo("America/Chicago")).isoformat()
@@ -792,32 +793,20 @@ def _refresh_worker(start: str | None, end: str | None, merge: bool = False):
 def _refresh_is_actually_running() -> bool:
     """Return True only if a refresh worker is genuinely in flight, not stuck.
 
-    A 'stuck' state happens when the worker process is killed mid-refresh (Render
-    worker recycle, container OOM, etc.) -- the in-memory running=True flag never
-    gets cleared because the finally block didn't execute. Without this check, both
-    the auto-refresh loop and the manual refresh button would be permanently blocked.
+    The running flag is cleared by the worker's own finally block, so it can only be
+    left stuck if the thread that set it is gone. A killed process restarts with fresh
+    in-memory state, so liveness of the owning thread is the whole test.
     """
     if not _refresh_status["running"]:
         return False
-    started = _refresh_status.get("running_since")
-    if not started:
-        return True  # Flag is on but no timestamp -- treat as running (conservative)
-    try:
-        started_dt = datetime.fromisoformat(started)
-        age = (datetime.now(started_dt.tzinfo) - started_dt).total_seconds()
-        if age > REFRESH_STUCK_THRESHOLD_SECONDS:
-            logger.warning(
-                "Refresh has been 'running' for %.0fs (> %ds threshold) -- assuming the "
-                "worker died and clearing the stuck flag.",
-                age, REFRESH_STUCK_THRESHOLD_SECONDS,
-            )
-            _refresh_status["running"] = False
-            _refresh_status["running_since"] = None
-            _refresh_status["last_error"] = f"Previous refresh appears stuck (running {age:.0f}s); reset."
-            return False
+    owner = _refresh_owner
+    if owner is not None and owner.is_alive():
         return True
-    except Exception:
-        return True
+    logger.warning("Refresh flagged running but its worker thread is gone -- clearing the stuck flag.")
+    _refresh_status["running"] = False
+    _refresh_status["running_since"] = None
+    _refresh_status["last_error"] = "Previous refresh worker died mid-flight; reset."
+    return False
 
 
 @shadow_bp.route("/api/shadow/refresh", methods=["POST"])
