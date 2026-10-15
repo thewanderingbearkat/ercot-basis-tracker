@@ -31,6 +31,14 @@ def _daterange(start_date: str, end_date: str):
         current += timedelta(days=1)
 
 
+def _day_params(day_str: str) -> dict:
+    """Request window for one UTC day. Tenaska keeps an interval only if it ENDS by
+    `end`, so `end` must be the next midnight: T23:59:59Z silently dropped each day's
+    last interval (23:00Z hourly = HE19 CDT for DA/gen/forecast, 23:45Z for RT)."""
+    nxt = (datetime.strptime(day_str, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+    return {"begin": f"{day_str}T00:00:00Z", "end": f"{nxt}T00:00:00Z"}
+
+
 def fetch_market_prices(start_date: str, end_date: str, token: str) -> dict:
     """Return {node: {DASPP: {iso_ts: price}, RTSPP: {iso_ts: price}}} for DART_NODES."""
     headers = {"Authorization": f"Bearer {token}"}
@@ -38,7 +46,7 @@ def fetch_market_prices(start_date: str, end_date: str, token: str) -> dict:
     logger.info("Fetching DA/RT market prices from %s to %s", start_date, end_date)
 
     for day_str in _daterange(start_date, end_date):
-        params = {"begin": f"{day_str}T00:00:00Z", "end": f"{day_str}T23:59:59Z"}
+        params = _day_params(day_str)
         try:
             resp = requests.get(TENASKA_MARKET_PRICES_URL, headers=headers, params=params, timeout=60)
         except Exception as e:
@@ -78,7 +86,7 @@ def fetch_generation(start_date: str, end_date: str, token: str) -> dict:
     logger.info("Fetching hourly generation from %s to %s", start_date, end_date)
 
     for day_str in _daterange(start_date, end_date):
-        params = {"begin": f"{day_str}T00:00:00Z", "end": f"{day_str}T23:59:59Z"}
+        params = _day_params(day_str)
         try:
             resp = requests.get(TENASKA_DART_DETAILS_URL, headers=headers, params=params, timeout=60)
         except Exception as e:
@@ -131,7 +139,7 @@ def fetch_forecasts(start_date: str, end_date: str, token: str) -> tuple[dict, d
     logger.info("Fetching renewable forecasts from %s to %s", start_date, end_date)
 
     for day_str in _daterange(start_date, end_date):
-        params = {"begin": f"{day_str}T00:00:00Z", "end": f"{day_str}T23:59:59Z"}
+        params = _day_params(day_str)
         try:
             resp = requests.get(TENASKA_DART_FORECAST_URL, headers=headers, params=params, timeout=60)
         except Exception as e:

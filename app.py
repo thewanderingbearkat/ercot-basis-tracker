@@ -820,7 +820,10 @@ def fetch_hub_prices(start_date=None, end_date=None):
 
         def _fetch_hub_day(day_str):
             out = {}
-            params = {"begin": f"{day_str}T00:00:00Z", "end": f"{day_str}T23:59:59Z"}
+            # end = next midnight: Tenaska keeps intervals that END by `end`, so
+            # T23:59:59Z dropped the 23:00Z hour (HE19 CDT) every day.
+            next_day = (datetime.strptime(day_str, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+            params = {"begin": f"{day_str}T00:00:00Z", "end": f"{next_day}T00:00:00Z"}
             try:
                 response = requests.get(TENASKA_MARKET_PRICES_URL, headers=headers, params=params, timeout=60)
                 if response.status_code != 200:
