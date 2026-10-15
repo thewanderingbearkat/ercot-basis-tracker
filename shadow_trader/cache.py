@@ -41,6 +41,13 @@ def save_cache(start: str, end: str, market_prices: dict, generation: dict, fore
     logger.info("Saved cache: %s (start=%s end=%s)", CACHE_FILE, start, end)
 
 
+def write_cache(blob: dict) -> None:
+    """Persist an already-assembled cache blob (used for post-merge backfill edits)."""
+    os.makedirs(DATA_DIR, exist_ok=True)
+    with open(CACHE_FILE, "w") as f:
+        json.dump(blob, f, default=str)
+
+
 def load_cache() -> Optional[dict[str, Any]]:
     if not os.path.exists(CACHE_FILE):
         return None
@@ -134,6 +141,9 @@ def merge_and_save_cache(
         "forecasts": merged_fc,
         "weather": merged_wx,
         "system_wind": merged_sw,
+        # Which forecast hours are weather reconstructions (see wind_forecast.
+        # reconstruct_wind_forecasts); the refresh worker maintains it after the merge.
+        "forecast_backfill": existing.get("forecast_backfill") or {},
     }
     os.makedirs(DATA_DIR, exist_ok=True)
     with open(CACHE_FILE, "w") as f:

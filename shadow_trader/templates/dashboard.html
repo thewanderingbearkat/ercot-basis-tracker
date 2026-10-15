@@ -284,6 +284,7 @@
   <div class="chart-card">
     <div class="chart-title">Cumulative uplift: gated trader vs naive (portfolio)</div>
     <canvas id="traderChart"></canvas>
+    <div id="traderBackfillNote" style="display:none;font-size:11px;color:#64748b;margin-top:6px;"></div>
   </div>
   <div class="chart-card">
     <div class="chart-title">Cumulative uplift over time (per asset)</div>
@@ -438,6 +439,15 @@ function renderTrader(t) {
   const gv = t.gate_value || 0;
   document.getElementById('traderUpliftSub').textContent =
     `gates ${gv >= 0 ? 'saved' : 'cost'} ${fmtDollar(Math.abs(gv))} vs naive`;
+
+  // Hours whose original forecast wasn't retained are rebuilt from archived site wind.
+  const bf = t.forecast_backfill || {};
+  const bfNote = document.getElementById('traderBackfillNote');
+  const bfParts = Object.entries(bf).map(([a, r]) => `${a} ${r.first} to ${r.last}`);
+  bfNote.style.display = bfParts.length ? 'block' : 'none';
+  bfNote.textContent = bfParts.length
+    ? `Reconstructed forecasts (archived site wind through the plant power curve; the original PowerUp/STWPF forecast was not retained): ${bfParts.join('; ')}.`
+    : '';
 
   // Portfolio cumulative: gated vs naive on the same date axis.
   const dates = Object.keys(t.naive.daily_uplift).sort();
@@ -715,10 +725,16 @@ function renderAssetDay(d) {
               : 'No PowerUp or ERCOT STWPF forecast covers this date (STWPF is a rolling ~10-day window; older days fall outside it).'} Bars below show actual generation only; no shadow bid would have been placed.
          </div>
        </div>` : '';
+  const reconstructedBanner = d.forecast_reconstructed
+    ? `<div class="item" style="flex-basis:100%;background:#e0e7ff;border-left:3px solid #6366f1;padding:8px 12px;border-radius:3px;">
+         <div style="font-size:12px;color:#3730a3;font-weight:600;">Reconstructed forecast for ${d.asset_meta.display_name} on ${d.date}</div>
+         <div style="font-size:11px;color:#3730a3;margin-top:2px;">The original PowerUp/STWPF forecast for this date was not retained, so bids use archived site-wind forecasts through the plant's power curve.</div>
+       </div>` : '';
   const upliftClass = s.uplift > 0 ? 'positive' : s.uplift < 0 ? 'negative' : '';
   const rtClass = s.rt_settlement > 0 ? 'positive' : s.rt_settlement < 0 ? 'negative' : '';
   summaryEl.innerHTML = `
     ${noForecastBanner}
+    ${reconstructedBanner}
     <div class="item"><div class="label">${d.asset_meta.display_name} - ${d.date}</div>
         <div class="val">${d.asset_meta.settlement_point}</div></div>
     <div class="item"><div class="label">Total DA bid</div><div class="val">${s.total_da_bid_mw.toFixed(1)} MWh</div></div>

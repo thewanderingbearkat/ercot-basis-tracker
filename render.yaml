@@ -2,7 +2,10 @@ services:
   - type: web
     name: ercot-basis-tracker
     runtime: python-3.12
-    plan: free
+    # Starter (not free): the free plan has an ephemeral filesystem and can't mount a
+    # disk, so every deploy wiped the shadow-trader cache, bid ledger and forward-only
+    # forecast history.
+    plan: starter
     region: oregon
 
     # Build configuration
@@ -21,6 +24,9 @@ services:
         value: production
       - key: PYTHONUNBUFFERED
         value: "1"
+      # Shadow trader cache + bid ledger live on the persistent disk below.
+      - key: SHADOW_DATA_DIR
+        value: /var/data/shadow
       - key: SECRET_KEY
         sync: false
       - key: DASHBOARD_PASSWORD
@@ -49,6 +55,12 @@ services:
         sync: false
       - key: SNOWFLAKE_PRIVATE_KEY
         sync: false
+
+    # Persistent disk for shadow-trader state (raw cache, bid ledger). Survives deploys.
+    disk:
+      name: shadow-data
+      mountPath: /var/data
+      sizeGB: 1
 
     # Service details
     healthCheckPath: /api/health

@@ -21,8 +21,10 @@ PNL_TRACKING_START = "2026-09-01"
 # Trailing-average forecast lookback
 TRAILING_AVG_DAYS = 7
 
-# Persistence
-DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
+# Persistence. On Render, SHADOW_DATA_DIR points at the persistent disk -- the free
+# plan's filesystem is ephemeral, so every deploy used to wipe the cache, the bid ledger
+# and the forward-only PowerUp/STWPF forecast history with it.
+DATA_DIR = os.getenv("SHADOW_DATA_DIR") or os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
 SHADOW_HISTORY_FILE = os.path.join(DATA_DIR, "shadow_history.json")
 
 # Settlement points and price keys used by the DA/RT fetch

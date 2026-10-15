@@ -228,3 +228,79 @@ def build_wind_forecast(
         nonzero = sum(1 for v in out[key].values() if v > 0)
         logger.info("  wind forecast %s: %d hours, %d non-zero, region=%s", key, len(out[key]), nonzero, region)
     return out
+
+
+def _wind_bin(wind_mph: float) -> int:
+    return int(round(min(max(float(wind_mph), 0.0), 45.0)))
+
+
+def _power_curve(samples: list[tuple[str, int, float]]) -> dict[int, float]:
+    """Median actual gen per wind bin from (date, bin, gen) samples."""
+    by_bin: dict[int, list[float]] = defaultdict(list)
+    for _, b, g in samples:
+        by_bin[b].append(g)
+    out = {}
+    for b, vals in by_bin.items():
+        vals.sort()
+        n = len(vals)
+        out[b] = vals[n // 2] if n % 2 else (vals[n // 2 - 1] + vals[n // 2]) / 2
+    return out
+
+
+def reconstruct_wind_forecasts(
+    generation: dict,
+    weather: dict,
+    forecasts: dict,
+    assets: list[str],
+    before_date: str,
+    min_prior_days: int = 45,
+) -> dict:
+    """Backfill PAST forecast hours a wind asset is missing, from archived forecast site wind.
+
+    The forecasts the trader actually used for older days (PowerUp issues, ERCOT STWPF
+    share) can't be re-fetched once a cache is lost: PowerUp has no forecast archive and
+    ERCOT MIS keeps only ~a week of regional wind reports. This rebuilds them from the
+    archived (no-lookahead) Open-Meteo site wind forecast through each plant's empirical
+    power curve -- median actual gen per 1-mph bin. Causal by month: the curve for month M
+    is fit on hours before M; months with < min_prior_days of history fall back to the
+    full-sample curve. Jan-Oct 2026: MAE ~20 MW, r ~0.85 vs actual (trailing-7-day gen,
+    the old proxy: MAE ~44, r ~0.32).
+
+    Only hours before before_date that have generation (i.e. history) are considered, and
+    an existing forecast is never overwritten. Returns {asset: {hour_key: mw}} of filled hours.
+    """
+    out: dict[str, dict[str, float]] = {}
+    for asset in assets:
+        gen_a = generation.get(asset, {})
+        wx_a = weather.get(asset, {})
+        fc_a = forecasts.get(asset, {})
+        samples = []
+        for hk, g in gen_a.items():
+            wind = (wx_a.get(hk) or {}).get("wind_mph")
+            if wind is None:
+                continue
+            actual = g["gen_mwh"] if isinstance(g, dict) else float(g)
+            samples.append((hk[:10], _wind_bin(wind), actual))
+        if not samples:
+            continue
+        full_curve = _power_curve(samples)
+
+        targets_by_month: dict[str, list[str]] = defaultdict(list)
+        for hk in gen_a:
+            if hk[:10] < before_date and hk not in fc_a and (wx_a.get(hk) or {}).get("wind_mph") is not None:
+                targets_by_month[hk[:7]].append(hk)
+
+        filled = {}
+        for month, hks in targets_by_month.items():
+            prior = [s for s in samples if s[0] < f"{month}-01"]
+            curve = _power_curve(prior) if len({s[0] for s in prior}) >= min_prior_days else full_curve
+            for hk in hks:
+                b = _wind_bin(wx_a[hk]["wind_mph"])
+                mw = curve.get(b, full_curve.get(b))
+                if mw is not None:
+                    filled[hk] = round(mw, 2)
+        if filled:
+            out[asset] = filled
+            logger.info("Reconstructed %d past forecast hours for %s from archived site wind",
+                        len(filled), asset)
+    return out

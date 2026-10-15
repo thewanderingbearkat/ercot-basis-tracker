@@ -285,6 +285,16 @@ def strategy():
     })
 
 
+def _backfill_summary(start: str | None, end: str | None) -> dict:
+    """{asset: {hours, first, last}} of weather-reconstructed forecast hours in the window."""
+    out = {}
+    for asset, hks in ((_cache_blob or {}).get("forecast_backfill") or {}).items():
+        dates = [hk[:10] for hk in hks if (not start or hk[:10] >= start) and (not end or hk[:10] <= end)]
+        if dates:
+            out[asset] = {"hours": len(dates), "first": min(dates), "last": max(dates)}
+    return out
+
+
 @shadow_bp.route("/api/shadow/trader")
 def trader():
     """Gated trader strategy vs the naive always-bid baseline, over the same window.
@@ -340,6 +350,7 @@ def trader():
             "weather_hours": {a: len(w) for a, w in weather.items()},
             "system_wind_hours": len(system_wind),
         },
+        "forecast_backfill": _backfill_summary(start, end),
         "plan_summary": summarize_plan(plan),
         "gated": {
             "total_uplift": agg_g["total_uplift"],
@@ -581,6 +592,9 @@ def asset_day():
         "date": date,
         "bid_fraction": bid_fraction,
         "da_bid_threshold": da_bid_threshold,
+        "forecast_reconstructed": any(
+            hk.startswith(date) for hk in (_cache_blob.get("forecast_backfill") or {}).get(asset, [])
+        ),
         "hourly": hourly,
         "summary": {
             "total_da_bid_mw": round(sum_da_bid, 2),
@@ -735,6 +749,34 @@ def _refresh_worker(start: str | None, end: str | None, merge: bool = False):
         else:
             save_cache(s, e, market_prices, generation, forecasts,
                        weather=weather, system_wind=system_wind)
+
+        # Past wind-asset hours with no retained forecast (cache lost, or history older
+        # than the forward-only PowerUp/STWPF sources) are rebuilt from archived site
+        # wind. Tracked in forecast_backfill so the dashboard can label them; an hour
+        # this fetch brought a real forecast for stops being a reconstruction.
+        try:
+            from shadow_trader.cache import write_cache
+            from shadow_trader.wind_forecast import reconstruct_wind_forecasts
+            blob = load_cache() or {}
+            backfill = {
+                a: [hk for hk in hks if hk not in forecasts.get(a, {})]
+                for a, hks in (blob.get("forecast_backfill") or {}).items()
+            }
+            wind_assets = [a for a in DART_ASSETS if ASSET_CONFIG[a]["tech"] == "wind"
+                           and ASSET_CONFIG[a]["forecast_source"] != "tenaska"]
+            today = datetime.now(ZoneInfo("America/Chicago")).strftime("%Y-%m-%d")
+            filled = reconstruct_wind_forecasts(
+                blob.get("generation") or {}, blob.get("weather") or {},
+                blob.get("forecasts") or {}, wind_assets, before_date=today,
+            )
+            for a, hours in filled.items():
+                blob["forecasts"].setdefault(a, {}).update(hours)
+                backfill[a] = sorted(set(backfill.get(a, [])) | set(hours))
+            blob["forecast_backfill"] = {a: hks for a, hks in backfill.items() if hks}
+            write_cache(blob)
+        except Exception as bf_err:
+            logger.exception("Wind forecast reconstruction failed: %s", bf_err)
+
         with _cache_lock:
             _cache_blob = load_cache()
         _refresh_status["last_finished_at"] = datetime.now(ZoneInfo("America/Chicago")).isoformat()
