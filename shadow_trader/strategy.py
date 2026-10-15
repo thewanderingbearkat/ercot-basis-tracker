@@ -144,7 +144,7 @@ def simulate_shadow_da(
         decision.build_bid_plan), the per-hour bid comes from the plan instead of
         bid_fraction × forecast (da_bid_threshold is ignored — the plan already made the
         in/out call); hours absent from the plan are treated as stay-out (bid 0), and the
-        plan's level/reasons/edge are carried onto the output records for auditing.
+        plan's level/reasons are carried onto the output records for auditing.
     """
     # Build O(1) price indexes once per call. Previous version did a linear scan of the
     # full DASPP/RTSPP dict for every (asset, hour, lookup) tuple -- 30s+ per /api/strategy.
@@ -248,7 +248,6 @@ def simulate_shadow_da(
                 record.update({
                     "decision_level": decision.get("level"),
                     "decision_reasons": decision.get("reasons", []),
-                    "trailing_edge": decision.get("edge"),
                 })
             records.append(record)
     return records

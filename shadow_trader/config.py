@@ -13,8 +13,8 @@ BACKTEST_START_DATE = "2026-01-01"
 # P&L tracking reset: the dashboard's default window and aggregates start here, so
 # performance is measured only under the current strategy parameters (scarcity gate
 # + PowerUp forecast source, both deployed 2026-09-01). Data before this date stays
-# in the cache -- the trailing DART edge (14d), error stats (21d), and wind share
-# factor (30d) all need that history -- and older dates remain viewable by moving
+# in the cache -- forecast-error stats (21d) and the wind share factor (30d) need
+# that history -- and older dates remain viewable by moving
 # the date pickers manually. Do NOT change BACKTEST_START_DATE for a P&L reset.
 PNL_TRACKING_START = "2026-09-01"
 
@@ -114,17 +114,13 @@ PPA_HUB_NODE = "HB_WEST"
 #
 # Trader decision engine (shadow_trader/decision.py) thresholds.
 #
-# Per hour, shadow-DA uplift = bid_mw x (DA - RT), so the engine (a) requires a trailing
-# DA premium before participating, (b) stands down ahead of weather that produces RT
-# blowouts / forecast busts, and (c) haircuts bid size by trailing forecast-error sigma.
+# Per hour, shadow-DA uplift = bid_mw x (DA - RT), so the engine (a) stands down or
+# half-sizes ahead of conditions that historically produced RT blowouts / forecast
+# busts, and (b) haircuts bid size by trailing forecast-error sigma. There is no
+# trailing-DART edge filter: participation is condition-dependent only.
 # Thresholds are starting points chosen for West Texas sites; tune against backtests.
 #
 TRADER_CONFIG = {
-    # Edge filter: trailing DART (DA - RT) by node and hour-of-day
-    "dart_lookback_days": 14,
-    "min_dart_samples": 7,
-    "dart_min_edge": 0.0,            # $/MWh trailing DART required to bid the hour
-
     # Forecast-error tracking (bias/sigma by hour-of-day, trailing window)
     "error_lookback_days": 21,
     "min_error_samples": 5,
@@ -135,15 +131,6 @@ TRADER_CONFIG = {
     # proxy for system stress, when an undelivered DA MW is bought back near the cap
     "extreme_heat_f": 100.0,
     "extreme_cold_f": 20.0,
-
-    # Low-wind scarcity stand-down (any tech): a hot-but-not-extreme afternoon keeps
-    # evening load high while calm site wind proxies an ERCOT-wide wind lull -- the
-    # RT blowout signature the extreme_heat gate misses (Aug 23/26 2026). Backtested
-    # Jul-Aug 2026 net +$102k, validated out-of-sample May-Jun +$10k at 13:1
-    # avoided-to-foregone; thresholds from that sweep (scarcity_gate_backtest).
-    "scarcity_heat_f": 97.0,          # afternoon (HE14-21) forecast peak temp, degF
-    "scarcity_calm_wind_mph": 12.0,   # gate hours with forecast wind at/below this
-    "scarcity_hours": (18, 24),       # hour-ending window to stand down
 
     # Dusk system-wind screens (any tech), summer only: driver analysis over 94
     # summer evenings found spike evenings run ~8.5 GW ERCOT-wide wind at dusk vs
@@ -158,15 +145,18 @@ TRADER_CONFIG = {
     "dusk_system_wind_elevated_mw": 11000.0,  # ...at/below -> half size
     "dusk_system_ramp_elevated_mw": 6000.0,   # max-min STWPF swing across window -> half size
 
+    # Calm-wind screen (any tech): forecast site wind at the hour. Calm West Texas
+    # hours carry negative mean DART and the fat RT-spike tail; windy hours earn
+    # steadily. Swept 5-12 / 8-16 mph across all/am+eve/eve/dusk windows on Jan-Oct
+    # 2026 (smooth surface); all hours at 12/16 had the best P&L per unit of tail.
+    "calm_wind_hours": tuple(range(1, 25)),
+    "calm_wind_standdown_mph": 12.0,  # forecast site wind at/below -> stand down
+    "calm_wind_elevated_mph": 16.0,   # ...at/below -> half size
+
     # Wind-specific gates (80m wind speed / 10m gusts, mph)
-    "wind_ramp_elevated_mph": 9.0,   # max hour-over-hour forecast swing -> half size
-    "wind_ramp_standdown_mph": 14.0, # frontal passage -> stay out all day
+    "wind_ramp_elevated_mph": 14.0,  # max hour-over-hour forecast swing -> half size all day
     "wind_cutout_mph": 50.0,         # approaching turbine cut-out (~56 mph at hub)
     "gust_standdown_mph": 58.0,
-    "wind_model_spread_mph": 7.0,    # cross-model disagreement -> half size
-
-    # Solar-specific gates (cloud cover, %)
-    "cloud_volatility_elevated_pct": 25.0,   # stdev across daylight hours -> half size
-    "cloud_volatility_standdown_pct": 38.0,  # chaotic sky -> stay out of daylight hours
-    "cloud_model_spread_pct": 30.0,          # cross-model disagreement -> half size
+    # Removed after the Jan-Oct 2026 backtest (each cost P&L with no tail benefit):
+    # solar cloud-volatility gate (-$64k), wind/cloud model-spread gates (-$6k/-$4k).
 }

@@ -289,7 +289,7 @@ def strategy():
 def trader():
     """Gated trader strategy vs the naive always-bid baseline, over the same window.
 
-    Runs the decision engine (edge filter, sigma haircut, weather gates, scarcity
+    Runs the decision engine (sigma haircut, weather gates, scarcity
     and dusk system-wind screens) on cached inputs and settles the resulting bid
     plan through the same simulator as the naive strategy, so the two summaries are
     directly comparable A/B ledgers.
@@ -320,7 +320,7 @@ def trader():
     if end:
         dates = [d for d in dates if d <= end]
 
-    plan = build_bid_plan(dates, forecasts, generation, market_prices, weather,
+    plan = build_bid_plan(dates, forecasts, generation, weather,
                           base_fraction=bid_fraction, system_wind=system_wind)
     gated = simulate_shadow_da(market_prices, generation, forecasts, "cached",
                                bid_fraction=bid_fraction, bid_plan=plan)
@@ -365,14 +365,13 @@ def alerts():
     if _cache_blob is None:
         return jsonify({"error": "No data cache yet."}), 503
 
-    from shadow_trader.decision import build_dart_index, decide_day
+    from shadow_trader.decision import decide_day
 
     now_ct = datetime.now(ZoneInfo("America/Chicago"))
     dates = [(now_ct + timedelta(days=i)).strftime("%Y-%m-%d") for i in (0, 1)]
 
     forecasts = _cache_blob["forecasts"]
     generation = _cache_blob["generation"]
-    dart_index = build_dart_index(_cache_blob["market_prices"])
     weather = _cache_blob.get("weather") or {}
     system_wind = _cache_blob.get("system_wind") or {}
 
@@ -382,7 +381,7 @@ def alerts():
         # numbers, so group on the prefix and keep one full example string.
         rollup: dict[tuple, dict] = {}
         for asset in DART_ASSETS:
-            plan = decide_day(asset, d, forecasts, generation, dart_index, weather,
+            plan = decide_day(asset, d, forecasts, generation, weather,
                               system_wind=system_wind)
             for hk, rec in plan.items():
                 if rec["level"] == "ok" or not rec["reasons"]:

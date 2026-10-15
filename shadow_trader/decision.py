@@ -8,21 +8,21 @@ how nobody actually trades. Per hour, the uplift of a shadow DA sale over RT-onl
 so the P&L driver is the DART spread on the hours you choose to be in, and the tail risk is
 holding a DA position into an RT price blowout (scarcity pricing). Forecast error compounds
 this: bidding MW you don't physically generate is a naked RT short, which is precisely the
-position that gets run over at the cap. A real desk therefore does three things this module
-implements:
+position that gets run over at the cap. Participation is condition-dependent, not
+momentum-based: there is deliberately no trailing-DART "edge" filter (a 14-day trailing
+mean benched whole asset-weeks after a single spike, which is not how a desk trades).
+The engine does two things:
 
-1. EDGE FILTER -- only participate in hours where DA has recently cleared at a premium to RT
-   (trailing DART by node and hour-of-day). No expected edge, no position.
-2. WEATHER RISK GATES -- stand down (or size down) ahead of conditions that historically
-   produce RT blowouts and forecast busts:
+1. CONDITION GATES -- stand down (or size down) ahead of conditions that historically
+   produce RT blowouts:
+     - calm forecast site wind, any hour (a West Texas wind lull tightens RT against DA;
+       the dominant driver in the Jan-Oct 2026 swing analysis),
      - extreme heat/cold at the plant (proxy for system scarcity conditions, when RT can
        print at multiples of DA and a short position is catastrophic),
-     - large hour-over-hour swings in hub-height wind (frontal passages: the hardest days
-       for wind forecasting, and the classic DART widow-maker in West Texas),
+     - large hour-over-hour swings in hub-height wind (frontal passages: half size),
      - near-cut-out wind speeds / extreme gusts (turbines drop offline en masse),
-     - high cloud-cover volatility or model disagreement for solar (irradiance busts),
-     - hot afternoons with calm evening wind (system-wide wind lull -> evening RT blowout).
-3. CONFIDENCE-AWARE SIZING -- track our own forecast error (bias and sigma by asset and
+     - low ERCOT-wide wind at summer dusk (D-1 system STWPF).
+2. CONFIDENCE-AWARE SIZING -- track our own forecast error (bias and sigma by asset and
    hour-of-day, trailing window), bias-correct the forecast, and bid a conservative
    quantile (forecast - k*sigma) rather than the mean. Under-delivery is the expensive
    side, so the bid should be MW we are confident will show up.
@@ -38,7 +38,6 @@ from datetime import datetime, timedelta
 from statistics import mean, pstdev
 
 from shadow_trader.config import ASSET_CONFIG, DART_ASSETS, TRADER_CONFIG
-from shadow_trader.strategy import _build_price_indexes
 
 logger = logging.getLogger(__name__)
 
@@ -46,46 +45,10 @@ LEVEL_OK = "ok"
 LEVEL_ELEVATED = "elevated"
 LEVEL_STANDDOWN = "standdown"
 
-# Daylight window (hour-ending) used for solar cloud-volatility assessment
-_SOLAR_HE_RANGE = range(7, 21)
-
 
 def _prior_dates(target_date: str, lookback_days: int) -> list[str]:
     dt = datetime.strptime(target_date, "%Y-%m-%d")
     return [(dt - timedelta(days=d)).strftime("%Y-%m-%d") for d in range(1, lookback_days + 1)]
-
-
-def build_dart_index(market_prices: dict) -> dict:
-    """Pre-compute hourly DART spreads: {node: {(date_str, hour): da_price - rt_price}}."""
-    da_idx, rt_idx = _build_price_indexes(market_prices)
-    out = {}
-    for node, da_map in da_idx.items():
-        rt_map = rt_idx.get(node, {})
-        out[node] = {k: da - rt_map[k] for k, da in da_map.items() if k in rt_map}
-    return out
-
-
-def trailing_dart_edge(
-    dart_node: dict,
-    target_date: str,
-    he: int,
-    lookback_days: int,
-    min_samples: int,
-) -> tuple[float | None, int]:
-    """Mean DART ($/MWh) for this hour-of-day over the trailing window, using only days
-    strictly before target_date (information available at bid time).
-
-    Returns (edge, n_samples); edge is None when there aren't enough samples to trust.
-    """
-    hour = he - 1
-    samples = [
-        dart_node[(d, hour)]
-        for d in _prior_dates(target_date, lookback_days)
-        if (d, hour) in dart_node
-    ]
-    if len(samples) < min_samples:
-        return None, len(samples)
-    return mean(samples), len(samples)
 
 
 def forecast_error_stats(
@@ -154,7 +117,9 @@ def assess_weather_day(weather_day: dict, tech: str, cfg: dict,
     # --- Day-level wind ramp screen (frontal passage detection) -------------------
     # Large hour-over-hour swings in hub-height wind mean a front is moving through:
     # timing errors of 1-2 hours produce enormous MW busts, and ERCOT-wide wind swings
-    # move RT prices against the position at the same time.
+    # move RT prices against the position at the same time. Half size, not stand-down:
+    # frontal days are mostly windy, DA-premium days (the old all-day stand-down at
+    # 14 mph/hr cost ~$310k Jan-Oct 2026); half size keeps the worst-day protection.
     if tech == "wind":
         speeds = [(he, weather_day[he].get("wind_mph")) for he in sorted(weather_day)]
         speeds = [(he, w) for he, w in speeds if w is not None]
@@ -162,11 +127,7 @@ def assess_weather_day(weather_day: dict, tech: str, cfg: dict,
         for (he_a, w_a), (he_b, w_b) in zip(speeds, speeds[1:]):
             if he_b - he_a == 1 and abs(w_b - w_a) > max_ramp:
                 max_ramp, ramp_he = abs(w_b - w_a), he_b
-        if max_ramp >= cfg["wind_ramp_standdown_mph"]:
-            for he in result:
-                flag(he, LEVEL_STANDDOWN,
-                     f"frontal passage: {max_ramp:.0f} mph/hr wind ramp near HE{ramp_he:02d}")
-        elif max_ramp >= cfg["wind_ramp_elevated_mph"]:
+        if max_ramp >= cfg["wind_ramp_elevated_mph"]:
             for he in result:
                 flag(he, LEVEL_ELEVATED,
                      f"wind ramp risk: {max_ramp:.0f} mph/hr near HE{ramp_he:02d}")
@@ -201,43 +162,24 @@ def assess_weather_day(weather_day: dict, tech: str, cfg: dict,
                              f"dusk wind ramp: {swing / 1000:.1f} GW swing across "
                              f"HE{d_lo}-{d_hi}")
 
-    # --- Day-level low-wind scarcity screen (all techs) ------------------------------
-    # The dangerous evenings are not just the >100F days: a ~97F afternoon keeps system
-    # load high into the evening while calm site wind proxies an ERCOT-wide wind lull,
-    # and RT prints at multiples of DA (Aug 23/26 2026: RT $290-600 vs DA $60-150).
-    # Presence-based gates can't see this -- the risk comes from the ABSENCE of wind.
-    # Backtested Jul-Aug 2026 (+$102k net vs ungated) and validated out-of-sample
-    # May-Jun 2026 (+$10k, 13:1 avoided:foregone).
-    afternoon_temps = [
-        weather_day[he].get("temp_f") for he in range(14, 22) if he in weather_day
-    ]
-    afternoon_temps = [t for t in afternoon_temps if t is not None]
-    day_peak_f = max(afternoon_temps) if afternoon_temps else None
-    if day_peak_f is not None and day_peak_f >= cfg["scarcity_heat_f"]:
-        lo, hi = cfg["scarcity_hours"]
-        for he in range(lo, hi + 1):
-            wind = weather_day.get(he, {}).get("wind_mph")
-            if wind is not None and wind <= cfg["scarcity_calm_wind_mph"]:
-                flag(he, LEVEL_STANDDOWN,
-                     f"scarcity risk: {day_peak_f:.0f}F afternoon + calm evening wind ({wind:.0f} mph)")
-
-    # --- Day-level solar cloud volatility screen -----------------------------------
-    # Partly-cloudy, fast-moving days are the hardest irradiance forecasts. A stable
-    # overcast or stable clear day is fine; a 0-100% oscillation is not.
-    if tech == "solar":
-        clouds = [
-            weather_day[he]["cloud_pct"]
-            for he in _SOLAR_HE_RANGE
-            if he in weather_day and weather_day[he].get("cloud_pct") is not None
-        ]
-        if len(clouds) >= 6:
-            vol = pstdev(clouds)
-            if vol >= cfg["cloud_volatility_standdown_pct"]:
-                for he in _SOLAR_HE_RANGE:
-                    flag(he, LEVEL_STANDDOWN, f"cloud volatility: {vol:.0f}% stdev across daylight hours")
-            elif vol >= cfg["cloud_volatility_elevated_pct"]:
-                for he in _SOLAR_HE_RANGE:
-                    flag(he, LEVEL_ELEVATED, f"cloud volatility: {vol:.0f}% stdev across daylight hours")
+    # --- Per-hour calm-wind screen (all techs) --------------------------------------
+    # Forecast site wind is the strongest ex-ante separator of DART risk in the Jan-Oct
+    # 2026 swing analysis: calm West Texas hours run negative mean DART with fat RT-spike
+    # tails (dusk <=12 mph: 1st pct DART -$340 to -$535), windy hours earn steadily. It
+    # applies to every tech -- site wind proxies system tightness, and solar bids full
+    # size into calm evenings regardless. Subsumes the old 97F + calm-evening scarcity
+    # gate (every hour it gated is <=12 mph). Backtest vs the prior gate set, ex Jan
+    # storm: +$447k with the ramp/cloud changes, worst-5%-day avg -$61k -> -$47k, better
+    # in both Jan-Jun and Jul-Oct.
+    calm_hours = cfg.get("calm_wind_hours") or ()
+    for he in calm_hours:
+        wind = weather_day.get(he, {}).get("wind_mph")
+        if wind is None:
+            continue
+        if wind <= cfg["calm_wind_standdown_mph"]:
+            flag(he, LEVEL_STANDDOWN, f"calm wind: {wind:.0f} mph forecast site wind")
+        elif wind <= cfg["calm_wind_elevated_mph"]:
+            flag(he, LEVEL_ELEVATED, f"light wind: {wind:.0f} mph forecast site wind")
 
     # --- Per-hour screens -----------------------------------------------------------
     for he, wx in weather_day.items():
@@ -260,14 +202,6 @@ def assess_weather_day(weather_day: dict, tech: str, cfg: dict,
                 flag(he, LEVEL_STANDDOWN, f"cut-out risk: {wind_mph:.0f} mph hub wind")
             elif gust is not None and gust >= cfg["gust_standdown_mph"]:
                 flag(he, LEVEL_STANDDOWN, f"cut-out risk: {gust:.0f} mph gusts")
-            spread = wx.get("wind_spread")
-            if spread is not None and spread >= cfg["wind_model_spread_mph"]:
-                flag(he, LEVEL_ELEVATED, f"model disagreement: {spread:.0f} mph wind spread")
-
-        if tech == "solar" and he in _SOLAR_HE_RANGE:
-            cspread = wx.get("cloud_spread")
-            if cspread is not None and cspread >= cfg["cloud_model_spread_pct"]:
-                flag(he, LEVEL_ELEVATED, f"model disagreement: {cspread:.0f}% cloud spread")
 
     return result
 
@@ -277,7 +211,6 @@ def decide_day(
     target_date: str,
     forecasts: dict,
     generation: dict,
-    dart_index: dict,
     weather: dict,
     base_fraction: float = 1.0,
     cfg: dict | None = None,
@@ -292,8 +225,7 @@ def decide_day(
         bid_mw       final DA bid (0 = stay out)
         participate  bool
         level        ok | elevated | standdown
-        reasons      list[str] (empty when participating at full size with edge)
-        edge         trailing DART $/MWh for the hour (None if insufficient history)
+        reasons      list[str] (empty when participating at full size)
         sigma        trailing forecast-error sigma used in the haircut (None if none)
 
     Uses only information available before the DA bid deadline for target_date:
@@ -302,8 +234,6 @@ def decide_day(
     cfg = cfg or TRADER_CONFIG
     asset_cfg = ASSET_CONFIG.get(asset, {})
     tech = asset_cfg.get("tech", "wind")
-    node = asset_cfg.get("settlement_point")
-    dart_node = dart_index.get(node, {})
 
     err_stats = forecast_error_stats(
         generation, forecasts, asset, target_date,
@@ -331,9 +261,6 @@ def decide_day(
         forecast_mw = float(forecasts.get(asset, {}).get(hour_key, 0) or 0)
         grade = wx_grades[he]
         reasons = list(grade["reasons"])
-        edge, n_edge = trailing_dart_edge(
-            dart_node, target_date, he, cfg["dart_lookback_days"], cfg["min_dart_samples"],
-        )
         stats = err_stats.get(he)
         sigma = stats["sigma"] if stats else None
 
@@ -343,7 +270,6 @@ def decide_day(
             "zero_forecast": forecast_mw <= 0,
             "level": grade["level"],
             "reasons": reasons,
-            "edge": round(edge, 2) if edge is not None else None,
             "sigma": round(sigma, 2) if sigma is not None else None,
         }
         out[hour_key] = rec
@@ -353,13 +279,6 @@ def decide_day(
             continue
         if grade["level"] == LEVEL_STANDDOWN:
             continue
-        # Edge filter: a trailing DA discount to RT means selling DA has been a losing
-        # trade in this hour lately -- collect RT instead. Insufficient history is
-        # treated as neutral (edge requirement of <= 0 still allows participation).
-        if edge is not None and edge < cfg["dart_min_edge"]:
-            reasons.append(f"no DA edge: trailing DART {edge:+.2f} $/MWh")
-            continue
-
         # Confidence-aware sizing: bias-correct, then haircut by k*sigma so the bid is
         # MW we expect to physically deliver. Bias correction is clamped so a noisy
         # trailing window can't more than halve or 1.5x the underlying forecast.
@@ -384,7 +303,6 @@ def build_bid_plan(
     dates: list[str],
     forecasts: dict,
     generation: dict,
-    market_prices: dict,
     weather: dict,
     base_fraction: float = 1.0,
     cfg: dict | None = None,
@@ -396,12 +314,11 @@ def build_bid_plan(
     day, so early dates with thin history simply trade with fewer filters active.
     """
     cfg = cfg or TRADER_CONFIG
-    dart_index = build_dart_index(market_prices)
     plan: dict[str, dict] = {a: {} for a in DART_ASSETS}
     for asset in DART_ASSETS:
         for d in sorted(dates):
             plan[asset].update(
-                decide_day(asset, d, forecasts, generation, dart_index, weather,
+                decide_day(asset, d, forecasts, generation, weather,
                            base_fraction=base_fraction, cfg=cfg, system_wind=system_wind)
             )
     return plan

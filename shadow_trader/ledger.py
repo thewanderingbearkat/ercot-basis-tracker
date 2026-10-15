@@ -65,7 +65,7 @@ def upsert_bid(
     """Create or replace a BID entry. Returns the saved entry.
 
     hourly_bids: list of {'he': int, 'forecast_mw': float, 'da_bid_mw': float}
-    Trader-strategy rows additionally carry 'level', 'reasons', and 'trailing_edge'
+    Trader-strategy rows additionally carry 'level' and 'reasons'
     so the ledger doubles as a decision blotter.
     """
     ledger = load()
