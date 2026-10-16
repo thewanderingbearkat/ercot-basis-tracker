@@ -291,6 +291,11 @@ def decide_day(
 
         risk_mult = 0.5 if grade["level"] == LEVEL_ELEVATED else 1.0
         bid_mw = bid_base * base_fraction * risk_mult
+        # Bias correction can lift the bid up to 1.5x forecast; never offer more than
+        # the plant can physically deliver.
+        nameplate = asset_cfg.get("nameplate_mw")
+        if nameplate:
+            bid_mw = min(bid_mw, nameplate)
         if bid_mw <= 0:
             reasons.append("sigma haircut zeroed bid (forecast confidence too low)")
             continue

@@ -13,11 +13,29 @@ from datetime import datetime
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-from shadow_trader.config import DATA_DIR
+from shadow_trader.config import ASSET_CONFIG, DATA_DIR
 
 logger = logging.getLogger(__name__)
 
 CACHE_FILE = os.path.join(DATA_DIR, "raw_cache.json")
+
+
+def clip_to_nameplate(forecasts: dict) -> dict:
+    """Cap every forecast hour at the asset's nameplate MW, in place.
+
+    A plant can't deliver above nameplate, so no bid should either. The ERCOT
+    regional-share wind forecast scales linearly with West STWPF and has no ceiling
+    (Oct 16 2026: BKI 368 MW vs 196.65 nameplate), and Tenaska's Holstein forecast
+    occasionally prints a few MW over 200 MWac.
+    """
+    for asset, hours in (forecasts or {}).items():
+        cap = (ASSET_CONFIG.get(asset) or {}).get("nameplate_mw")
+        if not cap:
+            continue
+        for hk, mw in hours.items():
+            if mw is not None and mw > cap:
+                hours[hk] = cap
+    return forecasts
 
 
 def save_cache(start: str, end: str, market_prices: dict, generation: dict, forecasts: dict,
@@ -29,7 +47,7 @@ def save_cache(start: str, end: str, market_prices: dict, generation: dict, fore
         "end": end,
         "market_prices": market_prices,
         "generation": generation,
-        "forecasts": forecasts,
+        "forecasts": clip_to_nameplate(forecasts),
         # Trader decision-engine inputs (optional; older caches lack them):
         # weather: {asset: {hour_key: {temp_f, wind_mph, ...}}} forecast-vintage
         # system_wind: {hour_key: ERCOT-wide STWPF MW}
@@ -52,7 +70,10 @@ def load_cache() -> Optional[dict[str, Any]]:
     if not os.path.exists(CACHE_FILE):
         return None
     with open(CACHE_FILE) as f:
-        return json.load(f)
+        blob = json.load(f)
+    # Also corrects caches written before the nameplate cap existed.
+    clip_to_nameplate(blob.get("forecasts"))
+    return blob
 
 
 def cache_age_seconds() -> Optional[float]:
@@ -138,7 +159,7 @@ def merge_and_save_cache(
         "end": win_end,
         "market_prices": merged_mp,
         "generation": merged_gen,
-        "forecasts": merged_fc,
+        "forecasts": clip_to_nameplate(merged_fc),
         "weather": merged_wx,
         "system_wind": merged_sw,
         # Which forecast hours are weather reconstructions (see wind_forecast.

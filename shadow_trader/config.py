@@ -69,7 +69,7 @@ ASSET_CONFIG = {
         "ppa_price": 34.00,
         "ppa_basis_exposure": 0.5,
         "iso": "ERCOT",
-        "nameplate_mw": None,
+        "nameplate_mw": 162.15,   # 47 x Vestas V126-3.45 (McCrae MOR)
         # Plant-level Vaisala PowerUp ensemble forecast, overlaid on the ERCOT
         # STWPF-share base (which backfills history and is the fallback whenever
         # PowerUp has no data -- missing creds, entitlement, or outage).
@@ -88,7 +88,7 @@ ASSET_CONFIG = {
         "ppa_price": 40.50,
         "ppa_basis_exposure": 1.0,
         "iso": "ERCOT",
-        "nameplate_mw": None,
+        "nameplate_mw": 196.65,   # 57 x Vestas V126-3.45
         "forecast_source": "powerup",
         "ercot_region": "WEST",
         "tech": "wind",
@@ -104,7 +104,7 @@ ASSET_CONFIG = {
         "ppa_price": 35.00,
         "ppa_basis_exposure": 1.0,
         "iso": "ERCOT",
-        "nameplate_mw": None,
+        "nameplate_mw": 200.0,    # MWac
         "forecast_source": "tenaska",
         "tech": "solar",
     },
