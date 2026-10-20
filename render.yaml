@@ -20,6 +20,10 @@ services:
 
     # Environment variables
     envVars:
+      # Same Python as the energy-waterfall cron job. On Render's default (3.13) the Snowflake connector's native
+      # core segfaulted (exit 139) during the SkyVest login from this web process; 3.12.7 runs it cleanly.
+      - key: PYTHON_VERSION
+        value: 3.12.7
       - key: FLASK_ENV
         value: production
       - key: PYTHONUNBUFFERED
