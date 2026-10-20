@@ -55,6 +55,18 @@ services:
         sync: false
       - key: SNOWFLAKE_PRIVATE_KEY
         sync: false
+      # SkyVest Snowflake (GOLD.PERFORMANCE) for the Energy Waterfall tab: service user, key-pair only.
+      # Set SKYVEST_SNOWFLAKE_PRIVATE_KEY to the PEM contents of svc_performance_app_rsa_key.p8.
+      - key: SKYVEST_SNOWFLAKE_ACCOUNT
+        value: A8022540555871-MAIN
+      - key: SKYVEST_SNOWFLAKE_USER
+        value: SVC_PERFORMANCE_APP
+      - key: SKYVEST_SNOWFLAKE_ROLE
+        value: PERFORMANCE_APP
+      - key: SKYVEST_SNOWFLAKE_WAREHOUSE
+        value: GENERAL_WH
+      - key: SKYVEST_SNOWFLAKE_PRIVATE_KEY
+        sync: false
 
     # Persistent disk for shadow-trader state (raw cache, bid ledger). Survives deploys.
     disk:
@@ -67,3 +79,46 @@ services:
 
     # Auto-deploy on push
     autoDeploy: true
+
+  # Energy Waterfall weekly refresh: rebuilds the trailing 3 weeks for every enabled Bazefield plant (Lakefield,
+  # McCrae, Holstein; NW Ohio switches on automatically once it has ~4 weeks of data) into SkyVest Snowflake
+  # GOLD.PERFORMANCE. Standard (2 GB) because Lakefield is 137 turbines x 3 weeks of 10-minute SCADA; billed only
+  # while it runs (~15-20 min a week). Exit code 1 if any plant fails (the others still load).
+  - type: cron
+    name: energy-waterfall-refresh
+    runtime: python-3.12
+    plan: standard
+    region: oregon
+    schedule: "0 12 * * 1"          # Mondays 12:00 UTC (7 am Central)
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m energy_waterfall.refresh --days 21
+    envVars:
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: BAZEFIELD_BASE_URL
+        sync: false
+      - key: BAZEFIELD_API_KEY
+        sync: false
+      - key: VAISALA_POWERUP_USER_GUID
+        sync: false
+      - key: VAISALA_POWERUP_USER_SECRET
+        sync: false
+      # Yes Energy share (MISO 5-minute LMPs for Lakefield's compensation test): same key pair as the web service
+      - key: SNOWFLAKE_USER
+        sync: false
+      - key: SNOWFLAKE_ACCOUNT
+        sync: false
+      - key: SNOWFLAKE_WAREHOUSE
+        sync: false
+      - key: SNOWFLAKE_PRIVATE_KEY
+        sync: false
+      - key: SKYVEST_SNOWFLAKE_ACCOUNT
+        value: A8022540555871-MAIN
+      - key: SKYVEST_SNOWFLAKE_USER
+        value: SVC_PERFORMANCE_APP
+      - key: SKYVEST_SNOWFLAKE_ROLE
+        value: PERFORMANCE_APP
+      - key: SKYVEST_SNOWFLAKE_WAREHOUSE
+        value: GENERAL_WH
+      - key: SKYVEST_SNOWFLAKE_PRIVATE_KEY
+        sync: false

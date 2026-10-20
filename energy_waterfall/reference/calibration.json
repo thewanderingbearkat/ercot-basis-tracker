@@ -1,0 +1,20 @@
+{
+ "LFW01": {
+  "powerup_k": 0.8627243013606208,
+  "stopped_anemometer_factor": 0.9150011711977656,
+  "calibrated_on": "2026-10-19",
+  "window": "2026-09-15..2026-10-18",
+  "source": "powerup-bronze build F46622D98F2B44A9"
+ },
+ "MCW02": {
+  "stopped_anemometer_factor": 1.0,
+  "powerup_k": 1.097801065500322,
+  "calibrated_on": "2026-10-20",
+  "window": "2026-08-03..2026-10-19"
+ },
+ "HOS01": {
+  "powerup_k": 0.3101521101708861,
+  "calibrated_on": "2026-10-20",
+  "window": "2026-09-14..2026-10-19"
+ }
+}

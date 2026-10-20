@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Energy Waterfall</title>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+<style>
+  :root { --navy: #0E2C51; --light-blue: #A7D3F7; --gray: #D9D9D9; --gold: #FFD966; --blue: #2291EB; --dark-navy: #0E2841; }
+  html, body { margin: 0; padding: 0; background: #f8f9fa; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+         color: var(--navy); letter-spacing: -0.01em; }
+
+  /* Tab nav identical to the basis-tracker / shadow-trader tabs. */
+  .tab-nav { display: flex; flex-wrap: wrap; gap: 4px; padding: 20px 20px 0 20px; border-bottom: 2px solid #e5e7eb; background: #f8f9fa; line-height: 1.25; }
+  .tab-nav a { display: inline-block; padding: 8px 16px; font-size: 13px; color: #6b7280; text-decoration: none; border-bottom: 2px solid transparent; margin-bottom: -2px; font-weight: 500; }
+  .tab-nav a:hover { color: var(--navy); }
+  .tab-nav a.active { color: var(--navy); border-bottom-color: var(--navy); font-weight: 600; }
+
+  .page-wrap { padding: 12px; background: linear-gradient(135deg, #f8f9fa 0%, #ffffff 100%); }
+  @media (min-width: 768px) { .page-wrap { padding: 16px; } }
+  .page-inner { max-width: 80rem; margin: 0 auto; }
+  .head { border-bottom: 2px solid var(--navy); padding-bottom: 8px; margin-bottom: 12px; }
+  h1 { font-family: Georgia, "Times New Roman", serif; font-weight: 700; letter-spacing: -0.02em; font-size: 26px; margin: 0; }
+  .subtitle { color: var(--blue); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; margin-top: 3px; }
+
+  .controls { display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: flex-end; margin-bottom: 10px; }
+  .controls label { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600; color: #666; margin-bottom: 4px; }
+  select { font: inherit; font-size: 14px; color: var(--navy); background: #fff; border: 2px solid #e5e5e5; border-radius: 2px; padding: 6px 8px; min-width: 220px; }
+  .seg { display: inline-flex; border: 2px solid #e5e5e5; border-radius: 2px; background: #fff; }
+  .seg button { font: inherit; font-size: 13px; border: 0; background: transparent; color: #6b7280; padding: 7px 14px; cursor: pointer; }
+  .seg button.on { background: var(--navy); color: #fff; font-weight: 600; }
+  .note { font-size: 12px; color: #6b7280; margin: 2px 0 12px; }
+
+  .kpis { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; margin-bottom: 14px; }
+  @media (max-width: 1000px) { .kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+  .card { background: #fff; border: 2px solid #e5e5e5; border-radius: 2px; padding: 10px 12px; height: 104px; box-sizing: border-box; transition: box-shadow .3s ease; }
+  .card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+  .card .lbl { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; color: #666; min-height: 28px; }
+  .card .val { font-size: 22px; font-weight: 300; color: var(--navy); margin-top: 2px; white-space: nowrap; }
+  .card .delta { display: inline-block; font-size: 12px; margin-top: 4px; padding: 1px 7px; border-radius: 10px; background: #f1f5f9; }
+  .card .delta.pos { color: #15803d; background: #dcfce7; } .card .delta.neg { color: #b91c1c; background: #fee2e2; }
+  .card.hl { background: var(--navy); border-color: var(--navy); }
+  .card.hl .lbl { color: var(--light-blue); } .card.hl .val { color: #fff; } .card.hl .delta { background: #fff; }
+
+  .panel { background: #fff; border: 2px solid #e5e5e5; border-radius: 2px; padding: 6px 8px; margin-bottom: 14px; }
+  h2 { font-size: 16px; font-weight: 700; color: var(--navy); border-left: 3px solid var(--blue); padding-left: 8px; margin: 20px 0 10px; }
+  details { background: #fff; border: 2px solid #e5e5e5; border-radius: 2px; margin-bottom: 8px; }
+  details > summary { cursor: pointer; padding: 10px 14px; font-size: 14px; list-style: none; }
+  details > summary::-webkit-details-marker { display: none; }
+  details > summary::before { content: "\203A"; display: inline-block; width: 14px; color: #6b7280; transition: transform .15s; }
+  details[open] > summary::before { transform: rotate(90deg); }
+  details > summary b { color: var(--navy); }
+  .loss { color: #b91c1c; } .gain { color: #15803d; }
+  .body { padding: 2px 16px 14px; }
+  .help { font-size: 12px; color: #6b7280; margin: 0 0 10px; line-height: 1.45; }
+  .grid2 { display: grid; grid-template-columns: 3fr 2fr; gap: 14px; }
+  @media (max-width: 900px) { .grid2 { grid-template-columns: 1fr; } }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; margin-bottom: 10px; }
+  th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: #6b7280; font-weight: 600; border-bottom: 2px solid #e5e5e5; padding: 6px 8px; }
+  td { padding: 5px 8px; border-bottom: 1px solid #f0f0f0; }
+  td.n, th.n { text-align: right; white-space: nowrap; }
+  .bar { display: inline-block; height: 8px; background: var(--navy); border-radius: 1px; vertical-align: middle; margin-right: 6px; }
+  .mini { display: flex; gap: 10px; flex-wrap: wrap; }
+  .mini .card { height: auto; min-width: 200px; flex: 1; }
+  .err { background: #fee2e2; color: #b91c1c; padding: 12px 14px; border-radius: 2px; margin: 10px 0; font-size: 13px; }
+  .loading { color: #6b7280; font-size: 13px; padding: 30px 0; text-align: center; }
+  .method { font-size: 12.5px; color: #374151; line-height: 1.55; }
+</style>
+</head>
+<body>
+
+<div class="tab-nav">
+  <a href="/">Basis Tracker / PnL</a>
+  <a href="/shadow">Shadow Trading</a>
+  <a href="/hail">Hail Monitor</a>
+  <a href="/constraints">ERCOT Constraint Map</a>
+  <a href="/pjm-constraints">PJM Constraint Map</a>
+  <a href="/kepler">Kepler</a>
+  <a href="/model">Congestion Model</a>
+  <a href="/canadian-hills">Canadian Hills</a>
+  <a href="/ma-screener">M&amp;A Screener</a>
+  <a href="/screener-map">Screener Map</a>
+  <a href="/energy-waterfall" class="active">Energy Waterfall</a>
+</div>
+
+<div class="page-wrap"><div class="page-inner">
+  <div class="head">
+    <h1>Energy Waterfall</h1>
+    <div class="subtitle">P50 potential to gross · weekly, monthly and yearly · refreshed every Monday</div>
+  </div>
+
+  <div class="controls">
+    <div><label for="plant">Plant</label><select id="plant"></select></div>
+    <div><label>View</label><div class="seg" id="grain">
+      <button data-g="Weekly" class="on">Weekly</button><button data-g="Monthly">Monthly</button><button data-g="Yearly">Yearly</button>
+    </div></div>
+    <div style="flex:1"><label for="period">Period</label><select id="period" style="width:100%"></select></div>
+  </div>
+  <div class="note" id="note"></div>
+  <div id="err"></div>
+
+  <div class="kpis" id="kpis"></div>
+  <div class="panel"><div id="wf" style="height:450px"></div></div>
+
+  <h2>Breakdown</h2>
+  <div id="ribbons"><div class="loading">Loading...</div></div>
+
+  <h2 id="trend-title">Trend</h2>
+  <div class="panel"><div id="trend" style="height:380px"></div></div>
+
+  <details><summary><b>Method and sources</b></summary><div class="body method" id="method"></div></details>
+</div></div>
+
+<script>
+const NAVY = "#0E2C51", LIGHT_BLUE = "#A7D3F7", GRAY = "#D9D9D9", GOLD = "#FFD966", BLUE = "#2291EB", DARK = "#0E2841";
+const FONT = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif";
+let META = [], GRAIN = "Weekly";
+
+const fmt = (x, d = 0) => x == null || isNaN(x) ? "-" : x.toLocaleString("en-US", {minimumFractionDigits: d, maximumFractionDigits: d});
+const lbl = x => Math.round(x) === 0 ? "-" : (x < 0 ? `(${fmt(-x)})` : fmt(x));
+const pct = (x, d = 1) => x == null || !isFinite(x) ? "-" : (x < 0 ? `(${(-100 * x).toFixed(d)}%)` : `${(100 * x).toFixed(d)}%`);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+const iso = d => d.toISOString().slice(0, 10);
+const D = s => new Date(s + "T00:00:00Z");
+const addDays = (d, n) => new Date(d.getTime() + n * 86400000);
+
+function periodStart(d, g) {
+  if (g === "Weekly") return addDays(d, -((d.getUTCDay() + 6) % 7));
+  if (g === "Monthly") return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
+  return new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+}
+function periodEnd(s, g) {
+  if (g === "Weekly") return addDays(s, 6);
+  if (g === "Monthly") return new Date(Date.UTC(s.getUTCFullYear(), s.getUTCMonth() + 1, 0));
+  return new Date(Date.UTC(s.getUTCFullYear(), 11, 31));
+}
+function periodLabel(s, g, short) {
+  const m = s.toLocaleString("en-US", {month: "short", timeZone: "UTC"});
+  if (g === "Weekly") return short ? `${m} ${s.getUTCDate()}` : `Week of ${m} ${s.getUTCDate()}, ${s.getUTCFullYear()} (Mon-Sun to ${periodEnd(s, g).toLocaleString("en-US", {month: "short", day: "numeric", timeZone: "UTC"})})`;
+  if (g === "Monthly") return short ? `${m} ${s.getUTCFullYear()}` : s.toLocaleString("en-US", {month: "long", year: "numeric", timeZone: "UTC"});
+  return `${s.getUTCFullYear()}`;
+}
+
+function plantMeta() { return META.find(m => m.plant === document.getElementById("plant").value); }
+
+function help(m) {
+  const wind = m.tech === "wind";
+  return {
+    0: "100% availability, 100% " + (wind ? "power curve" : "expected output") + ", P50 resource: PowerUp modelled output averaged over 2015-2025 for the same hours of the year, calibrated to this site's measured potential.",
+    1: "Difference between the long-term (P50) resource and the " + (wind ? "wind" : "irradiance") + " that actually occurred. Negative = better than normal.",
+    2: wind ? "Each turbine's reference power curve at its own air-density-corrected nacelle wind (Bazefield GADS Expected Generation basis). Stopped turbines' anemometers read low, so they are valued at the running turbines' median wind, or with a PowerUp-calibrated correction when the whole site is stopped."
+            : "Bazefield's expected output for each inverter from measured irradiance (TheoreticalPower): what the plant would have made at 100% availability and 100% performance.",
+    3: "Intervals with no SCADA data. The potential is known, the production is not, so the whole potential is shown here instead of being estimated.",
+    4: m.compensation ? "Dispatch-down / power limitation (GADS Reserve Shutdown Derated, OEM setpoints). IPL PPA s.3.9: curtailment while the ALTW.LKFLD.IPL 5-minute LMP is at or below IPL's $0.00 DIR offer is presumed IPL economic and compensated, and is added back to gross for the budget comparison."
+                      : "Dispatch-down / power limitation (GADS Reserve Shutdown Derated, curtailment setpoints). Not compensated at this site: no add-back in the budget comparison.",
+    5: "Units stopped by an external device, allocated by Bazefield as GADS Reserve Shutdown. Same compensation treatment as curtailment.",
+    6: "The (PV_)GADS categories that count against Production-Based Availability (Available = false). Detail = Bazefield root cause. While the site is curtailed, the part of a down unit's potential the running fleet could not deliver is counted under curtailment instead.",
+    7: "Downtime that does not count against PBA: GADS Resource Unavailable (start-up, low-wind cut-out, night) and SCADA stops Bazefield has not allocated.",
+    8: wind ? "Turbines running at full availability but below the reference curve, split by SCADA signature; 'Curve shortfall in normal operation' is the remainder (net, so over-performance offsets)."
+            : "Inverters in service but below Bazefield's expected output: clipping at the inverter AC limit, and the remainder (soiling, temperature, mismatch).",
+    9: wind ? "Sum of turbine ActivePower in measured intervals (not the revenue meter)." : "Sum of inverter ActivePower in measured intervals (not the revenue meter).",
+  };
+}
+
+async function getJSON(url) {
+  const r = await fetch(url, {credentials: "same-origin"});
+  const j = await r.json();
+  if (!r.ok || j.error) throw new Error(j.error || r.statusText);
+  return j;
+}
+
+function fillPeriods() {
+  const m = plantMeta(); if (!m) return;
+  const first = D(m.d0), last = D(m.d1), sel = document.getElementById("period");
+  const out = []; let s = periodStart(first, GRAIN);
+  while (s <= last) { out.push(s); s = addDays(periodEnd(s, GRAIN), 1); }
+  sel.innerHTML = out.reverse().map(s => `<option value="${iso(s)}">${periodLabel(s, GRAIN)}</option>`).join("");
+}
+
+function card(label, value, delta, cls, highlight, tip) {
+  return `<div class="card${highlight ? " hl" : ""}" title="${esc(tip || "")}"><div class="lbl">${label}</div><div class="val">${value}</div>` +
+         (delta ? `<span class="delta ${cls}">${delta}</span>` : "") + `</div>`;
+}
+
+function waterfall(v, budget, comp, m) {
+  const wind = m.tech === "wind";
+  const x = ["P50<br>potential", "Resource", (wind ? "Actual-wind" : "Actual-irrad.") + "<br>potential", "Unmeasured", "Curtailment",
+             "External<br>stops", "Avail.<br>(PBA)", "Other<br>non-PBA", "Performance", (wind ? "Turbine" : "Inverter") + "<br>gross"];
+  const measure = ["absolute", "relative", "total", "relative", "relative", "relative", "relative", "relative", "relative", "total"];
+  const y = [v[0], -v[1], 0, -v[3], -v[4], -v[5], -v[6], -v[7], -v[8], 0];
+  const text = [lbl(v[0]), lbl(-v[1]), lbl(v[2]), ...[3, 4, 5, 6, 7, 8].map(k => lbl(-v[k])), lbl(v[9])];
+  if (m.compensation) {
+    x.push("Comp.<br>curtail.", "Gross +<br>comp."); measure.push("relative", "total"); y.push(comp, 0);
+    text.push(lbl(comp), lbl(v[9] + comp));
+  }
+  const top = Math.max(v[0], v[2], v[9] + comp, budget || 0, v[0] - v[1]);
+  const layout = {margin: {l: 10, r: 10, t: 30, b: 10}, plot_bgcolor: "white", paper_bgcolor: "white",
+                  font: {family: FONT, size: 13, color: "#000"}, showlegend: false,
+                  yaxis: {visible: false, showgrid: false, zeroline: false, range: [0, top * 1.12]},
+                  xaxis: {showgrid: false, linecolor: "#000", tickangle: 0, automargin: true, tickfont: {size: 12, color: "#000"}},
+                  shapes: [], annotations: []};
+  if (budget > 0) {
+    layout.shapes.push({type: "line", xref: "paper", x0: 0, x1: 1, y0: budget, y1: budget, line: {dash: "dash", color: "#7F7F7F", width: 1.5}});
+    layout.annotations.push({xref: "paper", x: 1, y: budget, yanchor: "bottom", xanchor: "right", showarrow: false,
+                             text: `Budget ${lbl(budget)}`, font: {size: 12, color: "#595959"}});
+  }
+  Plotly.react("wf", [{type: "waterfall", x, y, measure, text, textposition: "outside", cliponaxis: false,
+                        textfont: {family: FONT, size: 13, color: "#000"}, connector: {line: {color: GRAY, width: 1}},
+                        totals: {marker: {color: NAVY, line: {color: "white", width: 1}}},
+                        decreasing: {marker: {color: LIGHT_BLUE, line: {color: "white", width: 1}}},
+                        increasing: {marker: {color: GOLD, line: {color: "white", width: 1}}}}],
+               layout, {displayModeBar: false, responsive: true});
+}
+
+function table(head, rows, nums) {
+  return `<table><thead><tr>${head.map((h, i) => `<th class="${nums.includes(i) ? "n" : ""}">${h}</th>`).join("")}</tr></thead><tbody>` +
+         rows.map(r => `<tr>${r.map((c, i) => `<td class="${nums.includes(i) ? "n" : ""}">${c}</td>`).join("")}</tr>`).join("") + `</tbody></table>`;
+}
+
+function ribbon(k, title, data, pot, H) {
+  const rows = data.rows.filter(r => r.step === k);
+  const total = rows.reduce((a, r) => a + r.mwh, 0);
+  const share = pot ? total / pot : 0;
+  let body = `<p class="help">${esc(H[k])}</p>`;
+  if (!rows.length) return `<details><summary><b>${title}</b> · - MWh</summary><div class="body">${body}No energy in this step for the period.</div></details>`;
+  const subs = {};
+  rows.forEach(r => { const s = subs[r.sub] ||= {mwh: 0, th: 0}; s.mwh += r.mwh; s.th += r.th || 0; });
+  const subUnits = Object.fromEntries(data.sub_units.filter(r => r.step === k).map(r => [r.sub, r.units]));
+  const subRows = Object.entries(subs).sort((a, b) => b[1].mwh - a[1].mwh).map(([s, v]) => {
+    const sh = total ? v.mwh / total : 0;
+    return [esc(s || "-"), lbl(v.mwh), `<span class="bar" style="width:${Math.max(0, Math.min(1, sh)) * 80}px"></span>${pct(sh, 0)}`,
+            fmt(v.th), fmt(subUnits[s])];
+  });
+  body += table(["Sub-category", "MWh", "Share of step", "Unit-hours", "Units"], subRows, [1, 2, 3, 4]);
+  if (k === 4 || k === 5) {
+    const comp = {};
+    rows.forEach(r => { comp[r.comp || "-"] = (comp[r.comp || "-"] || 0) + r.mwh; });
+    body += table(["PPA compensation", "MWh", "Share"], Object.entries(comp).sort((a, b) => b[1] - a[1])
+                  .map(([c, v]) => [esc(c), lbl(v), pct(total ? v / total : 0, 0)]), [1, 2]);
+  }
+  const det = {};
+  rows.filter(r => r.detail).forEach(r => { const key = r.sub + "|" + r.detail; const d = det[key] ||= {sub: r.sub, detail: r.detail, mwh: 0, th: 0, units: 0};
+                                            d.mwh += r.mwh; d.th += r.th || 0; d.units = Math.max(d.units, r.units); });
+  const detRows = Object.values(det).sort((a, b) => b.mwh - a.mwh).slice(0, 15)
+                  .map(d => [`${esc(d.detail)} <span style="color:#9ca3af">· ${esc(d.sub)}</span>`, fmt(d.mwh, 1), fmt(d.th), fmt(d.units)]);
+  const top = data.top.filter(t => t.step === k).map(t => [esc(t.unit), fmt(t.mwh, 1), fmt(t.th)]);
+  body += `<div class="grid2"><div>${detRows.length ? "<b style='font-size:13px'>Root cause / detail</b>" + table(["Detail", "MWh", "Unit-hours", "Units"], detRows, [1, 2, 3]) : ""}</div>` +
+          `<div><b style="font-size:13px">Top units</b>${table(["Unit", "MWh", "Unit-hours"], top, [1, 2])}</div></div>`;
+  const cls = total > 0 ? "loss" : "gain";
+  return `<details><summary><b>${title}</b> · <span class="${cls}">${fmt(total)} MWh</span> · ${pct(share)} of potential</summary><div class="body">${body}</div></details>`;
+}
+
+async function render() {
+  const m = plantMeta(); if (!m) return;
+  const s = D(document.getElementById("period").value);
+  const first = D(m.d0), last = D(m.d1);
+  const d0 = s < first ? first : s, pe = periodEnd(s, GRAIN), d1 = pe > last ? last : pe;
+  document.getElementById("err").innerHTML = "";
+  document.getElementById("ribbons").innerHTML = '<div class="loading">Loading...</div>';
+  let data;
+  try { data = await getJSON(`/api/energy-waterfall/period?plant=${m.plant}&d0=${iso(d0)}&d1=${iso(d1)}`); }
+  catch (e) { document.getElementById("err").innerHTML = `<div class="err">Could not load data: ${esc(e.message)}</div>`; return; }
+  const v = {}; for (let k = 0; k < 10; k++) v[k] = data.rows.filter(r => r.step === k).reduce((a, r) => a + r.mwh, 0);
+  const c = data.ctx, budget = c.budget || 0;
+  const comp = data.rows.filter(r => r.comp.startsWith("Presumed")).reduce((a, r) => a + r.mwh, 0);
+  const pot = v[2], lt = v[0], gross = v[9], grossComp = gross + comp;
+  const pba = (c.bz_act + c.bz_unav) > 0 ? c.bz_act / (c.bz_act + c.bz_unav) : null;
+  const full = iso(d0) === iso(s) && iso(d1) === iso(pe);
+  document.getElementById("note").innerHTML = `Data ${d0.toLocaleDateString("en-US", {month: "short", day: "numeric", year: "numeric", timeZone: "UTC"})} – ` +
+    `${d1.toLocaleDateString("en-US", {month: "short", day: "numeric", year: "numeric", timeZone: "UTC"})}${full ? "" : " · <b>partial period</b>"} · ` +
+    `${fmt(c.meas)} of ${fmt(c.total)} ${m.tech === "wind" ? "turbines" : "inverters"} reporting on average`;
+  const d = (x, ref, txt) => ref ? [`${x / ref - 1 >= 0 ? "▲ +" : "▼ "}${(100 * (x / ref - 1)).toFixed(1)}% ${txt}`, x / ref - 1 >= 0 ? "pos" : "neg"] : [null, ""];
+  const [dp, dpc] = d(pot, lt, "vs P50"), [db, dbc] = d(grossComp, budget, "vs budget");
+  const H = help(m);
+  document.getElementById("kpis").innerHTML =
+    card("P50 potential", `${fmt(lt)} MWh`, null, "", false, H[0]) +
+    card(m.tech === "wind" ? "Actual-wind potential" : "Actual-irradiance potential", `${fmt(pot)} MWh`, dp, dpc, false, H[2]) +
+    card(m.tech === "wind" ? "Turbine gross" : "Inverter gross", `${fmt(gross)} MWh`, null, "", false, H[9]) +
+    card(m.compensation ? "Gross + comp. curt." : "Gross vs budget", `${fmt(grossComp)} MWh`, db, dbc, true,
+         m.compensation ? "Compensated curtailment is added back to gross before comparing with budget." : "No curtailment add-back at this site.") +
+    card("Energy avail.", pot ? pct(1 - v[6] / pot) : "-", null, "", false, "1 - Availability (PBA) step / potential, on this waterfall's valuation.") +
+    card("PBA", pba == null ? "-" : pct(pba), null, "", false, "Bazefield GADS: actual / (actual + lost production in categories with Available = false).");
+  waterfall(v, budget, comp, m);
+
+  const resUnit = c.res_unit || (m.tech === "wind" ? "m/s hub wind" : "W/m2 irradiance");
+  let html = `<details><summary><b>P50 potential</b> · ${fmt(lt)} MWh</summary><div class="body"><p class="help">${esc(H[0])}</p>
+    <div class="mini">${card("Budget (gross generation)", `${fmt(budget)} MWh`)}${card("P50 potential vs budget", budget ? pct(lt / budget - 1) : "-")}${card("Hours in period", fmt(c.hours))}</div></div></details>`;
+  html += `<details><summary><b>Resource</b> · <span class="${v[1] > 0 ? "loss" : "gain"}">${fmt(-v[1])} MWh</span> · ${lt ? pct(-v[1] / lt) : "-"} of P50</summary><div class="body"><p class="help">${esc(H[1])}</p>
+    <div class="mini">${card(`Actual (${esc(resUnit)})`, fmt(c.res, 2))}${card("Long-term, same hours", fmt(c.res_lt, 2))}${card("Vs long-term", c.res_lt && c.res != null ? pct(c.res / c.res_lt - 1) : "-")}</div></div></details>`;
+  html += `<details><summary><b>${m.tech === "wind" ? "Potential at actual wind" : "Potential at actual irradiance"}</b> · ${fmt(pot)} MWh</summary><div class="body"><p class="help">${esc(H[2])}</p>
+    <div class="mini">${card("Bazefield TheoreticalPower", `${fmt(c.bz_theo)} MWh`)}${card("This waterfall vs Bazefield", c.bz_theo ? pct(pot / c.bz_theo - 1) : "-")}</div></div></details>`;
+  const titles = {3: "Unmeasured (no SCADA data)", 4: m.curtail_label || "Curtailment", 5: "External stops", 6: "Availability (PBA)",
+                  7: "Other non-PBA downtime", 8: m.tech === "wind" ? "Performance (power curve)" : "Performance (vs expected)"};
+  for (const k of [3, 4, 5, 6, 7, 8]) html += ribbon(k, titles[k], data, pot, H);
+  html += `<details><summary><b>${m.tech === "wind" ? "Turbine" : "Inverter"} gross (measured)</b> · ${fmt(gross)} MWh</summary><div class="body"><p class="help">${esc(H[9])}</p>
+    <div class="mini">${m.compensation ? card("Compensated curtailment (added back)", `${fmt(comp)} MWh`) : ""}${card("Bazefield site gross", `${fmt(c.bz_act)} MWh`)}${card("Bazefield GADS lost production", `${fmt(c.bz_lost)} MWh`)}</div></div></details>`;
+  document.getElementById("ribbons").innerHTML = html;
+  renderTrend(m);
+}
+
+async function renderTrend(m) {
+  document.getElementById("trend-title").textContent = `Trend · ${GRAIN.toLowerCase()}`;
+  let rows;
+  try { rows = await getJSON(`/api/energy-waterfall/trend?plant=${m.plant}&grain=${GRAIN}`); } catch (e) { return; }
+  const periods = [...new Set(rows.map(r => r.period))].sort().slice(-12);
+  const x = periods.map(p => periodLabel(D(p.slice(0, 10)), GRAIN, true));
+  const val = (p, k) => rows.filter(r => r.period === p && r.step === k).reduce((a, r) => a + r.mwh, 0);
+  const compOf = p => rows.filter(r => r.period === p).reduce((a, r) => a + (r.comp || 0), 0);
+  const series = [[4, "Curtailment", NAVY], [5, "External stops", LIGHT_BLUE], [6, "Availability (PBA)", GOLD],
+                  [7, "Other non-PBA", GRAY], [8, "Performance", BLUE], [3, "Unmeasured", "#BFBFBF"]];
+  const traces = series.map(([k, name, color]) => ({type: "bar", name, x, y: periods.map(p => val(p, k)),
+                                                    marker: {color, line: {color: "white", width: 1}}}));
+  const g = periods.map(p => val(p, 9) + compOf(p));
+  traces.push({type: "scatter", mode: "lines+markers+text", name: m.compensation ? "Gross + compensated curtailment" : "Gross",
+               x, y: g, line: {color: DARK, width: 3}, marker: {symbol: "square", size: 7},
+               text: g.map(lbl), textposition: "top center", textfont: {color: DARK, size: 12}});
+  traces.push({type: "scatter", mode: "lines+markers", name: "P50 potential", x, y: periods.map(p => val(p, 0)),
+               line: {color: "#7F7F7F", width: 2, dash: "dot"}, marker: {symbol: "square", size: 6}});
+  Plotly.react("trend", traces, {barmode: "stack", bargap: 0.4, margin: {l: 10, r: 10, t: 10, b: 10},
+               plot_bgcolor: "white", paper_bgcolor: "white", font: {family: FONT, size: 13, color: "#000"},
+               yaxis: {visible: false, showgrid: false, zeroline: false},
+               xaxis: {showgrid: false, linecolor: "#000", tickangle: 0, automargin: true},
+               legend: {orientation: "h", y: -0.15, x: 0.5, xanchor: "center"}}, {displayModeBar: false, responsive: true});
+}
+
+function methodText() {
+  document.getElementById("method").innerHTML = `
+  <p><b>Data</b>: Bazefield 10-minute unit SCADA (time-weighted), alarm history and (PV_)GADS allocations; Vaisala PowerUp modelled
+  output (element 782) and resource (hub wind 26 / radiation 338); MISO 5-minute node LMPs (Yes Energy); FP&amp;A monthly budget.</p>
+  <p><b>Valuation</b>: wind - reference curve at density-normalised nacelle wind (IEC 61400-12-1); solar - Bazefield inverter
+  TheoreticalPower. Loss = potential - actual (net). The (PV_)GADS allocation covering each interval decides the step
+  (Bazefield KB 36000615255, 36000610511); full-performance intervals are split by SCADA signature.</p>
+  <p><b>Compensation</b>: Lakefield only (IPL PPA s.3.9) - curtailment while the 5-minute node LMP is at or below IPL's $0.00 DIR offer
+  is presumed IPL economic. McCrae and Holstein: no add-back.</p>
+  <p><b>Refresh</b>: a Render cron job rebuilds the trailing 3 weeks every Monday into Snowflake GOLD.PERFORMANCE (allocations are
+  reclassified after the event). Calendar is plant-local; weeks run Monday-Sunday.</p>`;
+}
+
+async function init() {
+  methodText();
+  try { META = await getJSON("/api/energy-waterfall/meta"); }
+  catch (e) { document.getElementById("err").innerHTML = `<div class="err">Could not load plants: ${esc(e.message)}</div>`; return; }
+  document.getElementById("plant").innerHTML = META.map(m => `<option value="${m.plant}">${esc(m.name)} (${m.plant})</option>`).join("");
+  fillPeriods(); render();
+}
+document.getElementById("plant").addEventListener("change", () => { fillPeriods(); render(); });
+document.getElementById("period").addEventListener("change", render);
+document.querySelectorAll("#grain button").forEach(b => b.addEventListener("click", () => {
+  document.querySelectorAll("#grain button").forEach(x => x.classList.toggle("on", x === b));
+  GRAIN = b.dataset.g; fillPeriods(); render();
+}));
+init();
+</script>
+</body>
+</html>

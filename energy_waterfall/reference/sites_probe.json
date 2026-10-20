@@ -1,0 +1,38 @@
+{
+ "LFW01": {
+  "units": 137,
+  "lat": 43.670421,
+  "lon": -95.139929,
+  "rated_kw": 1500.0,
+  "tz": "America/Chicago",
+  "elev_m": 456.0,
+  "hub_m": 80.0
+ },
+ "MCW02": {
+  "units": 47,
+  "lat": 31.755366,
+  "lon": -101.677177,
+  "rated_kw": 3450.0,
+  "tz": "America/Chicago",
+  "elev_m": 823.0,
+  "hub_m": 87.0
+ },
+ "HOS01": {
+  "units": 66,
+  "lat": 32.091,
+  "lon": -100.1725,
+  "rated_kw": 3225.0,
+  "tz": "America/Chicago",
+  "elev_m": 644.0,
+  "hub_m": null
+ },
+ "NOW01": {
+  "units": 42,
+  "lat": 41.0419505,
+  "lon": -84.5920525,
+  "rated_kw": 2500.0,
+  "tz": "America/New_York",
+  "elev_m": 223.0,
+  "hub_m": null
+ }
+}
