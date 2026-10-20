@@ -40,6 +40,7 @@ def skyvest():
     e = lambda k, d=None: (os.getenv(f"SKYVEST_SNOWFLAKE_{k}") or d)
     return _connect("skyvest", account=e("ACCOUNT", "A8022540555871-MAIN"), user=e("USER", "SVC_PERFORMANCE_APP"),
                     role=e("ROLE", "PERFORMANCE_APP"), warehouse=e("WAREHOUSE", "GENERAL_WH"),
+                    database="GOLD", schema="PERFORMANCE",          # session temp tables need a current schema
                     private_key=_der(e("PRIVATE_KEY"), e("PRIVATE_KEY_PATH")), paramstyle="qmark")
 
 

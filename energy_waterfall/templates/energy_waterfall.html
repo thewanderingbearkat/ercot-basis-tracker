@@ -342,6 +342,12 @@ async function init() {
   try { META = await getJSON("/api/energy-waterfall/meta"); }
   catch (e) { document.getElementById("err").innerHTML = `<div class="err">Could not load plants: ${esc(e.message)}</div>`; return; }
   document.getElementById("plant").innerHTML = META.map(m => `<option value="${m.plant}">${esc(m.name)} (${m.plant})</option>`).join("");
+  const q = new URLSearchParams(location.search);            // shareable: ?plant=MCW02&view=Monthly
+  if (META.some(m => m.plant === q.get("plant"))) document.getElementById("plant").value = q.get("plant");
+  if (["Weekly", "Monthly", "Yearly"].includes(q.get("view"))) {
+    GRAIN = q.get("view");
+    document.querySelectorAll("#grain button").forEach(x => x.classList.toggle("on", x.dataset.g === GRAIN));
+  }
   fillPeriods(); render();
 }
 document.getElementById("plant").addEventListener("change", () => { fillPeriods(); render(); });
