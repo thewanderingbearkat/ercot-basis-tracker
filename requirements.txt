@@ -8,7 +8,8 @@ requests>=2.32.2
 tzdata>=2024.1
 # Constraint map: Snowflake (Yes Energy) access. [secure-local-storage] pulls in
 # cryptography, used for key-pair auth (no MFA / no Duo on Render).
-snowflake-connector-python[secure-local-storage]>=3.12.0
+# <5: connector 5.0 (native core) segfaulted (exit 139) during login inside the threaded web server on Render
+snowflake-connector-python[secure-local-storage]>=3.12.0,<5
 # Energy waterfall (weekly cron + tab): numeric build of the 10-minute SCADA
 pandas>=2.2
 numpy>=1.26

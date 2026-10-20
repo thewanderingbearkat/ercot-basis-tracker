@@ -20,10 +20,6 @@ services:
 
     # Environment variables
     envVars:
-      # Same Python as the energy-waterfall cron job. On Render's default (3.13) the Snowflake connector's native
-      # core segfaulted (exit 139) during the SkyVest login from this web process; 3.12.7 runs it cleanly.
-      - key: PYTHON_VERSION
-        value: 3.12.7
       - key: FLASK_ENV
         value: production
       - key: PYTHONUNBUFFERED
@@ -97,8 +93,6 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: python -m energy_waterfall.refresh --days 21
     envVars:
-      - key: PYTHON_VERSION          # Blueprint runtime is just "python"; the version is pinned here
-        value: 3.12.7
       - key: PYTHONUNBUFFERED
         value: "1"
       - key: BAZEFIELD_BASE_URL
