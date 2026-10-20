@@ -6,8 +6,10 @@
     GET /api/energy-waterfall/trend?plant=&grain=           -- per-period step totals (Weekly | Monthly | Yearly)
 Reads SkyVest Snowflake GOLD.PERFORMANCE (written weekly by energy_waterfall.refresh, the Render cron job).
 """
+import faulthandler
 import logging
 import os
+import sys
 import threading
 import time
 from datetime import date
@@ -18,6 +20,9 @@ from energy_waterfall import config as C
 from energy_waterfall import db
 
 log = logging.getLogger(__name__)
+# A native crash (exit 139 / SIGSEGV) leaves no Python traceback; this prints every thread's stack to the Render log.
+if not faulthandler.is_enabled():
+    faulthandler.enable(file=sys.stderr, all_threads=True)
 ew_bp = Blueprint("energy_waterfall", __name__,
                   template_folder=os.path.join(os.path.dirname(__file__), "templates"))
 FACT = f"{db.SCHEMA}.ENERGY_WATERFALL_HOURLY"

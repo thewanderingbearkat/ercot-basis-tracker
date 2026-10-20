@@ -12,6 +12,7 @@ import snowflake.connector
 
 SCHEMA = "GOLD.PERFORMANCE"
 _lock = threading.Lock()
+_query_lock = threading.Lock()      # the web app serves 4 threads; never use one connection concurrently
 _conns: dict = {}
 
 
@@ -31,7 +32,7 @@ def _connect(name: str, **kw):
         if c is not None and not c.is_closed():
             return c
         # bounded well under gunicorn's 120 s request timeout, so a hang surfaces as an error, not a Render 502 page
-        c = snowflake.connector.connect(client_session_keep_alive=True, login_timeout=40, network_timeout=60,
+        c = snowflake.connector.connect(client_session_keep_alive=False, login_timeout=40, network_timeout=60,
                                         socket_timeout=60,
                                         session_parameters={"TIMEZONE": "UTC", "QUERY_TAG": "energy-waterfall"}, **kw)
         _conns[name] = c
@@ -54,7 +55,11 @@ def yes_energy():
 
 
 def query(sql: str, params=None) -> list[dict]:
-    cur = skyvest().cursor()
-    cur.execute(sql, params or [])
-    cols = [d[0] for d in cur.description]
-    return [dict(zip(cols, r)) for r in cur.fetchall()]
+    with _query_lock:
+        cur = skyvest().cursor()
+        try:
+            cur.execute(sql, params or [])
+            cols = [d[0] for d in cur.description]
+            return [dict(zip(cols, r)) for r in cur.fetchall()]
+        finally:
+            cur.close()
