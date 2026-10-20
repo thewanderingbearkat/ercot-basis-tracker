@@ -266,6 +266,15 @@ function ribbon(k, title, data, pot, H) {
   return `<details><summary><b>${title}</b> · <span class="${cls}">${fmt(total)} MWh</span> · ${pct(share)} of potential</summary><div class="body">${body}</div></details>`;
 }
 
+function meterStatus(c, cov, m) {
+  const thru = c.meter_through && c.meter_through !== "None"
+    ? D(c.meter_through).toLocaleDateString("en-US", {month: "short", day: "numeric", timeZone: "UTC"}) : null;
+  const why = m.plant === "LFW01" ? "IPL invoice MV90, loaded monthly" : "ERCOT settles ~8 days after the operating day";
+  if (!thru) return "no meter data loaded yet";
+  return (c.meter_hours ? `meter covers ${pct(cov, 0)} of this period` : "no meter data for this period yet") +
+         ` · meter through ${thru} (${why})`;
+}
+
 async function render() {
   const m = plantMeta(); if (!m) return;
   const s = D(document.getElementById("period").value);
@@ -327,7 +336,7 @@ async function render() {
   const lossPct = c.gross_full ? lossRate : null;
   const xchk = c.xchk_hours > 0 ? c.xchk_meter / c.xchk_bz - 1 : null;
   html += `<details><summary><b>Losses to meter</b> · ${mt.full ? `<span class="loss">${fmt(mt.losses)} MWh</span> · ${pct(lossPct)} of gross`
-            : (c.meter_hours ? `meter covers ${pct(cov, 0)} of the period` : "no meter data yet")}</summary><div class="body">
+            : meterStatus(c, cov, m)}</summary><div class="body">
     <p class="help">Turbine/inverter gross (SCADA) minus the revenue meter for the same hours: collection system, transformers, station
     load${m.tech === "solar" ? ", and output above the 200 MW point-of-interconnection limit" : ""}. The loss rate is measured on hours where
     at least 95% of units reported to SCADA; what the meter recorded during SCADA gaps is shown separately as "Output in SCADA gaps" (it offsets

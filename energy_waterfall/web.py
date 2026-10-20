@@ -138,6 +138,9 @@ def period():
                                   COUNT_IF(BZ_METER_MWH IS NOT NULL AND METER_MWH IS NOT NULL) XCHK_HOURS
                            FROM h""", prm + prm)[0]
         ctx.update(mtr)
+        # how far the revenue meter runs for this plant overall (settlement lag / monthly invoice), for the UI message
+        ctx.update(db.query(f"""SELECT MAX(IFF(METER_MWH IS NOT NULL, LOCAL_DATE, NULL)) METER_THROUGH
+                                FROM {SITE} WHERE PLANT_CODE = ?""", [plant])[0])
         return {
             "rows": [{"step": int(r["STEP_ORDER"]), "sub": r["SUBCATEGORY"] or "", "detail": r["DETAIL"] or "",
                       "comp": r["COMPENSATION"] or "", "mwh": _num(r["MWH"]), "th": _num(r["TH"]),
@@ -147,7 +150,7 @@ def period():
             "step_units": {int(r["STEP_ORDER"]): int(r["UNITS"] or 0) for r in steps_units},
             "top": [{"step": int(r["STEP_ORDER"]), "unit": r["OBJECT_KEY"].split("-")[-1], "mwh": _num(r["MWH"]),
                      "th": _num(r["TH"])} for r in top],
-            "ctx": {k.lower(): (str(v) if k in ("FIRST", "LAST", "RES_UNIT", "METER_SOURCE") else _num(v))
+            "ctx": {k.lower(): (str(v) if k in ("FIRST", "LAST", "RES_UNIT", "METER_SOURCE", "METER_THROUGH") else _num(v))
                     for k, v in ctx.items()},
             "flagged": [{"he": str(r["HE_UTC"]), "date": str(r["LOCAL_DATE"]), "gross": _num(r["GROSS"]),
                          "meter": _num(r["METER"]), "excess": _num(r["EXCESS"]), "related": _num(r["RELATED"])}
