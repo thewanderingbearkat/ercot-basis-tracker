@@ -1,7 +1,7 @@
 services:
   - type: web
     name: ercot-basis-tracker
-    runtime: python-3.12
+    runtime: python
     # Starter (not free): the free plan has an ephemeral filesystem and can't mount a
     # disk, so every deploy wiped the shadow-trader cache, bid ledger and forward-only
     # forecast history.
@@ -86,13 +86,15 @@ services:
   # while it runs (~15-20 min a week). Exit code 1 if any plant fails (the others still load).
   - type: cron
     name: energy-waterfall-refresh
-    runtime: python-3.12
+    runtime: python
     plan: standard
     region: oregon
     schedule: "0 12 * * 1"          # Mondays 12:00 UTC (7 am Central)
     buildCommand: pip install -r requirements.txt
     startCommand: python -m energy_waterfall.refresh --days 21
     envVars:
+      - key: PYTHON_VERSION          # Blueprint runtime is just "python"; the version is pinned here
+        value: 3.12.7
       - key: PYTHONUNBUFFERED
         value: "1"
       - key: BAZEFIELD_BASE_URL
