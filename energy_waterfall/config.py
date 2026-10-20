@@ -63,7 +63,7 @@ PLANTS = {
     },
     "NOW01": {
         "name": "Northwest Ohio", "tech": "wind", "tz": "America/New_York", "units": 42, "rated_kw": 2500.0,
-        "capacity_mw": 105.0, "elevation_m": 223.0, "curve": None,          # built once enabled (TheoreticalPower)
+        "capacity_mw": 105.0, "elevation_m": 223.0, "curve": "ge25_116_now01_curve.json",
         "powerup_srcid": "POWERUP_WF_ID_29565", "data_start": "2026-10-15", "allocation_type": "GADS",
         "points": ["WindSpeed", "ActivePower", "Blade1_PitchAngle", "Blade2_PitchAngle", "Blade3_PitchAngle",
                    "WindDirection", "NacelleDirection", "AmbientTemperature", "Running", "Available"],
@@ -77,7 +77,7 @@ PLANTS = {
 
 
 def enabled_plants(today) -> list[str]:
-    """Plants to build: all with a reference (curve or solar), plus NOW01 once it has enough history."""
+    """Plants to build: every configured plant, NOW01 once it has enough history for a stable calibration."""
     from datetime import date
     out = []
     for code, p in PLANTS.items():
