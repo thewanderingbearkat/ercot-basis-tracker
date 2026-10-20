@@ -323,7 +323,7 @@ async function render() {
 
   const resUnit = c.res_unit || (m.tech === "wind" ? "m/s hub wind" : "W/m2 irradiance");
   let html = `<details><summary><b>P50 potential</b> · ${fmt(lt)} MWh</summary><div class="body"><p class="help">${esc(H[0])}</p>
-    <div class="mini">${card("Budget (gross generation)", `${fmt(budget)} MWh`)}${card("P50 potential vs budget", budget ? pct(lt / budget - 1) : "-")}${card("Hours in period", fmt(c.hours))}</div></div></details>`;
+    <div class="mini">${card("Budget (net generation)", `${fmt(budget)} MWh`)}${card("P50 potential vs budget", budget ? pct(lt / budget - 1) : "-")}${card("Hours in period", fmt(c.hours))}</div></div></details>`;
   html += `<details><summary><b>Resource</b> · <span class="${v[1] > 0 ? "loss" : "gain"}">${fmt(-v[1])} MWh</span> · ${lt ? pct(-v[1] / lt) : "-"} of P50</summary><div class="body"><p class="help">${esc(H[1])}</p>
     <div class="mini">${card(`Actual (${esc(resUnit)})`, fmt(c.res, 2))}${card("Long-term, same hours", fmt(c.res_lt, 2))}${card("Vs long-term", c.res_lt && c.res != null ? pct(c.res / c.res_lt - 1) : "-")}</div></div></details>`;
   html += `<details><summary><b>${m.tech === "wind" ? "Potential at actual wind" : "Potential at actual irradiance"}</b> · ${fmt(pot)} MWh</summary><div class="body"><p class="help">${esc(H[2])}</p>

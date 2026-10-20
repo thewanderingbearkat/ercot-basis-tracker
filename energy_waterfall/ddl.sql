@@ -26,7 +26,7 @@ CREATE TABLE IF NOT EXISTS GOLD.PERFORMANCE.ENERGY_WATERFALL_SITE_HOURLY (
     HE_UTC              TIMESTAMP_NTZ  NOT NULL,
     LOCAL_DATE          DATE           NOT NULL,
     LT_POTENTIAL_MWH    FLOAT COMMENT 'P50 potential: k x PowerUp 782 mean of 2015-2025 for the same hour of year',
-    BUDGET_GROSS_MWH    FLOAT COMMENT 'Monthly budget gross generation shaped to hours by the long-term profile',
+    BUDGET_NET_MWH      FLOAT COMMENT 'Monthly budget NET generation (master file Net Generation row) shaped to hours by the long-term profile',
     PU_HUB_WIND_MS      FLOAT COMMENT 'PowerUp element 26 hub-height wind, actual hour',
     PU_HUB_WIND_LT_MS   FLOAT COMMENT 'PowerUp element 26, 2015-2025 mean for the same hour of year',
     BZ_ACTUAL_MWH       FLOAT COMMENT 'Bazefield site ActivePowerWTG',

@@ -105,7 +105,7 @@ def period():
         steps_units = db.query(f"""SELECT STEP_ORDER, COUNT(DISTINCT IFF(ABS(MWH) > 1e-6, OBJECT_KEY, NULL)) UNITS
                                    FROM {FACT} WHERE PLANT_CODE = ? AND LOCAL_DATE BETWEEN ? AND ?
                                    AND STEP_ORDER BETWEEN 3 AND 8 GROUP BY 1""", prm)
-        ctx = db.query(f"""SELECT SUM(LT_POTENTIAL_MWH) LT, SUM(BUDGET_GROSS_MWH) BUDGET, AVG(RESOURCE_ACTUAL) RES,
+        ctx = db.query(f"""SELECT SUM(LT_POTENTIAL_MWH) LT, SUM(BUDGET_NET_MWH) BUDGET, AVG(RESOURCE_ACTUAL) RES,
                                   AVG(RESOURCE_LT) RES_LT, ANY_VALUE(RESOURCE_UNIT) RES_UNIT, SUM(BZ_ACTUAL_MWH) BZ_ACT,
                                   SUM(BZ_THEORETICAL_MWH) BZ_THEO, SUM(BZ_UNAVAILABLE_MWH) BZ_UNAV,
                                   SUM(BZ_LOST_ALL_MWH) BZ_LOST, AVG(TURBINES_MEASURED) MEAS, MAX(TURBINES_TOTAL) TOTAL,

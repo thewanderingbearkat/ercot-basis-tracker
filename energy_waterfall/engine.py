@@ -471,7 +471,7 @@ def build(plant: str, start: date, end: date, recalibrate: bool = False, bz: S.B
     lt = lt_full.reindex(hours)
     site_pot = fact[fact["STEP_ORDER"] == 2].groupby("HE_UTC")["MWH"].sum().reindex(hours).fillna(0)
     budget = pd.read_csv(C.REF / "budget_generation_monthly.csv", parse_dates=["MONTH"])
-    budget = budget[budget["PLANT_CODE"] == plant].set_index("MONTH")["BUDGET_GROSS_MWH"]
+    budget = budget[budget["PLANT_CODE"] == plant].set_index("MONTH")["BUDGET_NET_MWH"]
     loc_full = full_hours.tz_localize("UTC").tz_convert(p["tz"]) - pd.Timedelta(hours=1)
     month_key = pd.DatetimeIndex(loc_full.tz_localize(None).to_period("M").to_timestamp())
     shape = lt_full / lt_full.groupby(month_key).transform("sum")
@@ -502,7 +502,7 @@ def build(plant: str, start: date, end: date, recalibrate: bool = False, bz: S.B
     unav = prorate(al[~al["available"] & (al["excluded"] == 0)], hours) if len(al) else np.zeros(len(hours))
     lost_all = prorate(al, hours) if len(al) else np.zeros(len(hours))
     site_df = pd.DataFrame({
-        "HE_UTC": hours, "LT_POTENTIAL_MWH": lt.values, "BUDGET_GROSS_MWH": budget_h.values,
+        "HE_UTC": hours, "LT_POTENTIAL_MWH": lt.values, "BUDGET_NET_MWH": budget_h.values,
         "PU_HUB_WIND_MS": res_act.values if p["tech"] == "wind" else np.nan,
         "PU_HUB_WIND_LT_MS": res_lt.values if p["tech"] == "wind" else np.nan,
         "RESOURCE_ACTUAL": res_act.values, "RESOURCE_LT": res_lt.values,
