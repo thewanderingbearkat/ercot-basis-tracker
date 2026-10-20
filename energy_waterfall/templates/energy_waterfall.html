@@ -189,18 +189,27 @@ function card(label, value, delta, cls, highlight, tip) {
          (delta ? `<span class="delta ${cls}">${delta}</span>` : "") + `</div>`;
 }
 
-function waterfall(v, budget, comp, m) {
+function waterfall(v, budget, comp, m, mt) {
   const wind = m.tech === "wind";
   const x = ["P50<br>potential", "Resource", (wind ? "Actual-wind" : "Actual-irrad.") + "<br>potential", "Unmeasured", "Curtailment",
              "External<br>stops", "Avail.<br>(PBA)", "Other<br>non-PBA", "Performance", (wind ? "Turbine" : "Inverter") + "<br>gross"];
   const measure = ["absolute", "relative", "total", "relative", "relative", "relative", "relative", "relative", "relative", "total"];
   const y = [v[0], -v[1], 0, -v[3], -v[4], -v[5], -v[6], -v[7], -v[8], 0];
   const text = [lbl(v[0]), lbl(-v[1]), lbl(v[2]), ...[3, 4, 5, 6, 7, 8].map(k => lbl(-v[k])), lbl(v[9])];
-  if (m.compensation) {
-    x.push("Comp.<br>curtail.", "Gross +<br>comp."); measure.push("relative", "total"); y.push(comp, 0);
-    text.push(lbl(comp), lbl(v[9] + comp));
+  let base = v[9];
+  if (mt.full) {                                  // bridge on to the revenue meter (reconciled = this plant's output)
+    x.push("Losses to<br>meter", "Output in<br>SCADA gaps", "Metered"); measure.push("relative", "relative", "total");
+    y.push(-mt.losses, mt.gap, 0); text.push(lbl(-mt.losses), lbl(mt.gap), lbl(mt.metered)); base = mt.metered;
   }
-  const top = Math.max(v[0], v[2], v[9] + comp, budget || 0, v[0] - v[1]);
+  if (m.compensation) {
+    x.push("Comp.<br>curtail.", (mt.full ? "Metered" : "Gross") + " +<br>comp."); measure.push("relative", "total"); y.push(comp, 0);
+    text.push(lbl(comp), lbl(base + comp));
+  }
+  if (mt.full && mt.flag > 0) {                   // what the settled meter shows on top: flagged for reconciliation
+    x.push("Flagged<br>excess", "As<br>settled"); measure.push("relative", "total"); y.push(mt.flag, 0);
+    text.push(lbl(mt.flag), lbl(mt.metered + mt.flag));
+  }
+  const top = Math.max(v[0], v[2], base + comp, budget || 0, v[0] - v[1], mt.full ? mt.metered + (mt.flag || 0) : 0);
   const layout = {margin: {l: 10, r: 10, t: 30, b: 10}, plot_bgcolor: "white", paper_bgcolor: "white",
                   font: {family: FONT, size: 13, color: "#000"}, showlegend: false,
                   yaxis: {visible: false, showgrid: false, zeroline: false, range: [0, top * 1.12]},
@@ -270,12 +279,25 @@ async function render() {
   const v = {}; for (let k = 0; k < 10; k++) v[k] = data.rows.filter(r => r.step === k).reduce((a, r) => a + r.mwh, 0);
   const c = data.ctx, budget = c.budget || 0;
   const comp = data.rows.filter(r => r.comp.startsWith("Presumed")).reduce((a, r) => a + r.mwh, 0);
-  const pot = v[2], lt = v[0], gross = v[9], grossComp = gross + comp;
+  const pot = v[2], lt = v[0], gross = v[9];
+  // revenue meter: the bridge uses it when the period is (almost) fully metered; losses = unit gross - meter, same hours
+  const cov = c.hours ? (c.meter_hours || 0) / c.hours : 0;
+  const lossRate = c.gross_full ? 1 - c.meter_full / c.gross_full : 0;          // measured on fully-reporting hours
+  const mt = {full: cov >= 0.95 && c.meter != null, cov, lossRate};
+  mt.losses = lossRate * (c.gross_metered || 0);                                  // electrical losses on all metered gross
+  mt.flag = (c.flag_excess || 0) + lossRate * (c.flag_gross || 0);               // flagged meter above this plant's own output
+  mt.metered = (c.meter || 0) - mt.flag;                                         // reconciled: this plant's metered output
+  mt.gap = mt.metered - (gross - mt.losses);                                     // meter output SCADA did not see
+  const grossComp = (mt.full ? mt.metered : gross) + comp;
   const pba = (c.bz_act + c.bz_unav) > 0 ? c.bz_act / (c.bz_act + c.bz_unav) : null;
   const full = iso(d0) === iso(s) && iso(d1) === iso(pe);
   document.getElementById("note").innerHTML = `Data ${d0.toLocaleDateString("en-US", {month: "short", day: "numeric", year: "numeric", timeZone: "UTC"})} – ` +
     `${d1.toLocaleDateString("en-US", {month: "short", day: "numeric", year: "numeric", timeZone: "UTC"})}${full ? "" : " · <b>partial period</b>"} · ` +
     `${fmt(c.meas)} of ${fmt(c.total)} ${m.tech === "wind" ? "turbines" : "inverters"} reporting on average`;
+  document.getElementById("err").innerHTML = (c.flag_hours > 0)
+    ? `<div class="err" style="background:#fff7e6;color:#92400e">${fmt(c.flag_hours)} hour(s) flagged for reconciliation: the meter is
+       ${fmt(mt.flag)} MWh above what SCADA saw this plant produce${data.related_label ? " - compare " + esc(data.related_label) + " for the same hours (its output can settle through this meter)" : ""}.
+       Kept out of losses and the budget comparison; listed under "Losses to meter".</div>` : "";
   const d = (x, ref, txt) => ref ? [`${x / ref - 1 >= 0 ? "▲ +" : "▼ "}${(100 * (x / ref - 1)).toFixed(1)}% ${txt}`, x / ref - 1 >= 0 ? "pos" : "neg"] : [null, ""];
   const [dp, dpc] = d(pot, lt, "vs P50"), [db, dbc] = d(grossComp, budget, "vs budget");
   const H = help(m);
@@ -283,11 +305,12 @@ async function render() {
     card("P50 potential", `${fmt(lt)} MWh`, null, "", false, H[0]) +
     card(m.tech === "wind" ? "Actual-wind potential" : "Actual-irradiance potential", `${fmt(pot)} MWh`, dp, dpc, false, H[2]) +
     card(m.tech === "wind" ? "Turbine gross" : "Inverter gross", `${fmt(gross)} MWh`, null, "", false, H[9]) +
-    card(m.compensation ? "Gross + comp. curt." : "Gross vs budget", `${fmt(grossComp)} MWh`, db, dbc, true,
-         m.compensation ? "Compensated curtailment is added back to gross before comparing with budget." : "No curtailment add-back at this site.") +
+    card((mt.full ? "Metered" : "Gross") + (m.compensation ? " + comp. curt." : " vs budget"), `${fmt(grossComp)} MWh`, db, dbc, true,
+         (mt.full ? `Revenue meter (${c.meter_source}).` : "Revenue meter not yet available for this period; turbine/inverter gross shown.") +
+         (m.compensation ? " Compensated curtailment is added back before comparing with budget." : " No curtailment add-back at this site.")) +
     card("Energy avail.", pot ? pct(1 - v[6] / pot) : "-", null, "", false, "1 - Availability (PBA) step / potential, on this waterfall's valuation.") +
     card("PBA", pba == null ? "-" : pct(pba), null, "", false, "Bazefield GADS: actual / (actual + lost production in categories with Available = false).");
-  waterfall(v, budget, comp, m);
+  waterfall(v, budget, comp, m, mt);
 
   const resUnit = c.res_unit || (m.tech === "wind" ? "m/s hub wind" : "W/m2 irradiance");
   let html = `<details><summary><b>P50 potential</b> · ${fmt(lt)} MWh</summary><div class="body"><p class="help">${esc(H[0])}</p>
@@ -301,6 +324,24 @@ async function render() {
   for (const k of [3, 4, 5, 6, 7, 8]) html += ribbon(k, titles[k], data, pot, H);
   html += `<details><summary><b>${m.tech === "wind" ? "Turbine" : "Inverter"} gross (measured)</b> · ${fmt(gross)} MWh</summary><div class="body"><p class="help">${esc(H[9])}</p>
     <div class="mini">${m.compensation ? card("Compensated curtailment (added back)", `${fmt(comp)} MWh`) : ""}${card("Bazefield site gross", `${fmt(c.bz_act)} MWh`)}${card("Bazefield GADS lost production", `${fmt(c.bz_lost)} MWh`)}</div></div></details>`;
+  const lossPct = c.gross_full ? lossRate : null;
+  const xchk = c.xchk_hours > 0 ? c.xchk_meter / c.xchk_bz - 1 : null;
+  html += `<details><summary><b>Losses to meter</b> · ${mt.full ? `<span class="loss">${fmt(mt.losses)} MWh</span> · ${pct(lossPct)} of gross`
+            : (c.meter_hours ? `meter covers ${pct(cov, 0)} of the period` : "no meter data yet")}</summary><div class="body">
+    <p class="help">Turbine/inverter gross (SCADA) minus the revenue meter for the same hours: collection system, transformers, station
+    load${m.tech === "solar" ? ", and output above the 200 MW point-of-interconnection limit" : ""}. The loss rate is measured on hours where
+    at least 95% of units reported to SCADA; what the meter recorded during SCADA gaps is shown separately as "Output in SCADA gaps" (it offsets
+    the Unmeasured step). Meter: ${esc(c.meter_source || "none")}.
+    ${m.plant === "LFW01" ? "Lakefield's meter comes from IPL's monthly production invoice (MV90), so a month fills in once its invoice is added." : ""}</p>
+    <div class="mini">${card("Revenue meter", c.meter_hours ? `${fmt(c.meter)} MWh` : "-")}${card("Gross, same hours", c.meter_hours ? `${fmt(c.gross_metered)} MWh` : "-")}${card("Meter coverage", pct(cov, 0))}${card("Output in SCADA gaps", mt.full ? `${fmt(mt.gap)} MWh` : "-")}
+    ${card("Flagged meter excess", c.flag_hours ? `${fmt(mt.flag)} MWh (${fmt(c.flag_hours)} h)` : "none")}
+    ${card("Meter vs Bazefield check meter", xchk == null ? "-" : (xchk >= 0 ? "+" : "") + (100 * xchk).toFixed(2) + "%", null, "", false,
+           "Revenue meter / Bazefield ActivePowerMeter on hours where both exist (" + fmt(c.xchk_hours) + " h). McCrae's Bazefield meter went live 2026-10-13.")}</div>
+    ${data.flagged.length ? `<b style="font-size:13px">Flagged hours - reconcile</b>` + table(
+        ["Hour ending (" + esc(data.tz.split("/")[1].replace("_", " ")) + ")", "SCADA gross", "Meter", "Excess", data.related_label ? esc(data.related_label) : ""],
+        data.flagged.map(f => [new Date(f.he.replace(" ", "T") + "Z").toLocaleString("en-US", {timeZone: data.tz, month: "short", day: "numeric", hour: "numeric"}),
+                               fmt(f.gross, 1), fmt(f.meter, 1), `<b>${fmt(f.excess, 1)}</b>`, data.related_label ? fmt(f.related, 1) : ""]),
+        [1, 2, 3, 4]) : ""}</div></details>`;
   document.getElementById("ribbons").innerHTML = html;
   renderTrend(m);
 }
@@ -354,7 +395,10 @@ async function init() {
     GRAIN = q.get("view");
     document.querySelectorAll("#grain button").forEach(x => x.classList.toggle("on", x.dataset.g === GRAIN));
   }
-  fillPeriods(); render();
+  fillPeriods();
+  const per = q.get("period");                               // e.g. ?period=2026-09-01 (start of the week / month / year)
+  if (per && [...document.getElementById("period").options].some(o => o.value === per)) document.getElementById("period").value = per;
+  render();
 }
 document.getElementById("plant").addEventListener("change", () => { fillPeriods(); render(); });
 document.getElementById("period").addEventListener("change", render);

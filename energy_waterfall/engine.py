@@ -113,6 +113,15 @@ def prorate(al: pd.DataFrame, hours: pd.DatetimeIndex) -> np.ndarray:
     return out
 
 
+def meter_series(plant: str, p: dict, start: date, end: date) -> pd.Series:
+    """Hourly revenue meter (MWh, hour ending UTC); empty when the source has nothing for the window."""
+    try:
+        return S.meter_hourly(plant, p, start, end)
+    except Exception:
+        log.exception("%s meter fetch failed - waterfall continues without the meter step", plant)
+        return pd.Series(dtype=float)
+
+
 def long_term(srcid: str, element: int, hours: pd.DatetimeIndex, utc_stamps: bool) -> pd.Series:
     """Mean over LT_YEARS of the same (month, day, hour) UTC hour-ending value."""
     months = pd.period_range((hours.min() - pd.Timedelta(hours=1)).to_period("M"), hours.max().to_period("M"), freq="M")
@@ -471,10 +480,24 @@ def build(plant: str, start: date, end: date, recalibrate: bool = False, bz: S.B
     res_act = res.reindex(hours)
     if p["tech"] == "solar":                                  # J/m2 per hour -> W/m2
         res_lt, res_act = res_lt / 3600.0, res_act / 3600.0
-    site_pts = ["ActivePowerWTG", "TheoreticalPower"] if p["tech"] == "wind" else ["ActivePowerINV", "TheoreticalPower"]
+    site_pts = (["ActivePowerWTG", "TheoreticalPower"] if p["tech"] == "wind" else ["ActivePowerINV", "TheoreticalPower"])         + ["ActivePowerMeter"]
     sd = bz.series(site["id"], site_pts, t0.date(), end, interval="1h") if site else pd.DataFrame(index=hours[:0])
     sd.index = pd.DatetimeIndex(sd.index) + pd.Timedelta(hours=1)
     sd = sd.reindex(hours)
+    # revenue meter (Tenaska settlement / IPL MV90) + Bazefield's check meter as an independent cross-check. The
+    # Bazefield meter point only counts on days it tracks plant output (McCrae's went live 2026-10-13; before that
+    # it read ~0 / station load): daily meter / unit gross >= 0.5.
+    meter = meter_series(plant, p, t0.date(), end).reindex(hours)
+    try:
+        related = S.related_meter_hourly(p, t0.date(), end).reindex(hours)
+    except Exception:
+        log.exception("%s related meter fetch failed", plant)
+        related = pd.Series(np.nan, index=hours)
+    bzm = sd.get("ActivePowerMeter", pd.Series(np.nan, index=hours))
+    unit_gross = site_pot * 0 + fact[fact["STEP_ORDER"] == 9].groupby("HE_UTC")["MWH"].sum().reindex(hours).fillna(0)
+    day = (hours - pd.Timedelta(hours=6)).date
+    ok = (bzm.groupby(day).transform("sum") >= 0.5 * unit_gross.groupby(day).transform("sum")) & (unit_gross.groupby(day).transform("sum") > 0)
+    bzm = bzm.where(ok.values)
     al = allocs[(allocs["end"] > t0) & (allocs["start"] < t1 + pd.Timedelta(minutes=10))] if len(allocs) else allocs
     unav = prorate(al[~al["available"] & (al["excluded"] == 0)], hours) if len(al) else np.zeros(len(hours))
     lost_all = prorate(al, hours) if len(al) else np.zeros(len(hours))
@@ -488,7 +511,9 @@ def build(plant: str, start: date, end: date, recalibrate: bool = False, bz: S.B
         "BZ_THEORETICAL_MWH": sd.get("TheoreticalPower", pd.Series(np.nan, index=hours)).values,
         "BZ_UNAVAILABLE_MWH": unav, "BZ_LOST_ALL_MWH": lost_all,
         "TURBINES_MEASURED": (hr["meas"] / 6).reindex(hours).values, "TURBINES_TOTAL": n_units,
-        "RT_LMP": np.nan, "DA_LMP": np.nan, "PRICE_SOURCE": "RT 5-min (Yes Energy)" if comp_rule else "n/a"})
+        "RT_LMP": np.nan, "DA_LMP": np.nan, "PRICE_SOURCE": "RT 5-min (Yes Energy)" if comp_rule else "n/a",
+        "METER_MWH": meter.values, "METER_SOURCE": (p.get("meter") or {}).get("label", ""),
+        "BZ_METER_MWH": bzm.values, "RELATED_METER_MWH": related.values})
     site_rows = pd.concat([
         pd.DataFrame({"OBJECT_KEY": "SITE", "HE_UTC": hours, "STEP_ORDER": 0, "SUBCATEGORY": "", "DETAIL": "",
                       "COMPENSATION": "", "MWH": lt.values, "TURBINE_HOURS": np.nan}),

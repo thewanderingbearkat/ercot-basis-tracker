@@ -246,3 +246,115 @@ def yes_five_min(start: date, end: date, node: str) -> pd.Series:
     s = pd.Series({pd.Timestamp(dt) + pd.Timedelta(hours=off.get(tz, 5)): float(v) for dt, tz, v in cur.fetchall()
                    if v is not None}, dtype=float).sort_index()
     return s[(s.index > pd.Timestamp(start)) & (s.index <= pd.Timestamp(end) + pd.Timedelta(days=1))]
+
+
+# ----------------------------------------------------------------------------------------------- revenue meters
+TENASKA_TOKEN_URL = "https://api.ptp.energy/v1/token"
+TENASKA_SETTLEMENT_URL = "https://api.ptp.energy/v1/markets/ERCOTNodal/endpoints/EnergySettlement/data"
+
+
+def tenaska_hourly(element: str, start: date, end: date) -> pd.Series:
+    """Tenaska ERCOT settlement: 15-min Real_Time_Energy_Imbalance_Volume (MWh) of one generation element, summed to
+    hour ending UTC. Same element / field the Basis Tracker uses as each asset's generation."""
+    user, pw = os.getenv("TENASKA_API_USER"), os.getenv("TENASKA_API_PASSWORD")
+    if not user or not pw:
+        raise RuntimeError("TENASKA_API_USER / TENASKA_API_PASSWORD not set")
+    tok = requests.get(TENASKA_TOKEN_URL, auth=(user, pw), timeout=30)
+    tok.raise_for_status()
+    headers = {"Authorization": f"Bearer {tok.json().get('data')}"}
+    vals = {}
+    w0 = datetime(start.year, start.month, start.day)
+    stop = datetime(end.year, end.month, end.day) + timedelta(days=1)
+    while w0 < stop:
+        w1 = min(stop, w0 + timedelta(days=7))           # the API rejects responses that are too large
+        r = requests.get(TENASKA_SETTLEMENT_URL, headers=headers, timeout=180,
+                         params={"begin": f"{w0:%Y-%m-%dT%H:%M:%SZ}", "end": f"{w1:%Y-%m-%dT%H:%M:%SZ}"})
+        r.raise_for_status()
+        for it in r.json().get("data", []):
+            if (it.get("element") or "") != element:
+                continue
+            for dp in it.get("dataPoints", []):
+                if dp.get("keyName") != "Real_Time_Energy_Imbalance_Volume":
+                    continue
+                for v in dp.get("values", []):
+                    t = pd.Timestamp(v["intervalStartUtc"]).tz_convert(None)
+                    for n in v.get("data", []):
+                        vals[t] = vals.get(t, 0.0) + float(n.get("value") or 0)
+        w0 = w1
+    s = pd.Series(vals, dtype=float).sort_index()
+    if s.empty:
+        return s
+    return s.groupby(s.index.floor("h") + pd.Timedelta(hours=1)).sum()
+
+
+TENASKA_GEN_QTY_URL = "https://api.ptp.energy/v1/markets/ERCOTNodal/endpoints/Customer_Generation_Quantities/data"
+
+
+def tenaska_rtmg(resources: list[str], start: date, end: date) -> pd.Series:
+    """ERCOT RTMG (real-time metered generation, as settled) per 15-min interval for the given ERCOT resources, via
+    Tenaska Customer_Generation_Quantities (keyName RTMG_Interval); summed over the resources to hour ending UTC.
+    One value per (resource, interval): a repeated interval replaces, never adds."""
+    user, pw = os.getenv("TENASKA_API_USER"), os.getenv("TENASKA_API_PASSWORD")
+    if not user or not pw:
+        raise RuntimeError("TENASKA_API_USER / TENASKA_API_PASSWORD not set")
+    tok = requests.get(TENASKA_TOKEN_URL, auth=(user, pw), timeout=30)
+    tok.raise_for_status()
+    headers = {"Authorization": f"Bearer {tok.json().get('data')}"}
+    vals, want = {}, set(resources)
+    w0 = datetime(start.year, start.month, start.day)
+    stop = datetime(end.year, end.month, end.day) + timedelta(days=1)
+    while w0 < stop:
+        w1 = min(stop, w0 + timedelta(days=7))
+        r = requests.get(TENASKA_GEN_QTY_URL, headers=headers, timeout=180,
+                         params={"begin": f"{w0:%Y-%m-%dT%H:%M:%SZ}", "end": f"{w1:%Y-%m-%dT%H:%M:%SZ}"})
+        r.raise_for_status()
+        for it in r.json().get("data", []):
+            el = it.get("element") or ""
+            if el not in want:
+                continue
+            for dp in it.get("dataPoints", []):
+                if dp.get("keyName") != "RTMG_Interval":
+                    continue
+                for v in dp.get("values", []):
+                    t = pd.Timestamp(v["intervalStartUtc"]).tz_convert(None)
+                    for n in v.get("data", []):
+                        try:
+                            vals[(el, t)] = float(n.get("value") or 0)
+                        except (TypeError, ValueError):
+                            pass
+        w0 = w1
+    if not vals:
+        return pd.Series(dtype=float)
+    s = pd.Series(vals, dtype=float).groupby(level=1).sum().sort_index()     # sum resources per interval
+    return s.groupby(s.index.floor("h") + pd.Timedelta(hours=1)).sum()
+
+
+def meter_files(plant: str) -> pd.Series:
+    """Hourly MV90 files (reference/meter/<PLANT>_YYYY-MM.csv: day, HE01..HE24 in EST, total) -> hour ending UTC."""
+    from energy_waterfall.config import REF
+    out = {}
+    for f in sorted((REF / "meter").glob(f"{plant}_*.csv")):
+        ym = f.stem.split("_")[1]
+        df = pd.read_csv(f)
+        for _, r in df.iterrows():
+            d = pd.Timestamp(f"{ym}-{int(r['day']):02d}")
+            for h in range(1, 25):
+                out[d + pd.Timedelta(hours=h + 5)] = float(r[f"HE{h:02d}"])   # EST hour ending -> UTC
+    return pd.Series(out, dtype=float).sort_index()
+
+
+def meter_hourly(plant: str, cfg: dict, start: date, end: date) -> pd.Series:
+    m = cfg.get("meter") or {}
+    if m.get("source") == "tenaska_rtmg":
+        return tenaska_rtmg(m["resources"], start, end)
+    if m.get("source") == "tenaska":
+        return tenaska_hourly(m["element"], start, end)
+    if m.get("source") == "files":
+        return meter_files(plant)
+    return pd.Series(dtype=float)
+
+
+def related_meter_hourly(cfg: dict, start: date, end: date) -> pd.Series:
+    """A neighbouring resource's meter kept for reconciliation (McCrae: Bearkat I RTMG)."""
+    rel = (cfg.get("meter") or {}).get("related")
+    return tenaska_rtmg(rel["resources"], start, end) if rel else pd.Series(dtype=float)

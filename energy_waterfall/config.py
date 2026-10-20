@@ -35,6 +35,9 @@ PLANTS = {
         # (powerup-bronze analysis/dir_threshold.py). A 10-min interval is presumed compensated when any 5-minute
         # ALTW.LKFLD.IPL LMP in it or the previous 10 minutes is <= $0.
         "compensation": {"rule": "price_le", "node": "ALTW.LKFLD.IPL", "threshold": 0.0},
+        # Revenue meter: hourly MV90 from IPL's monthly production invoice (EST hour ending), one file per month in
+        # reference/meter/LFW01_YYYY-MM.csv (day, HE01..HE24, total) - Lakefield is MISO, not in Tenaska
+        "meter": {"source": "files", "label": "IPL invoice MV90 (monthly)"},
     },
     "MCW02": {
         "name": "McCrae", "tech": "wind", "tz": "America/Chicago", "units": 47, "rated_kw": 3450.0,
@@ -52,6 +55,12 @@ PLANTS = {
         "alarm_codes": {},
         "curtail_label": "Curtailment (ERCOT dispatch)",
         "compensation": None,                      # Tyler 2026-10-20: McCrae curtailment is not compensated
+        # Revenue meter: ERCOT RTMG (settled metered generation) of resource "Bearkat Wind II" via Tenaska
+        # Customer_Generation_Quantities; matches Bazefield's check meter within +0.6-1.0% (Oct 14-19 2026, hourly
+        # r 0.9999). Bearkat I output sometimes settles through this meter (2026-09-15/16: McCrae RTMG ~2x SCADA while
+        # Bearkat Wind 1 RTMG collapsed), so BKI RTMG is kept alongside and those hours are flagged for reconciliation.
+        "meter": {"source": "tenaska_rtmg", "resources": ["Bearkat Wind II"], "label": "ERCOT RTMG (Tenaska)",
+                  "related": {"resources": ["Bearkat Wind 1"], "label": "Bearkat I (BKI) RTMG"}},
     },
     "HOS01": {
         "name": "Holstein", "tech": "solar", "tz": "America/Chicago", "units": 66, "rated_kw": 3225.0,
@@ -60,6 +69,10 @@ PLANTS = {
         "points": ["ActivePower", "TheoreticalPower", "Available", "Running", "Irradiance"],
         "curtail_label": "Curtailment",
         "compensation": None,
+        # Revenue meter: ERCOT RTMG of resources Holstein Solar 1 + 2 via Tenaska (inverter gross -> meter ~5%:
+        # collection/transformer losses plus the 200 MW POI export limit vs 66 x 3.225 MW of inverters)
+        "meter": {"source": "tenaska_rtmg", "resources": ["Holstein Solar 1", "Holstein Solar 2"],
+                  "label": "ERCOT RTMG (Tenaska)"},
     },
     "NOW01": {
         "name": "Northwest Ohio", "tech": "wind", "tz": "America/New_York", "units": 42, "rated_kw": 2500.0,

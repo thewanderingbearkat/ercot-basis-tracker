@@ -99,6 +99,11 @@ services:
         sync: false
       - key: BAZEFIELD_API_KEY
         sync: false
+      # Tenaska (ERCOT RTMG meters for McCrae / Holstein) - same login as the web service
+      - key: TENASKA_API_USER
+        sync: false
+      - key: TENASKA_API_PASSWORD
+        sync: false
       - key: VAISALA_POWERUP_USER_GUID
         sync: false
       - key: VAISALA_POWERUP_USER_SECRET

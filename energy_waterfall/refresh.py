@@ -31,8 +31,10 @@ FACT_COLS = ["PLANT_CODE", "HE_UTC", "LOCAL_DATE", "OBJECT_KEY", "STEP_ORDER", "
 SITE_COLS = ["PLANT_CODE", "HE_UTC", "LOCAL_DATE", "LT_POTENTIAL_MWH", "BUDGET_GROSS_MWH", "PU_HUB_WIND_MS",
              "PU_HUB_WIND_LT_MS", "RESOURCE_ACTUAL", "RESOURCE_LT", "RESOURCE_UNIT", "BZ_ACTUAL_MWH",
              "BZ_THEORETICAL_MWH", "BZ_UNAVAILABLE_MWH", "BZ_LOST_ALL_MWH", "TURBINES_MEASURED", "TURBINES_TOTAL",
-             "RT_LMP", "DA_LMP", "PRICE_SOURCE"]
-TEXT = {"PLANT_CODE", "OBJECT_KEY", "STEP", "SUBCATEGORY", "DETAIL", "COMPENSATION", "RESOURCE_UNIT", "PRICE_SOURCE"}
+             "RT_LMP", "DA_LMP", "PRICE_SOURCE", "METER_MWH", "METER_SOURCE", "BZ_METER_MWH",
+             "RELATED_METER_MWH"]
+TEXT = {"PLANT_CODE", "OBJECT_KEY", "STEP", "SUBCATEGORY", "DETAIL", "COMPENSATION", "RESOURCE_UNIT", "PRICE_SOURCE",
+        "METER_SOURCE"}
 
 
 def _value(v):
@@ -91,6 +93,41 @@ def load(fact, site, b):
          b["METHOD"], n))
 
 
+def meter_only(plant: str, start: date, end: date):
+    """Fill METER_MWH / METER_SOURCE / BZ_METER_MWH on existing site hours without rebuilding the waterfall."""
+    from energy_waterfall import sources as S
+    from energy_waterfall.engine import meter_series
+    p = C.PLANTS[plant]
+    hours = pd.date_range(pd.Timestamp(start) + pd.Timedelta(hours=1), pd.Timestamp(end) + pd.Timedelta(days=1), freq="h")
+    meter = meter_series(plant, p, start, end).reindex(hours)
+    related = S.related_meter_hourly(p, start, end).reindex(hours)
+    bz = S.Bazefield()
+    site = bz.plant_objects(plant)["site"]
+    pts = ["ActivePowerMeter", "ActivePowerWTG" if p["tech"] == "wind" else "ActivePowerINV"]
+    sd = bz.series(site["id"], pts, start, end, interval="1h") if site else pd.DataFrame()
+    sd.index = pd.DatetimeIndex(sd.index) + pd.Timedelta(hours=1)
+    sd = sd.reindex(hours)
+    bzm, gross = sd.get(pts[0], pd.Series(np.nan, index=hours)), sd.get(pts[1], pd.Series(0.0, index=hours)).fillna(0)
+    day = (hours - pd.Timedelta(hours=6)).date
+    ok = (bzm.groupby(day).transform("sum") >= 0.5 * gross.groupby(day).transform("sum")) & (gross.groupby(day).transform("sum") > 0)
+    df = pd.DataFrame({"PLANT_CODE": plant, "HE_UTC": hours, "METER_MWH": meter.values,
+                       "METER_SOURCE": (p.get("meter") or {}).get("label", ""), "BZ_METER_MWH": bzm.where(ok.values).values,
+                       "RELATED_METER_MWH": related.values})
+    conn = db.skyvest()
+    cols = list(df.columns)
+    tmp = f"STG_{uuid.uuid4().hex[:10].upper()}"
+    cur = conn.cursor()
+    cur.execute(f"CREATE TEMPORARY TABLE {tmp} ({', '.join(f'{c} VARCHAR' for c in cols)})")
+    rows = [tuple(None if (x := _value(v)) is None else str(x) for v in r) for r in df.itertuples(index=False)]
+    cur.executemany(f"INSERT INTO {tmp} VALUES ({', '.join('?' * len(cols))})", rows)
+    cur.execute(f"""UPDATE {SITE} t SET METER_MWH = TRY_TO_DOUBLE(s.METER_MWH), METER_SOURCE = s.METER_SOURCE,
+                       BZ_METER_MWH = TRY_TO_DOUBLE(s.BZ_METER_MWH),
+                       RELATED_METER_MWH = TRY_TO_DOUBLE(s.RELATED_METER_MWH)
+                    FROM {tmp} s WHERE t.PLANT_CODE = s.PLANT_CODE AND t.HE_UTC = TO_TIMESTAMP_NTZ(s.HE_UTC)""")
+    log.info("%s meter-only: %d site hours updated (%d with meter, %d with valid Bazefield meter)", plant, cur.rowcount,
+             int(df["METER_MWH"].notna().sum()), int(df["BZ_METER_MWH"].notna().sum()))
+
+
 def run_ddl():
     sql = (C.HERE / "ddl.sql").read_text(encoding="utf-8")
     import re
@@ -116,6 +153,7 @@ def main(argv=None) -> int:
     ap.add_argument("--recalibrate", action="store_true", help="recompute k / stopped-anemometer factor")
     ap.add_argument("--ddl", action="store_true", help="apply energy_waterfall/ddl.sql (table owner role)")
     ap.add_argument("--dry-run", action="store_true", help="build only; do not write to Snowflake")
+    ap.add_argument("--meter-only", action="store_true", help="only (re)fill the meter columns for the window")
     ap.add_argument("--out", type=Path, help="also write fact/site CSVs here")
     a = ap.parse_args(argv)
     if a.ddl:
@@ -126,6 +164,10 @@ def main(argv=None) -> int:
     start = a.start or end - timedelta(days=a.days - 1)
     plants = a.plants.split(",") if a.plants else C.enabled_plants(today)
     log.info("refresh %s .. %s for %s", start, end, plants)
+    if a.meter_only:
+        for plant in plants:
+            meter_only(plant, start, end)
+        return 0
     failed = []
     for plant in plants:
         try:
