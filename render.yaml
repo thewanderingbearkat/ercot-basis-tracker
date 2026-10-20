@@ -37,6 +37,11 @@ services:
         sync: false
       - key: PHAROS_API_TOKEN
         sync: false
+      # Vaisala PowerUp (shadow trader forecasts; the energy-waterfall cron job copies these via fromService)
+      - key: VAISALA_POWERUP_USER_GUID
+        sync: false
+      - key: VAISALA_POWERUP_USER_SECRET
+        sync: false
       # Hail Monitor (Vaisala XWeather). Set the actual ID/secret in the Render
       # dashboard -- the /hail tab returns an auth error until both are present.
       - key: XWEATHER_CLIENT_ID
@@ -92,6 +97,9 @@ services:
     schedule: "0 12 * * 1"          # Mondays 12:00 UTC (7 am Central)
     buildCommand: pip install -r requirements.txt
     startCommand: python -m energy_waterfall.refresh --days 21
+    # Shared secrets are copied from the web service (fromService ... envVarKey), so they are entered once.
+    # References refresh on each Blueprint sync, not instantly: after rotating a key on the web service, re-sync.
+    # Only the Bazefield URL / key are cron-only secrets (sync: false).
     envVars:
       - key: PYTHON_VERSION          # Blueprint runtime is just "python"; the version is pinned here
         value: 3.12.7
@@ -102,18 +110,36 @@ services:
       - key: BAZEFIELD_API_KEY
         sync: false
       - key: VAISALA_POWERUP_USER_GUID
-        sync: false
+        fromService:
+          name: ercot-basis-tracker
+          type: web
+          envVarKey: VAISALA_POWERUP_USER_GUID
       - key: VAISALA_POWERUP_USER_SECRET
-        sync: false
+        fromService:
+          name: ercot-basis-tracker
+          type: web
+          envVarKey: VAISALA_POWERUP_USER_SECRET
       # Yes Energy share (MISO 5-minute LMPs for Lakefield's compensation test): same key pair as the web service
       - key: SNOWFLAKE_USER
-        sync: false
+        fromService:
+          name: ercot-basis-tracker
+          type: web
+          envVarKey: SNOWFLAKE_USER
       - key: SNOWFLAKE_ACCOUNT
-        sync: false
+        fromService:
+          name: ercot-basis-tracker
+          type: web
+          envVarKey: SNOWFLAKE_ACCOUNT
       - key: SNOWFLAKE_WAREHOUSE
-        sync: false
+        fromService:
+          name: ercot-basis-tracker
+          type: web
+          envVarKey: SNOWFLAKE_WAREHOUSE
       - key: SNOWFLAKE_PRIVATE_KEY
-        sync: false
+        fromService:
+          name: ercot-basis-tracker
+          type: web
+          envVarKey: SNOWFLAKE_PRIVATE_KEY
       - key: SKYVEST_SNOWFLAKE_ACCOUNT
         value: A8022540555871-MAIN
       - key: SKYVEST_SNOWFLAKE_USER
@@ -123,4 +149,7 @@ services:
       - key: SKYVEST_SNOWFLAKE_WAREHOUSE
         value: GENERAL_WH
       - key: SKYVEST_SNOWFLAKE_PRIVATE_KEY
-        sync: false
+        fromService:
+          name: ercot-basis-tracker
+          type: web
+          envVarKey: SKYVEST_SNOWFLAKE_PRIVATE_KEY
