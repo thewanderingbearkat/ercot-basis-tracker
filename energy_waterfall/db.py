@@ -30,7 +30,9 @@ def _connect(name: str, **kw):
         c = _conns.get(name)
         if c is not None and not c.is_closed():
             return c
-        c = snowflake.connector.connect(client_session_keep_alive=True, login_timeout=60,
+        # bounded well under gunicorn's 120 s request timeout, so a hang surfaces as an error, not a Render 502 page
+        c = snowflake.connector.connect(client_session_keep_alive=True, login_timeout=40, network_timeout=60,
+                                        socket_timeout=60,
                                         session_parameters={"TIMEZONE": "UTC", "QUERY_TAG": "energy-waterfall"}, **kw)
         _conns[name] = c
         return c

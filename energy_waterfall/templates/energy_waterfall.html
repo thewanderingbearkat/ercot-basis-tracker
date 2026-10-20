@@ -165,8 +165,14 @@ function help(m) {
 
 async function getJSON(url) {
   const r = await fetch(url, {credentials: "same-origin"});
-  const j = await r.json();
-  if (!r.ok || j.error) throw new Error(j.error || r.statusText);
+  const text = await r.text();
+  let j;
+  try { j = JSON.parse(text); }
+  catch (e) {                                   // not JSON: a proxy / timeout / login page - say which
+    const hint = r.status === 401 ? " (session expired - log in again)" : (r.status >= 502 ? " (server timed out or restarted)" : "");
+    throw new Error(`HTTP ${r.status}${hint}: ${text.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim().slice(0, 160)}`);
+  }
+  if (!r.ok || j.error) throw new Error(j.error || `HTTP ${r.status}`);
   return j;
 }
 
