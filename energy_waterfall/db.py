@@ -7,13 +7,34 @@
 """
 import os
 import threading
+import time
 
 import snowflake.connector
+from snowflake.connector.errors import DatabaseError
 
 SCHEMA = "GOLD.PERFORMANCE"
 _lock = threading.Lock()
 _query_lock = threading.Lock()      # the web app serves 4 threads; never use one connection concurrently
-_conns: dict = {}
+_conns: dict = {}                   # name -> (connection, created monotonic seconds)
+# keep-alive is off (heartbeat thread + connector 5 segfaulted on Render), so an idle session's token expires after
+# a few hours; rebuild well before that, and reconnect once on the expiry error if it slips through anyway
+_MAX_AGE_S = 3600
+_EXPIRED_ERRNOS = {390111, 390112, 390114}     # session gone / no longer exists / authentication token expired
+
+
+def _expired(e: Exception) -> bool:
+    msg = str(e).lower()
+    return getattr(e, "errno", None) in _EXPIRED_ERRNOS or "token has expired" in msg or "session no longer" in msg
+
+
+def _drop(name: str):
+    with _lock:
+        c, _ = _conns.pop(name, (None, 0))
+    if c is not None:
+        try:
+            c.close()
+        except Exception:
+            pass
 
 
 def _der(pem: str | None, path: str | None) -> bytes:
@@ -28,14 +49,19 @@ def _der(pem: str | None, path: str | None) -> bytes:
 
 def _connect(name: str, **kw):
     with _lock:
-        c = _conns.get(name)
-        if c is not None and not c.is_closed():
+        c, born = _conns.get(name, (None, 0))
+        if c is not None and not c.is_closed() and time.monotonic() - born < _MAX_AGE_S:
             return c
+        if c is not None:
+            try:
+                c.close()
+            except Exception:
+                pass
         # bounded well under gunicorn's 120 s request timeout, so a hang surfaces as an error, not a Render 502 page
         c = snowflake.connector.connect(client_session_keep_alive=False, login_timeout=40, network_timeout=60,
                                         socket_timeout=60,
                                         session_parameters={"TIMEZONE": "UTC", "QUERY_TAG": "energy-waterfall"}, **kw)
-        _conns[name] = c
+        _conns[name] = (c, time.monotonic())
         return c
 
 
@@ -54,12 +80,25 @@ def yes_energy():
                     private_key=_der(os.getenv("SNOWFLAKE_PRIVATE_KEY"), os.getenv("SNOWFLAKE_PRIVATE_KEY_PATH")))
 
 
+def _run(sql: str, params) -> list[dict]:
+    cur = skyvest().cursor()
+    try:
+        cur.execute(sql, params or [])
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, r)) for r in cur.fetchall()]
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+
+
 def query(sql: str, params=None) -> list[dict]:
     with _query_lock:
-        cur = skyvest().cursor()
         try:
-            cur.execute(sql, params or [])
-            cols = [d[0] for d in cur.description]
-            return [dict(zip(cols, r)) for r in cur.fetchall()]
-        finally:
-            cur.close()
+            return _run(sql, params)
+        except DatabaseError as e:          # ProgrammingError is a subclass
+            if not _expired(e):
+                raise
+            _drop("skyvest")
+            return _run(sql, params)
